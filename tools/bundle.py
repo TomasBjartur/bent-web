@@ -19,11 +19,18 @@ dest = os.path.join(out, "editor.bundle.js")
 os.replace(chunks[0], dest)
 print(f"bundled editor: {len(js)} bytes -> {dest}")
 
+# Vendored Datastar must be exactly the pinned release (vendor/datastar/README.md).
+DATASTAR_SHA256 = "727844adfc825ee651fb93c544a2a739986f9a21820a94524b35f0cac470cf91"
+import hashlib
+got = hashlib.sha256(open(os.path.join(root, "vendor/datastar/datastar.js"), "rb").read()).hexdigest()
+if got != DATASTAR_SHA256:
+    sys.exit(f"vendor/datastar/datastar.js is not the pinned Datastar 1.0.4 (sha256 {got})")
+
 # One version for all assets: pages link /s/<name>?v=<version>, and assets
 # are cached forever, so any change to any asset changes every URL.
 import hashlib
 h = hashlib.sha256()
-for p in [dest, os.path.join(root, "src/web/app.css"), os.path.join(root, "src/web/passkey.js"), os.path.join(root, "src/web/post.js")]:
+for p in [dest, os.path.join(root, "src/web/app.css"), os.path.join(root, "src/web/passkey.js"), os.path.join(root, "vendor/datastar/datastar.js")]:
     h.update(open(p, "rb").read())
 ver = h.hexdigest()[:12]
 os.makedirs(os.path.join(root, "src", "gen"), exist_ok=True)

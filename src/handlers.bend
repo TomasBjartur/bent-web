@@ -221,7 +221,7 @@ def h_post4(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +n
         tags : List<&2, List<&2, String>> <- Db.query(Db.q_post_tags(), pid, 0, "", token)
         last : List<&2, List<&2, String>> <- Db.query(Db.q_last_comment(), pid, 0, "", token)
         comments : List<&2, List<&2, String>> <- Db.query(Db.q_comments(), pid, 0, "", token)
-        h_post5(Bool.not(signed(who)), s, token, pid, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.tag_chips(tags) ++ Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), first_col(last, 0n), comments), Con{Pages.T{Pages.post_script() ++ Pages.layout_bottom()}, Nil{}})}}}, ""))
+        h_post5(Bool.not(signed(who)), s, token, pid, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.tag_chips(tags) ++ Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), first_col(last, 0n), comments), Con{Pages.T{Pages.layout_bottom()}, Nil{}})}}}, ""))
 
 def h_post3(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +notice: Bool, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
@@ -276,50 +276,106 @@ def h_upload(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> 
     f : Spec.Facts <- Db.facts(who, 0, pid)
     h_upload2(s, token, who, body, Authz.authorize(f, Spec.UploadImage{pid}))
 
-def h_live6(s: Socket, +token: String, +pg: Pages.Page) -> IO(Unit):
+def form_num(+xs: List<&2, Text.Field>, +key: String) -> U32:
+  Maybe.default(&2, U32, U32.read(Maybe.default(&2, String, Text.form_raw(xs, key), "")), 0)
+
+# DATASTAR RESPONSES
+# ------------------
+# ?frag=1 (from Datastar): answer with patches (content type 2: a stream of
+# Datastar events, src/effects/db.c page_sse) instead of a page or a
+# redirect.
+def wants_frag(+xs: List<&2, Text.Field>) -> Bool:
+  String.eq(Maybe.default(&2, String, Text.form_raw(xs, "frag"), ""), "1")
+
+def frag_of(+query: String, +body: String) -> Bool:
+  Bool.or(wants_frag(form(query)), wants_frag(form(body)))
+
+def stream(s: Socket, +token: String, +pg: Pages.Page) -> IO(Unit):
   do IO<Unit>:
-    x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, Pages.page_texts(pg), Pages.page_bodies(pg), token, "", "")
+    x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 2, Pages.page_texts(pg), Pages.page_bodies(pg), token, "", "")
     done(x)
 
-# TAG PAGES (cached): /t/<tag>.
-# LIVE COMMENTS: GET /live/<post>?after=N (the page's script). Waits up to
-# 25 s for a comment newer than N, then answers the new ones as HTML, each
-# with its parent's id; 204 if none; 429 if too many are waiting. Only for
-# readers of the post (404 otherwise).
-def h_live5(k: Nat, s: Socket, +token: String, +who: U32, +pid: U32, +can_mod: Bool, +after: U32) -> IO(Unit):
-  match k:
-    case 1n:
-      do IO<Unit>:
-        rows : List<&2, List<&2, String>> <- Db.query(Db.q_comments_after(), pid, after, "", token)
-        h_live6(s, token, Pages.page_of(Pages.live_segs(rows, signed(who), can_mod), ""))
-    case 2n:
-      send_text(s, token, 429, "busy\n")
-    case _:
-      send_text(s, token, 204, "")
+def stream1(s: Socket, +token: String, +text: String) -> IO(Unit):
+  stream(s, token, Pages.Page{Con{text, Nil{}}, Nil{}})
 
-def h_live3(s: Socket, +token: String, +who: U32, +pid: U32, +can_mod: Bool, +after: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+# LIVE COMMENTS: GET /live/<post>?after=N&n=K (Datastar, from the #live
+# element) opens an event stream that stays open. Each round waits up to
+# 25 s for a comment newer than N: new ones are pushed (appended under
+# their parents, with fresh counts); otherwise a keep-alive line, which
+# also finds out that the reader has gone (the write fails, the loop ends,
+# its place is freed). After 24 rounds (~10 min), or when too many readers
+# are waiting, the stream ends by patching #live with the next request,
+# which Datastar makes (after a pause if busy). Readers of the post only.
+def live_chunk(new: Bool, +rows: List<&2, List<&2, String>>, +social: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool, +pid: U32) -> Pages.Page:
+  match new:
+    case True{}:
+      Pages.page_of(List.append(&2, Pages.Seg, Pages.live_segs(rows, signed, can_mod), Con{Pages.T{Pages.patch("", "outer", Pages.social_bar(signed, U32.show(pid), first_row(social)))}, Nil{}}), "")
+    case False{}:
+      Pages.Page{Con{": ping\n\n", Nil{}}, Nil{}}
+
+def live_end(s: Socket, +token: String, +pid: U32, +after: U32, +n: U32, +busy: Bool) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.stream_send(s, 0, Con{Pages.patch("", "outer", Pages.live_div(U32.show(pid), U32.show(after), U32.show((n + 1 : U32)), busy)), Nil{}}, Nil{}, token)
+    done(r)
+
+def last_id(rows: List<&2, List<&2, String>>, +d: String) -> String:
+  match rows:
+    case Nil{}:
+      d
+    case Con{+r, t}:
+      match t:
+        case Nil{}:
+          Pages.col(r, 0n)
+        case Con{r2, t2}:
+          last_id(Con{r2, t2}, d)
+
+# One round per k: the stream ends when the reader has gone (a failed
+# write) or the rounds run out.
+def live_loop(k: Nat, r: Socket & Result<&1, &1, U32 & String, Unit>, +token: String, +who: U32, +pid: U32, +can_mod: Bool, +after: U32, +n: U32, +busy: Bool) -> IO(Unit):
+  match k:
+    case 0n:
+      (s, x) = r
+      match x:
+        case Fail{err}:
+          Socket.close(s)
+        case Done{u}:
+          live_end(s, token, pid, after, n, busy)
+    case 1n+rest:
+      (s, x) = r
+      match x:
+        case Fail{err}:
+          Socket.close(s)
+        case Done{u}:
+          match busy:
+            case True{}:
+              live_end(s, token, pid, after, n, True{})
+            case False{}:
+              do IO<Unit>:
+                +code : U32 <- Db.comment_wait(pid, after, 25000)
+                +rows : List<&2, List<&2, String>> <- Db.query(Db.q_comments_after(), pid, after, "", token)
+                +social : List<&2, List<&2, String>> <- Db.query(Db.q_post_social(), pid, 0, "", token)
+                +pg : Pages.Page = live_chunk(U32.is_eq(code, 1), rows, social, signed(who), can_mod, pid)
+                r2 : Socket & Result<&1, &1, U32 & String, Unit> <- Db.stream_send(s, Bool.to_u32(U32.is_ne(code, 1)), Pages.page_texts(pg), Pages.page_bodies(pg), token)
+                live_loop(rest, r2, token, who, pid, can_mod, num(last_id(rows, U32.show(after))), n, U32.is_eq(code, 2))
+
+def h_live3(s: Socket, +token: String, +who: U32, +pid: U32, +can_mod: Bool, +after: U32, +n: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
     case None{}:
       send_text(s, token, 404, "not found\n")
     case Some{p}:
       do IO<Unit>:
-        +code : U32 <- Db.comment_wait(pid, after, 25000)
-        h_live5(U32.to_nat(code), s, token, who, pid, can_mod, after)
-
-# COLLABORATIVE EDITING
-# ---------------------
-def form_num(+xs: List<&2, Text.Field>, +key: String) -> U32:
-  Maybe.default(&2, U32, U32.read(Maybe.default(&2, String, Text.form_raw(xs, key), "")), 0)
+        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.stream_open(s)
+        live_loop(24n, r, token, who, pid, can_mod, after, n, False{})
 
 def h_live(s: Socket, +token: String, +who: U32, +pid: U32, +query: String) -> IO(Unit):
   do IO<Unit>:
     +f : Spec.Facts <- Db.facts(who, 0, pid)
-    h_live3(s, token, who, pid, is_some_permit(Authz.authorize(f, Spec.EditPost{pid})), form_num(form(query), "after"), Authz.authorize(f, Spec.ReadPost{pid}))
+    h_live3(s, token, who, pid, is_some_permit(Authz.authorize(f, Spec.EditPost{pid})), form_num(form(query), "after"), form_num(form(query), "n"), Authz.authorize(f, Spec.ReadPost{pid}))
 
 # LIKES AND COMMENTS
 # ------------------
-# Each ends on the post's page (at an anchor); the post's address comes
-# from the database.
+# Without Datastar each ends on the post's page (at an anchor); the post's
+# address comes from the database.
 def to_post2(s: Socket, +token: String, +anchor: String, +view: List<&2, List<&2, String>>) -> IO(Unit):
   match view:
     case Nil{}:
@@ -340,8 +396,7 @@ def engage_done(s: Socket, +token: String, +who: U32, +pid: U32, +anchor: String
       (code, msg) = err
       fail(s, token, who, apply_status(code))
 
-# frag (from the page's script): answer with the new like button, not a
-# redirect, so the page does not reload.
+# With Datastar: the new like button (morphed into #social by its id).
 def liked(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
   match frag:
     case False{}:
@@ -369,37 +424,73 @@ def h_like.go(signed: Bool, frag: Bool, s: Socket, +token: String, +who: U32, +p
         f : Spec.Facts <- Db.facts(who, 0, pid)
         h_like2(frag, s, token, who, pid, on, Authz.authorize(f, Spec.LikePost{pid}))
 
-def wants_frag(+xs: List<&2, Text.Field>) -> Bool:
-  String.eq(Maybe.default(&2, String, Text.form_raw(xs, "frag"), ""), "1")
-
 # POST /like/<post>: on=1 likes, on=0 unlikes.
-def h_like(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO(Unit):
-  h_like.go(signed(who), wants_frag(form(body)), s, token, who, pid, Bool.to_u32(String.eq(Maybe.default(&2, String, Text.form_raw(form(body), "on"), ""), "1")))
+def h_like(s: Socket, +token: String, +who: U32, +pid: U32, +body: String, +query: String) -> IO(Unit):
+  h_like.go(signed(who), frag_of(query, body), s, token, who, pid, Bool.to_u32(String.eq(Maybe.default(&2, String, Text.form_raw(form(body), "on"), ""), "1")))
 
-def comment_fail(slow: Bool, s: Socket, +token: String, +who: U32, +code: U32) -> IO(Unit):
+def box_id.go(top: Bool, +parent: U32) -> String:
+  match top:
+    case True{}:
+      "cform"
+    case False{}:
+      "rff" ++ U32.show(parent)
+
+# The comment box a comment came from: #cform, or the reply form #rff<parent>.
+def box_id(+parent: U32) -> String:
+  box_id.go(U32.is_eq(parent, 0), parent)
+
+# With Datastar a sent comment empties its box (a fresh #cform, or the
+# reply form removed); the live update brings the comment itself.
+def comment_sent(top: Bool, s: Socket, +token: String, +pid: U32, +parent: U32) -> IO(Unit):
+  match top:
+    case True{}:
+      stream1(s, token, Pages.patch("", "replace", Pages.comment_box(U32.show(pid), "0", "cform", "3", "Write a comment", "")))
+    case False{}:
+      stream1(s, token, Pages.patch("#rff" ++ U32.show(parent), "remove", ""))
+
+def comment_ok(frag: Bool, s: Socket, +token: String, +pid: U32, +parent: U32, +id: U32) -> IO(Unit):
+  match frag:
+    case True{}:
+      comment_sent(U32.is_eq(parent, 0), s, token, pid, parent)
+    case False{}:
+      to_post(s, token, pid, "#c" ++ U32.show(id))
+
+# Blank, too long, or not text: 400 (with Datastar, a note by the box).
+def comment_bad(frag: Bool, s: Socket, +token: String, +who: U32, +parent: U32) -> IO(Unit):
+  match frag:
+    case True{}:
+      stream1(s, token, Pages.patch("#" ++ (box_id(parent) ++ "-note"), "inner", "Write something first (at most 10000 characters)."))
+    case False{}:
+      fail(s, token, who, 400)
+
+def comment_fail_text(slow: Bool) -> String:
+  match slow:
+    case True{}:
+      "That is a lot of comments in a minute. Wait a moment and send it again."
+    case False{}:
+      "That did not work. Try again."
+
+def comment_fail.page(slow: Bool, s: Socket, +token: String, +who: U32, +code: U32) -> IO(Unit):
   match slow:
     case True{}:
       fail(s, token, who, 429)
     case False{}:
       fail(s, token, who, apply_status(code))
 
-def comment_ok(frag: Bool, s: Socket, +token: String, +pid: U32, +id: U32) -> IO(Unit):
+def comment_fail(frag: Bool, slow: Bool, s: Socket, +token: String, +who: U32, +parent: U32, +code: U32) -> IO(Unit):
   match frag:
     case True{}:
-      send_text(s, token, 200, U32.show(id) ++ "\n")
+      stream1(s, token, Pages.patch("#" ++ (box_id(parent) ++ "-note"), "inner", comment_fail_text(slow)))
     case False{}:
-      to_post(s, token, pid, "#c" ++ U32.show(id))
+      comment_fail.page(slow, s, token, who, code)
 
-# A new comment ends at its own anchor; too many too fast is 429.
-# frag (from the page's script): a short text answer; the live update
-# shows the new comment.
-def comment_done(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+def comment_done(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +parent: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
   match r:
     case Done{+id}:
-      comment_ok(frag, s, token, pid, id)
+      comment_ok(frag, s, token, pid, parent, id)
     case Fail{err}:
       (+code, msg) = err
-      comment_fail(U32.is_eq(code, 3), s, token, who, code)
+      comment_fail(frag, U32.is_eq(code, 3), s, token, who, parent, code)
 
 def h_comment3(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +parent: U32, +b: Text.Body, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
@@ -408,79 +499,95 @@ def h_comment3(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +par
     case Some{p}:
       do IO<Unit>:
         r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, parent, Db.comment_data(b))
-        comment_done(frag, s, token, who, pid, r)
+        comment_done(frag, s, token, who, pid, parent, r)
 
 def h_comment2(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +parent: U32, m: Maybe<&2, Text.Body>) -> IO(Unit):
   match m:
     case None{}:
-      fail(s, token, who, 400)
+      comment_bad(frag, s, token, who, parent)
     case Some{+b}:
       do IO<Unit>:
         f : Spec.Facts <- Db.facts(who, 0, pid)
         h_comment3(frag, s, token, who, pid, parent, b, Authz.authorize(f, Spec.CommentPost{pid}))
 
-def h_comment.go(signed: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>) -> IO(Unit):
+def h_comment.go(signed: Bool, frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>) -> IO(Unit):
   match signed:
     case False{}:
       redirect(s, token, "/login", "")
     case True{}:
-      h_comment2(wants_frag(xs), s, token, who, pid, form_num(xs, "parent"), Text.form_comment(xs, "body"))
+      h_comment2(frag, s, token, who, pid, form_num(xs, "parent"), Text.form_comment(xs, "body"))
 
 # POST /comment/<post>: body, and parent (a comment id) for a reply.
-def h_comment(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO(Unit):
-  h_comment.go(signed(who), s, token, who, pid, form(body))
+def h_comment(s: Socket, +token: String, +who: U32, +pid: U32, +body: String, +query: String) -> IO(Unit):
+  h_comment.go(signed(who), frag_of(query, body), s, token, who, pid, form(body))
 
-def h_delete_comment3(s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+# With Datastar a deleted comment's text becomes "[deleted]" in place.
+def deleted(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +cid: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+  match frag:
+    case False{}:
+      engage_done(s, token, who, pid, "#comments", r)
+    case True{}:
+      stream1(s, token, Pages.patch("#cb" ++ U32.show(cid), "inner", "<p class=\"muted\">[deleted]</p>") ++ Pages.patch("#ca" ++ U32.show(cid), "remove", ""))
+
+def h_delete_comment3(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +cid: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
     case None{}:
       fail(s, token, who, 403)
     case Some{p}:
       do IO<Unit>:
         r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, 0, Db.no_data())
-        engage_done(s, token, who, pid, "#comments", r)
+        deleted(frag, s, token, who, pid, cid, r)
 
-def h_delete_comment2(s: Socket, +token: String, +who: U32, +cid: U32, +info: List<&2, List<&2, String>>) -> IO(Unit):
+def h_delete_comment2(frag: Bool, s: Socket, +token: String, +who: U32, +cid: U32, +info: List<&2, List<&2, String>>) -> IO(Unit):
   match info:
     case Nil{}:
       fail(s, token, who, 404)
     case Con{+r, t}:
       do IO<Unit>:
         f : Spec.Facts <- Db.facts(who, 0, num(Pages.col(r, 0n)))
-        h_delete_comment3(s, token, who, num(Pages.col(r, 0n)), Authz.authorize(f, Spec.DeleteComment{num(Pages.col(r, 0n)), cid, num(Pages.col(r, 1n))}))
+        h_delete_comment3(frag, s, token, who, num(Pages.col(r, 0n)), cid, Authz.authorize(f, Spec.DeleteComment{num(Pages.col(r, 0n)), cid, num(Pages.col(r, 1n))}))
 
 # POST /comment/<id>/delete: by its author, or a member of the blog. The
 # author is as loaded here; the write only matches a comment by them.
-def h_delete_comment(s: Socket, +token: String, +who: U32, +cid: U32) -> IO(Unit):
+def h_delete_comment(s: Socket, +token: String, +who: U32, +cid: U32, +query: String) -> IO(Unit):
   do IO<Unit>:
     info : List<&2, List<&2, String>> <- Db.query(Db.q_comment_info(), cid, 0, "", token)
-    h_delete_comment2(s, token, who, cid, info)
+    h_delete_comment2(wants_frag(form(query)), s, token, who, cid, info)
 
 def h_reply3(s: Socket, +token: String, +who: U32, +cid: U32, +info: List<&2, String>, +view: List<&2, List<&2, String>>) -> IO(Unit):
   do IO<Unit>:
     x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, two(Pages.layout_top("Reply", True{}) ++ Pages.reply_before(info, "/b/" ++ (first_col(view, 3n) ++ ("/" ++ (first_col(view, 0n) ++ ("#c" ++ U32.show(cid)))))), Pages.reply_after(info, U32.show(cid), "/b/" ++ (first_col(view, 3n) ++ ("/" ++ (first_col(view, 0n) ++ ("#c" ++ U32.show(cid)))))) ++ Pages.layout_bottom()), Con{Db.comment_body(cid), Nil{}}, token, "", "")
     done(x)
 
-def h_reply2(s: Socket, +token: String, +who: U32, +cid: U32, +info: List<&2, List<&2, String>>) -> IO(Unit):
-  match info:
-    case Nil{}:
-      fail(s, token, who, 404)
-    case Con{+r, t}:
+def h_reply2.go(frag: Bool, s: Socket, +token: String, +who: U32, +cid: U32, +r: List<&2, String>) -> IO(Unit):
+  match frag:
+    case True{}:
+      stream1(s, token, Pages.patch("#rf" ++ U32.show(cid), "inner", Pages.reply_box(Pages.col(r, 0n), U32.show(cid))))
+    case False{}:
       do IO<Unit>:
         view : List<&2, List<&2, String>> <- Db.query(Db.q_post_view(), num(Pages.col(r, 0n)), 0, "", token)
         h_reply3(s, token, who, cid, r, view)
 
-def h_reply.go(signed: Bool, s: Socket, +token: String, +who: U32, +cid: U32) -> IO(Unit):
+# With Datastar: the reply form, inline under the comment (#rf<id>).
+def h_reply2(frag: Bool, s: Socket, +token: String, +who: U32, +cid: U32, +info: List<&2, List<&2, String>>) -> IO(Unit):
+  match info:
+    case Nil{}:
+      fail(s, token, who, 404)
+    case Con{+r, t}:
+      h_reply2.go(frag, s, token, who, cid, r)
+
+def h_reply.go(signed: Bool, frag: Bool, s: Socket, +token: String, +who: U32, +cid: U32) -> IO(Unit):
   match signed:
     case False{}:
       redirect(s, token, "/login", "")
     case True{}:
       do IO<Unit>:
         info : List<&2, List<&2, String>> <- Db.query(Db.q_comment_info(), cid, 0, "", token)
-        h_reply2(s, token, who, cid, info)
+        h_reply2(frag, s, token, who, cid, info)
 
 # GET /reply/<comment>: the comment, and a form to answer it.
-def h_reply(s: Socket, +token: String, +who: U32, +cid: U32) -> IO(Unit):
-  h_reply.go(signed(who), s, token, who, cid)
+def h_reply(s: Socket, +token: String, +who: U32, +cid: U32, +query: String) -> IO(Unit):
+  h_reply.go(signed(who), wants_frag(form(query)), s, token, who, cid)
 
 # ?published=1: the editor just published it (a notice, for members only).
 def just_published(+query: String) -> Bool:
@@ -1139,7 +1246,7 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
     case Route.RSearch{}:
       h_search(s, token, who, query)
     case Route.RReply{+id}:
-      h_reply(s, token, who, id)
+      h_reply(s, token, who, id, query)
     case Route.RLive{+id}:
       h_live(s, token, who, id, query)
     case Route.RTag{+t}:
@@ -1167,7 +1274,7 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
     case Route.REdit{+id}:
       h_edit(s, token, who, id)
     case Route.RStatic{+name}:
-      h_static(U32.to_nat((Bool.to_u32(String.eq(name, "editor.js")) + ((2 * Bool.to_u32(String.eq(name, "app.css"))) + ((3 * Bool.to_u32(String.eq(name, "passkey.js"))) + (4 * Bool.to_u32(String.eq(name, "post.js"))))) : U32)), s, token, who)
+      h_static(U32.to_nat((Bool.to_u32(String.eq(name, "editor.js")) + ((2 * Bool.to_u32(String.eq(name, "app.css"))) + ((3 * Bool.to_u32(String.eq(name, "passkey.js"))) + (4 * Bool.to_u32(String.eq(name, "datastar.js"))))) : U32)), s, token, who)
     case Route.RSignupPage{}:
       Auth.h_signup_page(s, token, who)
     case Route.RLoginPage{}:
@@ -1177,7 +1284,7 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
     case _:
       fail(s, token, who, 404)
 
-def write_route(s: Socket, r: Route.Route, +c: Auth.Conf, +token: String, +who: U32, +body: String) -> IO(Unit):
+def write_route(s: Socket, r: Route.Route, +c: Auth.Conf, +token: String, +who: U32, +body: String, +query: String) -> IO(Unit):
   match r:
     case Route.RCreateBlog{}:
       h_create_blog(s, token, who, body)
@@ -1200,15 +1307,15 @@ def write_route(s: Socket, r: Route.Route, +c: Auth.Conf, +token: String, +who: 
     case Route.RWrite{}:
       h_write(s, token, who)
     case Route.RLike{+id}:
-      h_like(s, token, who, id, body)
+      h_like(s, token, who, id, body, query)
     case Route.RUpload{+id}:
       h_upload(s, token, who, id, body)
     case Route.RBlogDomain{+b}:
       h_domain(s, token, who, b, body, main_host(Auth.origin(c)))
     case Route.RComment{+id}:
-      h_comment(s, token, who, id, body)
+      h_comment(s, token, who, id, body, query)
     case Route.RDeleteComment{+id}:
-      h_delete_comment(s, token, who, id)
+      h_delete_comment(s, token, who, id, query)
     case Route.RSync{+id}:
       h_sync(s, token, who, id, body)
     case Route.RSignup{}:
@@ -1232,6 +1339,6 @@ def exec(s: Socket, p: Route.Plan, +c: Auth.Conf, +token: String, +who: U32, +bo
     case Route.Read{r}:
       read(s, r, token, who, query, Auth.origin(c))
     case Route.Write{r}:
-      write_route(s, r, c, token, who, body)
+      write_route(s, r, c, token, who, body, query)
     case Route.Deny{+status}:
       fail(s, token, who, status)

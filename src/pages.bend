@@ -44,8 +44,28 @@ def nav(b: Bool) -> String:
     case False{}:
       "<a href=\"/search\" class=\"hide-sm\">Search</a><a href=\"/login\">Log in</a><a class=\"btn primary\" href=\"/signup\">Start writing</a>"
 
+# DATASTAR
+# --------
+# Datastar (vendor/datastar, CSP mode) makes pages interactive by patching
+# HTML the server renders. It compiles every data-* attribute into a script
+# with the page's nonce, so data-* attributes are code: only templates write
+# them (tools/lint.sh), and user text can never make one (the escaper).
+#
+# The nonce: <html data-nonce> holds this mark (32 characters, starting and
+# ending with byte 1, which the escaper never emits), and each response has
+# a fresh random nonce written over it (src/effects/db.c page_nonce).
+def nonce_mark() -> String:
+  SCon{Char.from_u32(1), "NONCE-MARK-0000000000000000000" ++ SCon{Char.from_u32(1), SNil{}}}
+
+# A patch in a Datastar stream (content type 2): the element(s) html put at
+# selector by mode (outer: morph by id; inner, append, replace, ...). Bytes
+# 31 and 30 separate fields and patches (src/effects/db.c page_sse): like
+# the mark, no escaped text or stored HTML contains them.
+def patch(+selector: String, +mode: String, +html: String) -> String:
+  selector ++ (SCon{Char.from_u32(31), SNil{}} ++ (mode ++ (SCon{Char.from_u32(31), SNil{}} ++ (html ++ SCon{Char.from_u32(30), SNil{}}))))
+
 def head(+title: String) -> String:
-  "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>" ++ (e(title) ++ (" · slopstack</title><link rel=\"stylesheet\" href=\"" ++ (asset("app.css") ++ "\"><link rel=\"alternate\" type=\"application/rss+xml\" title=\"slopstack\" href=\"/feed.xml\"></head><body><a class=\"skip\" href=\"#main\">Skip to content</a>")))
+  "<!doctype html><html lang=\"en\" data-nonce=\"" ++ (nonce_mark() ++ "\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>" ++ (e(title) ++ (" · slopstack</title><link rel=\"stylesheet\" href=\"" ++ (asset("app.css") ++ ("\"><link rel=\"alternate\" type=\"application/rss+xml\" title=\"slopstack\" href=\"/feed.xml\"><script type=\"module\" src=\"" ++ (asset("datastar.js") ++ "\"></script></head><body><a class=\"skip\" href=\"#main\">Skip to content</a>"))))))
 
 def top(signed_in: Bool) -> String:
   "<header class=\"top\"><div class=\"wrap wide\"><a class=\"brand\" href=\"/\">slop<span>stack</span></a><nav>" ++ (nav(signed_in) ++ "</nav></div></header>")
@@ -64,9 +84,6 @@ def layout_top(+title: String, signed_in: Bool) -> String:
   layout_top_w(title, signed_in, False{})
 
 # The post page's script (likes without a reload, live comments).
-def post_script() -> String:
-  "<script src=\"" ++ (asset("post.js") ++ "\" defer></script>")
-
 def layout_bottom() -> String:
   "</div></main></body></html>\n"
 
@@ -600,31 +617,7 @@ def page_bodies(p: Page) -> List<&2, U32>:
     case Page{ts, bs}:
       bs
 
-def like_state(liked: Bool) -> String:
-  match liked:
-    case True{}:
-      "0\"><button class=\"like on\" aria-pressed=\"true\" title=\"Unlike\">♥ "
-    case False{}:
-      "1\"><button class=\"like\" aria-pressed=\"false\" title=\"Like\">♥ "
-
-def like_button(signed: Bool, +pid: String, +likes: String, liked: Bool) -> String:
-  match signed:
-    case True{}:
-      "<form method=\"post\" action=\"/like/" ++ (e(pid) ++ ("\"><input type=\"hidden\" name=\"on\" value=\"" ++ (like_state(liked) ++ (e(likes) ++ "</button></form>"))))
-    case False{}:
-      "<a class=\"btn like\" href=\"/login\" title=\"Log in to like\">♥ " ++ (e(likes) ++ "</a>")
-
 # social: [likes, liked (0/1), comments].
-def social_bar(signed: Bool, +pid: String, +social: List<&2, String>) -> String:
-  "<div class=\"social\" id=\"social\">" ++ (like_button(signed, pid, col(social, 0n), String.eq(col(social, 1n), "1")) ++ ("<a class=\"btn quiet\" href=\"#comments\">" ++ (plural(col(social, 2n), "comment", "comments") ++ "</a></div>")))
-
-def comment_form(signed: Bool, +pid: String) -> String:
-  match signed:
-    case True{}:
-      "<form method=\"post\" action=\"/comment/" ++ (e(pid) ++ "\" class=\"stack cform\"><textarea name=\"body\" required maxlength=\"10000\" rows=\"3\" placeholder=\"Write a comment…\" aria-label=\"Comment\"></textarea><div><button class=\"primary\">Comment</button></div></form>")
-    case False{}:
-      "<p class=\"muted\"><a href=\"/login\">Log in</a> or <a href=\"/signup\">sign up</a> to comment.</p>"
-
 def closes(n: Nat) -> String:
   match n:
     case 0n:
@@ -634,20 +627,6 @@ def closes(n: Nat) -> String:
 
 def depth_of(+s: String) -> Nat:
   U32.to_nat(num(s))
-
-def reply_link(signed: Bool, +id: String) -> String:
-  match signed:
-    case True{}:
-      "<a href=\"/reply/" ++ (e(id) ++ "\">Reply</a>")
-    case False{}:
-      ""
-
-def delete_comment(b: Bool, +id: String) -> String:
-  match b:
-    case True{}:
-      "<details class=\"del\"><summary>Delete</summary><form method=\"post\" action=\"/comment/" ++ (e(id) ++ "/delete\"><button class=\"danger\">Delete this comment</button></form></details>")
-    case False{}:
-      ""
 
 # A comment's body: its stored HTML, or a note if it was deleted.
 def comment_body_seg(deleted: Bool, +id: String) -> Seg:
@@ -674,39 +653,15 @@ def comment_close_before(+prev: Maybe<&2, Nat>, +d: Nat) -> Nat:
 # A comment's replies: a <details>, open unless the thread is collapsed
 # (a top-level comment with replies, on a post with many comments). Live
 # comments are added into it by the page's script.
-def replies_open(collapse: Bool, +n: String) -> String:
-  match collapse:
-    case True{}:
-      "<details class=\"replies\"><summary>" ++ (plural(n, "reply", "replies") ++ "</summary>")
-    case False{}:
-      "<details class=\"replies\" open>"
-
 # Comment rows (see Q_COMMENTS): [id, depth, author id, author, date,
 # deleted, mine, parent, handle, replies], in thread order. Before a
 # comment at depth d, the comments it does not reply to are closed:
 # (previous depth - d + 1) of them, none for a reply to the previous one.
 # many: collapse top-level threads.
-def comment_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool, +many: Bool, +prev: Maybe<&2, Nat>) -> List<&2, Seg>:
-  match rows:
-    case Nil{}:
-      Con{T{closes(comment_open_count(prev))}, Nil{}}
-    case Con{+r, t}:
-      Con{T{closes(comment_close_before(prev, depth_of(col(r, 1n)))) ++ ("<div class=\"comment\" id=\"c" ++ (e(col(r, 0n)) ++ ("\" data-parent=\"" ++ (e(col(r, 7n)) ++ ("\"><div class=\"meta\">" ++ (author_link(col(r, 2n), col(r, 3n)) ++ (handle_tag(col(r, 8n)) ++ ("<span class=\"dot\"></span><a href=\"#c" ++ (e(col(r, 0n)) ++ ("\">" ++ (date(col(r, 4n)) ++ "</a></div><div class=\"cbody\">")))))))))))}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{"</div><div class=\"cactions\">" ++ (reply_link(signed, col(r, 0n)) ++ (delete_comment(Bool.and(Bool.not(String.eq(col(r, 5n), "1")), Bool.or(can_mod, String.eq(col(r, 6n), "1"))), col(r, 0n)) ++ ("</div>" ++ replies_open(Bool.and(many, Bool.and(Nat.is_eq(depth_of(col(r, 1n)), 0n), Bool.not(String.eq(col(r, 9n), "0")))), col(r, 9n)))))}, comment_segs(t, signed, can_mod, many, Some{depth_of(col(r, 1n))})}}}
-
 # New comments for the live update (Q_COMMENTS_AFTER rows, depth 0): each
 # complete, with its parent's id for the script to place it.
-def live_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool) -> List<&2, Seg>:
-  match rows:
-    case Nil{}:
-      Nil{}
-    case Con{+r, t}:
-      List.append(&2, Seg, comment_segs(Con{r, Nil{}}, signed, can_mod, False{}, None{}), live_segs(t, signed, can_mod))
-
 # The thread is in #thread; data-post and data-last let the page's script
 # ask for newer comments.
-def comments_section(+signed: Bool, +can_mod: Bool, +pid: String, +count: String, +last: String, rows: List<&2, List<&2, String>>) -> List<&2, Seg>:
-  Con{T{"<section class=\"comments\" id=\"comments\"><h2>Comments</h2>" ++ (comment_form(signed, pid) ++ ("<div id=\"thread\" data-post=\"" ++ (e(pid) ++ ("\" data-last=\"" ++ (e(last) ++ "\">")))))}, List.append(&2, Seg, comment_segs(rows, signed, can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), None{}), Con{T{"</div></section>"}, Nil{}})}
-
 # The reply page: the comment replied to (its body spliced after the first
 # text), and a form. info: [post id, author id, author, date, deleted].
 def reply_before(+info: List<&2, String>, +back: String) -> String:
@@ -714,3 +669,120 @@ def reply_before(+info: List<&2, String>, +back: String) -> String:
 
 def reply_after(+info: List<&2, String>, +cid: String, +back: String) -> String:
   "</div></div><form method=\"post\" action=\"/comment/" ++ (e(col(info, 0n)) ++ ("\" class=\"stack cform\"><input type=\"hidden\" name=\"parent\" value=\"" ++ (e(cid) ++ ("\"><textarea name=\"body\" required maxlength=\"10000\" rows=\"4\" placeholder=\"Write a reply…\" aria-label=\"Reply\" autofocus></textarea><div class=\"row\"><button class=\"primary\">Reply</button><a class=\"btn quiet\" href=\"" ++ (e(back) ++ "\">Cancel</a></div></form>")))))
+
+# INTERACTIVE POST PAGE (Datastar)
+# --------------------------------
+# Every form and link below also works without JavaScript (a normal post
+# or page load); with Datastar the same URL with ?frag=1 answers a stream
+# of patches instead. Expressions only ever contain numbers the server
+# wrote (ids), never user text.
+def like_state(liked: Bool) -> String:
+  match liked:
+    case True{}:
+      "0\"><button class=\"like on\" aria-pressed=\"true\" title=\"Unlike\" data-attr:disabled=\"$_liking\">♥ "
+    case False{}:
+      "1\"><button class=\"like\" aria-pressed=\"false\" title=\"Like\" data-attr:disabled=\"$_liking\">♥ "
+
+def like_button(signed: Bool, +pid: String, +likes: String, liked: Bool) -> String:
+  match signed:
+    case True{}:
+      "<form method=\"post\" action=\"/like/" ++ (e(pid) ++ ("\" data-on:submit=\"@post('/like/" ++ (e(pid) ++ ("?frag=1', {contentType: 'form'})\" data-indicator:_liking><input type=\"hidden\" name=\"on\" value=\"" ++ (like_state(liked) ++ (e(likes) ++ "</button></form>"))))))
+    case False{}:
+      "<a class=\"btn like\" href=\"/login\" title=\"Log in to like\">♥ " ++ (e(likes) ++ "</a>")
+
+# social: [likes, liked (0/1), comments].
+def social_bar(signed: Bool, +pid: String, +social: List<&2, String>) -> String:
+  "<div class=\"social\" id=\"social\">" ++ (like_button(signed, pid, col(social, 0n), String.eq(col(social, 1n), "1")) ++ ("<a class=\"btn quiet\" href=\"#comments\">" ++ (plural(col(social, 2n), "comment", "comments") ++ "</a></div>")))
+
+# The comment box; parent 0 for a new thread, else a reply (shown inline).
+def comment_box(+pid: String, +parent: String, +id: String, +rows: String, +label: String, +extra: String) -> String:
+  "<form id=\"" ++ (e(id) ++ ("\" method=\"post\" action=\"/comment/" ++ (e(pid) ++ ("\" class=\"stack cform\" data-on:submit=\"@post('/comment/" ++ (e(pid) ++ ("?frag=1', {contentType: 'form'})\" data-indicator:_sending><input type=\"hidden\" name=\"parent\" value=\"" ++ (e(parent) ++ ("\"><textarea name=\"body\" required maxlength=\"10000\" rows=\"" ++ (e(rows) ++ ("\" placeholder=\"" ++ (e(label) ++ ("…\" aria-label=\"" ++ (e(label) ++ ("\"></textarea><p class=\"form-note meta\" id=\"" ++ (e(id) ++ ("-note\"></p><div class=\"row\"><button class=\"primary\" data-attr:disabled=\"$_sending\">Send</button>" ++ (extra ++ "</div></form>")))))))))))))))))
+
+def comment_form(signed: Bool, +pid: String) -> String:
+  match signed:
+    case True{}:
+      comment_box(pid, "0", "cform", "3", "Write a comment", "")
+    case False{}:
+      "<p class=\"muted\"><a href=\"/login\">Log in</a> or <a href=\"/signup\">sign up</a> to comment.</p>"
+
+# Inline reply form, patched into #rf<id> by /reply/<id>?frag=1.
+def reply_box(+pid: String, +cid: String) -> String:
+  comment_box(pid, cid, "rff" ++ cid, "3", "Write a reply", "<button type=\"button\" class=\"quiet\" data-on:click=\"document.getElementById('rf" ++ (e(cid) ++ "').replaceChildren()\">Cancel</button>"))
+
+def reply_link(signed: Bool, +id: String) -> String:
+  match signed:
+    case True{}:
+      "<a href=\"/reply/" ++ (e(id) ++ ("\" data-on:click__prevent=\"@get('/reply/" ++ (e(id) ++ "?frag=1')\">Reply</a>")))
+    case False{}:
+      ""
+
+def delete_comment(b: Bool, +id: String) -> String:
+  match b:
+    case True{}:
+      "<details class=\"del\"><summary>Delete</summary><form method=\"post\" action=\"/comment/" ++ (e(id) ++ ("/delete\" data-on:submit=\"@post('/comment/" ++ (e(id) ++ "/delete?frag=1', {contentType: 'form'})\"><button class=\"danger\">Delete this comment</button></form></details>")))
+    case False{}:
+      ""
+
+# A comment's replies: a <details id="r<id>">, open unless the thread is
+# collapsed (a top-level comment with replies, on a post with many
+# comments). Live replies are appended into it.
+def replies_open(collapse: Bool, +id: String, +n: String) -> String:
+  match collapse:
+    case True{}:
+      "<details class=\"replies\" id=\"r" ++ (e(id) ++ ("\"><summary>" ++ (plural(n, "reply", "replies") ++ "</summary>")))
+    case False{}:
+      "<details class=\"replies\" id=\"r" ++ (e(id) ++ "\" open>")
+
+# A comment row (see Q_COMMENTS): [id, depth, author id, author, date,
+# deleted, mine, parent, handle, replies]. Before its body:
+def comment_open(+r: List<&2, String>) -> String:
+  "<div class=\"comment\" id=\"c" ++ (e(col(r, 0n)) ++ ("\" data-parent=\"" ++ (e(col(r, 7n)) ++ ("\"><div class=\"meta\">" ++ (author_link(col(r, 2n), col(r, 3n)) ++ (handle_tag(col(r, 8n)) ++ ("<span class=\"dot\"></span><a href=\"#c" ++ (e(col(r, 0n)) ++ ("\">" ++ (date(col(r, 4n)) ++ ("</a></div><div class=\"cbody\" id=\"cb" ++ (e(col(r, 0n)) ++ "\">"))))))))))))
+
+# After its body: actions, the inline reply slot, and its replies opened.
+def comment_after(+r: List<&2, String>, +signed: Bool, +can_mod: Bool, +collapse: Bool) -> String:
+  "</div><div class=\"cactions\" id=\"ca" ++ (e(col(r, 0n)) ++ ("\">" ++ (reply_link(signed, col(r, 0n)) ++ (delete_comment(Bool.and(Bool.not(String.eq(col(r, 5n), "1")), Bool.or(can_mod, String.eq(col(r, 6n), "1"))), col(r, 0n)) ++ ("</div><div class=\"rf\" id=\"rf" ++ (e(col(r, 0n)) ++ ("\"></div>" ++ replies_open(collapse, col(r, 0n), col(r, 9n)))))))))
+
+# The thread in thread order. Before a comment at depth d, the comments it
+# does not reply to are closed: (previous depth - d + 1) of them, none for
+# a reply to the previous one. many: collapse top-level threads.
+def comment_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool, +many: Bool, +prev: Maybe<&2, Nat>) -> List<&2, Seg>:
+  match rows:
+    case Nil{}:
+      Con{T{closes(comment_open_count(prev))}, Nil{}}
+    case Con{+r, t}:
+      Con{T{closes(comment_close_before(prev, depth_of(col(r, 1n)))) ++ comment_open(r)}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{comment_after(r, signed, can_mod, Bool.and(many, Bool.and(Nat.is_eq(depth_of(col(r, 1n)), 0n), Bool.not(String.eq(col(r, 9n), "0")))))}, comment_segs(t, signed, can_mod, many, Some{depth_of(col(r, 1n))})}}}
+
+def live_attr(busy: Bool) -> String:
+  match busy:
+    case True{}:
+      "data-init__delay.20s"
+    case False{}:
+      "data-init"
+
+# The element that keeps the live update going: each answer patches it
+# with the next request (n changes every time, so Datastar re-runs it).
+# busy: wait before asking (too many readers waiting).
+def live_div(+pid: String, +after: String, +n: String, busy: Bool) -> String:
+  "<div id=\"live\" " ++ (live_attr(busy) ++ ("=\"@get('/live/" ++ (e(pid) ++ ("?after=" ++ (e(after) ++ ("&amp;n=" ++ (e(n) ++ "', {requestCancellation: 'cleanup'})\"></div>")))))))
+
+def live_target.go(top: Bool, +parent: String) -> String:
+  match top:
+    case True{}:
+      "#thread"
+    case False{}:
+      "#r" ++ parent
+
+# New comments for the live update (Q_COMMENTS_AFTER rows): each appended
+# to its parent's replies, or to the thread.
+def live_target(+parent: String) -> String:
+  live_target.go(String.eq(parent, "0"), parent)
+
+def live_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool) -> List<&2, Seg>:
+  match rows:
+    case Nil{}:
+      Nil{}
+    case Con{+r, t}:
+      Con{T{live_target(col(r, 7n)) ++ (SCon{Char.from_u32(31), SNil{}} ++ ("append" ++ (SCon{Char.from_u32(31), SNil{}} ++ comment_open(r))))}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{comment_after(r, signed, can_mod, False{}) ++ ("</details></div>" ++ SCon{Char.from_u32(30), SNil{}})}, live_segs(t, signed, can_mod)}}}
+
+def comments_section(+signed: Bool, +can_mod: Bool, +pid: String, +count: String, +last: String, rows: List<&2, List<&2, String>>) -> List<&2, Seg>:
+  Con{T{"<section class=\"comments\" id=\"comments\"><h2>Comments</h2>" ++ (comment_form(signed, pid) ++ (live_div(pid, last, "0", False{}) ++ "<div id=\"thread\">"))}, List.append(&2, Seg, comment_segs(rows, signed, can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), None{}), Con{T{"</div></section>"}, Nil{}})}

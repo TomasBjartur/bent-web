@@ -379,6 +379,73 @@ static void page_body_put(void *ctx, const char *p, uint32_t n) {
   page_put((PageOut *)ctx, p, n);
 }
 
+// NONCES AND DATASTAR STREAMS
+// ----------------------------
+// A page's <html data-nonce="..."> holds PAGE_NONCE_MARK (from
+// src/pages.bend nonce_mark): 32 bytes starting and ending with byte 1,
+// which the proved escaper never emits and stored HTML never contains, so
+// only a template can write it. Each response replaces it with a fresh
+// random nonce (32 hex digits), the one its CSP header allows; a cached
+// page gets a new one each time it is served.
+static const char PAGE_NONCE_MARK[] = "\x01" "NONCE-MARK-0000000000000000000" "\x01";
+#define PAGE_NONCE_LEN 32u
+
+// Fills nonce (32 hex + NUL) and writes it over the mark in body, if any.
+static void page_nonce(PageOut *body, char nonce[PAGE_NONCE_LEN + 1u]) {
+  _Static_assert(sizeof PAGE_NONCE_MARK - 1u == PAGE_NONCE_LEN, "nonce mark length");
+  uint8_t raw[PAGE_NONCE_LEN / 2u];
+  if (getrandom(raw, sizeof raw, 0) != (ssize_t)sizeof raw) err_fail("getrandom");
+  static const char hx[] = "0123456789abcdef";
+  for (uint32_t i = 0; i < sizeof raw; i++) {
+    nonce[2u * i] = hx[raw[i] >> 4];
+    nonce[2u * i + 1u] = hx[raw[i] & 15u];
+  }
+  nonce[PAGE_NONCE_LEN] = 0;
+  char *m = body->len >= PAGE_NONCE_LEN ? memmem(body->buf, body->len, PAGE_NONCE_MARK, PAGE_NONCE_LEN) : NULL;
+  if (m != NULL) memcpy(m, nonce, PAGE_NONCE_LEN);
+}
+
+// Content type 2 (text/event-stream): the body the templates made is a
+// list of patches, each "selector \x1f mode \x1f html \x1e" (bytes 31 and
+// 30: like the mark, never in escaped text or stored HTML). Rewritten as
+// Datastar SSE events: event: datastar-patch-elements, data: selector,
+// data: mode, and one data: elements line per line of HTML.
+static PageOut page_sse(const PageOut *in) {
+  PageOut out = {io_mem(malloc(in->len + 256u)), 0, in->len + 256u, 0};
+  const char *p = in->buf, *end = in->buf + in->len;
+  for (uint32_t guard = 0; p < end && guard < 100000u; guard++) {
+    const char *rec = memchr(p, 0x1e, (size_t)(end - p));
+    if (rec == NULL) rec = end;
+    const char *f1 = memchr(p, 0x1f, (size_t)(rec - p));
+    const char *f2 = f1 != NULL ? memchr(f1 + 1, 0x1f, (size_t)(rec - f1 - 1)) : NULL;
+    if (f2 != NULL) {
+      page_put(&out, "event: datastar-patch-elements\n", 31);
+      if (f1 > p) {
+        page_put(&out, "data: selector ", 15);
+        page_put(&out, p, (u64)(f1 - p));
+        page_put(&out, "\n", 1);
+      }
+      if (f2 > f1 + 1) {
+        page_put(&out, "data: mode ", 11);
+        page_put(&out, f1 + 1, (u64)(f2 - f1 - 1));
+        page_put(&out, "\n", 1);
+      }
+      for (const char *l = f2 + 1; l < rec;) {
+        const char *nl = memchr(l, '\n', (size_t)(rec - l));
+        const char *le = nl != NULL ? nl : rec;
+        page_put(&out, "data: elements ", 15);
+        page_put(&out, l, (u64)(le - l));
+        page_put(&out, "\n", 1);
+        l = nl != NULL ? nl + 1 : rec;
+      }
+      page_put(&out, "\n", 1);
+    }
+    p = rec + 1;
+  }
+  if (in->overflow) out.overflow = 1;
+  return out;
+}
+
 static Term page_more(Env e, IoWork *w) {
   int fd = (int)w->hand;
   u64 deadline = (u64)(uintptr_t)w->text;
@@ -402,17 +469,12 @@ static Term page_more(Env e, IoWork *w) {
   return io_tup(e, io_hand(w->hand), done ? io_done(e, term_pak(CID(Unit), 0)) : io_fail(e, 1, NULL));
 }
 
-static Term page_run(Env e, Term *f, IoWork *w) {
-  ASSERT(app_db_ready);
-  w->hand = (intptr_t)io_hand_v(f[0]);
-  uint32_t status = (uint32_t)f[1], ctype = (uint32_t)f[2];
-  uint8_t h[32];
-  app_token_hash(e, f[5], h);
-  u64 cn = 0, ln = 0;
-  char *cookie = io_cstr(e, f[6], &cn);
-  char *loc = io_cstr(e, f[7], &ln);
+// texts[0] body[0] texts[1] body[1] ... texts[n]: each body id a post's
+// stored HTML (or, with PAGE_COMMENT_BIT, a comment's), spliced only if the
+// session (token hash h) may read it (db_body's floor).
+static PageOut page_body(Env e, Term texts, Term ids, const uint8_t h[32]) {
   PageOut body = {io_mem(malloc(16384)), 0, 16384, 0};
-  Term texts = f[3], ids = f[4], x, rest;
+  Term x, rest;
   uint64_t now = app_now_ms();
   for (uint32_t i = 0; i < 100000u && app_uncons(e, CID(Con), texts, &x, &rest); i++) {
     u64 n = 0;
@@ -430,6 +492,19 @@ static Term page_run(Env e, Term *f, IoWork *w) {
       ids = rest;
     }
   }
+  return body;
+}
+
+static Term page_run(Env e, Term *f, IoWork *w) {
+  ASSERT(app_db_ready);
+  w->hand = (intptr_t)io_hand_v(f[0]);
+  uint32_t status = (uint32_t)f[1], ctype = (uint32_t)f[2];
+  uint8_t h[32];
+  app_token_hash(e, f[5], h);
+  u64 cn = 0, ln = 0;
+  char *cookie = io_cstr(e, f[6], &cn);
+  char *loc = io_cstr(e, f[7], &ln);
+  PageOut body = page_body(e, f[3], f[4], h);
   const char *reason = page_reason(status);
   int cookie_ok = cn == 0u || (cn == 1u && cookie[0] == '-');
   uint8_t tmp[TOKEN_BYTES];
@@ -444,9 +519,19 @@ static Term page_run(Env e, Term *f, IoWork *w) {
     cn = 0;
     ln = 0;
   }
+  if (ctype == 2u && body.len > 0u) {
+    PageOut sse = page_sse(&body);
+    free(body.buf);
+    body = sse;
+    if (body.overflow) body.len = 0;
+  }
+  char nonce[PAGE_NONCE_LEN + 1u], csp[512];
+  page_nonce(&body, nonce);
+  int cn2 = snprintf(csp, sizeof csp, NET_HTML_CSP_FMT, nonce);
+  ASSERT(cn2 > 0 && (size_t)cn2 < sizeof csp);
   char head[2048];
-  int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s",
-                    status, reason, page_ctypes[ctype], (unsigned long long)body.len, NET_SECURITY_HEADERS, NET_NO_STORE);
+  int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s%s",
+                    status, reason, page_ctypes[ctype], (unsigned long long)body.len, csp, NET_OTHER_HEADERS, NET_NO_STORE);
   ASSERT(hn > 0 && (size_t)hn < sizeof head);
   if (cn == TOKEN_HEX) {
     hn += snprintf(head + hn, sizeof head - (size_t)hn,
@@ -476,6 +561,83 @@ static Term page_run(Env e, Term *f, IoWork *w) {
 #ifdef CID(page)
 static void __attribute__((constructor)) page_use(void) {
   io_eff(CID(page), page_run, 0);
+}
+#endif
+
+// STREAMS
+// -------
+// A long-lived response (a Datastar event stream): stream_open sends the
+// head (no Content-Length: the body ends when the connection closes),
+// stream_send sends one chunk and leaves the connection open. Both answer
+// Fail when the reader has gone, which ends the handler's loop.
+// stream_send(sock, raw, texts, bodies, token): raw 1 sends the text as
+// it is (an SSE comment, e.g. a keep-alive); raw 0 sends patches (as
+// page(), content type 2).
+static Term stream_more(Env e, IoWork *w) {
+  int fd = (int)w->hand;
+  u64 deadline = (u64)(uintptr_t)w->text;
+  for (uint32_t step = 0; step < RESPONSE_BYTES_MAX && (u64)w->made < w->size; step++) {
+    ssize_t n = send(fd, w->data + w->made, w->size - (u64)w->made, MSG_NOSIGNAL);
+    if (n < 0 && errno == EAGAIN) {
+      if (io_tick() >= deadline) break;
+      return io_wait_on(w, fd, POLLOUT, deadline, stream_more);
+    }
+    if (n <= 0) break;
+    w->made += n;
+  }
+  int done = (u64)w->made == w->size;
+  free(w->data);
+  w->data = NULL;
+  return io_tup(e, io_hand(w->hand), done ? io_done(e, term_pak(CID(Unit), 0)) : io_fail(e, 1, NULL));
+}
+
+static Term stream_start(Env e, IoWork *w, char *out, u64 len) {
+  w->data = out;
+  w->size = len;
+  w->made = 0;
+  w->code = 0;
+  w->text = (char *)(uintptr_t)(io_tick() + 10000ull * 1000000ull);
+  return stream_more(e, w);
+}
+
+#ifdef CID(stream_open)
+Term stream_open_run(Env e, Term *f, IoWork *w) {
+  w->hand = (intptr_t)io_hand_v(f[0]);
+  char head[1024];
+  int hn = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n%s%s\r\n",
+                    NET_SECURITY_HEADERS, NET_NO_STORE);
+  ASSERT(hn > 0 && (size_t)hn < sizeof head);
+  char *out = io_mem(malloc((size_t)hn));
+  memcpy(out, head, (size_t)hn);
+  return stream_start(e, w, out, (u64)hn);
+}
+
+static void __attribute__((constructor)) stream_open_use(void) {
+  io_eff(CID(stream_open), stream_open_run, 0);
+}
+#endif
+
+#ifdef CID(stream_send)
+Term stream_send_run(Env e, Term *f, IoWork *w) {
+  ASSERT(app_db_ready);
+  w->hand = (intptr_t)io_hand_v(f[0]);
+  uint8_t h[32];
+  app_token_hash(e, f[4], h);
+  PageOut body = page_body(e, f[2], f[3], h);
+  if ((uint32_t)f[1] == 0u) {
+    PageOut sse = page_sse(&body);
+    free(body.buf);
+    body = sse;
+  }
+  if (body.overflow) {
+    free(body.buf);
+    return io_tup(e, io_hand(w->hand), io_fail(e, 1, NULL));
+  }
+  return stream_start(e, w, body.buf, body.len);
+}
+
+static void __attribute__((constructor)) stream_send_use(void) {
+  io_eff(CID(stream_send), stream_send_run, 0);
 }
 #endif
 
@@ -772,9 +934,13 @@ static uint32_t page_cache_slot(const char *k, u64 n) {
 // ownership of it.
 static Term page_emit(Env e, IoWork *w, uint32_t ctype, PageOut *body) {
   ASSERT(ctype < sizeof page_ctypes / sizeof page_ctypes[0]);
+  char nonce[PAGE_NONCE_LEN + 1u], csp[512];
+  page_nonce(body, nonce);
+  int cn = snprintf(csp, sizeof csp, NET_HTML_CSP_FMT, nonce);
+  ASSERT(cn > 0 && (size_t)cn < sizeof csp);
   char head[1024];
-  int hn = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s\r\n",
-                    page_ctypes[ctype], (unsigned long long)body->len, NET_SECURITY_HEADERS, NET_NO_STORE);
+  int hn = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s%s\r\n",
+                    page_ctypes[ctype], (unsigned long long)body->len, csp, NET_OTHER_HEADERS, NET_NO_STORE);
   ASSERT(hn > 0 && (size_t)hn < sizeof head);
   u64 total = (u64)hn + body->len;
   char *out = io_mem(malloc(total));
@@ -854,6 +1020,11 @@ Term page_cache_put_run(Env e, Term *f, IoWork *w) {
       }
       ids = rest;
     }
+  }
+  if (ctype == 2u && !body.overflow) {
+    PageOut sse = page_sse(&body);
+    free(body.buf);
+    body = sse;
   }
   if (body.overflow || ctype >= sizeof page_ctypes / sizeof page_ctypes[0]) {
     free(key);
@@ -935,8 +1106,7 @@ static void __attribute__((constructor)) sync_page_use(void) {
 // ------
 // asset(sock, id): static files embedded at compile time, served as bytes
 // with immutable caching (pages link them with a ?v=<hash> query).
-// 0 the editor bundle, 1 the stylesheet, 2 the passkey script, 3 the post
-// page's script.
+// 0 the editor bundle, 1 the stylesheet, 2 the passkey script, 3 Datastar.
 
 #ifdef CID(asset)
 
@@ -949,8 +1119,8 @@ static const char ASSET_CSS[] = {
 static const char ASSET_PASSKEY[] = {
 #embed "../src/web/passkey.js"
 };
-static const char ASSET_POST[] = {
-#embed "../src/web/post.js"
+static const char ASSET_DATASTAR[] = {
+#embed "../vendor/datastar/datastar.js"
 };
 
 Term asset_run(Env e, Term *f, IoWork *w) {
@@ -962,7 +1132,7 @@ Term asset_run(Env e, Term *f, IoWork *w) {
   if (id == 0u) { data = ASSET_EDITOR; len = sizeof ASSET_EDITOR; }
   else if (id == 1u) { data = ASSET_CSS; len = sizeof ASSET_CSS; type = "text/css; charset=utf-8"; }
   else if (id == 2u) { data = ASSET_PASSKEY; len = sizeof ASSET_PASSKEY; }
-  else if (id == 3u) { data = ASSET_POST; len = sizeof ASSET_POST; }
+  else if (id == 3u) { data = ASSET_DATASTAR; len = sizeof ASSET_DATASTAR; }
   uint32_t status = len > 0u ? 200u : 404u;
   char head[1024];
   int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s\r\n",

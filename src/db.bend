@@ -147,6 +147,16 @@ def upload(+token: String, p: Authz.Permit, bytes: String) -> IO(Result<&1, &1, 
 def image(sock: Socket, key: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
   import "./effects/db.c"
 
+# A long-lived event stream (src/effects/db.c STREAMS): open sends the
+# head; send sends one chunk (raw 1: text as it is; 0: patches, with
+# bodies spliced as for page) and keeps the connection open. Fail: the
+# reader has gone.
+def stream_open(sock: Socket) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+  import "./effects/db.c"
+
+def stream_send(sock: Socket, raw: U32, texts: List<&2, String>, bodies: List<&2, U32>, token: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+  import "./effects/db.c"
+
 # Waits for a comment on post newer than after: 1 there is one (at once if
 # already so), 0 timed out, 2 too many waiting (ask again later).
 def comment_wait(post: U32, after: U32, timeout_ms: U32) -> IO(U32):

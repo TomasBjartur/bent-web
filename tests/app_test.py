@@ -71,6 +71,32 @@ def raw_post(path, token, data, site="same-origin"):
     return (int(h.split(b" ")[1]) if h.startswith(b"HTTP/1.1 ") else 0), body.decode("latin-1")
 
 
+def stream_read(path, token=None, want="", secs=5.0):
+    """Reads an event stream until `want` appears or secs pass; answers the
+    status and what came."""
+    s = socket.create_connection(("127.0.0.1", PORT), timeout=secs)
+    h = f"GET {path} HTTP/1.1\r\nHost: localhost\r\n"
+    if token:
+        h += f"Cookie: sid={token}\r\n"
+    s.sendall((h + "\r\n").encode())
+    out, end = b"", time.time() + secs
+    try:
+        while time.time() < end:
+            s.settimeout(max(0.05, end - time.time()))
+            b = s.recv(65536)
+            if not b:
+                break
+            out += b
+            if want and want.encode() in out:
+                break
+    except socket.timeout:
+        pass
+    s.close()
+    head, _, body = out.partition(b"\r\n\r\n")
+    st = int(head.split(b" ")[1]) if head.startswith(b"HTTP/1.1 ") else 0
+    return st, body.decode("utf-8", "replace"), head.decode("latin-1")
+
+
 def raw_get(path):
     s = socket.create_connection(("127.0.0.1", PORT), timeout=10)
     s.sendall(f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode())
@@ -584,25 +610,30 @@ def run(dbpath):
     # Without reloads: likes answer with the button, comments with an id;
     # /live answers new comments at once, or when one is written.
     import threading
-    st, _, frag, head = req("POST", f"/like/{tpid}", c, {"on": "1", "frag": "1"})
+    st, _, frag, head = req("POST", f"/like/{tpid}?frag=1", c, {"on": "1"})
     check("like with frag: the new button, no redirect", st == 200 and 'id="social"' in frag and "<html" not in frag and 'class="like on"' in frag, (st, frag[:200]))
-    st, _, text, _ = req("POST", f"/comment/{tpid}", b, {"body": "Live one", "frag": "1"})
-    check("comment with frag: its id", st == 200 and text.strip().isdigit(), (st, text))
-    live_id = int(text.strip())
-    st, _, frag, _ = req("GET", f"/live/{tpid}?after={live_id - 1}")
-    check("live: a newer comment is answered at once", st == 200 and f'id="c{live_id}"' in frag and "Live one" in frag and "<html" not in frag, (st, frag[:300]))
+    st, _, text, head = req("POST", f"/comment/{tpid}?frag=1", b, {"body": "Live one"})
+    check("comment with frag: the box is emptied (Datastar events)", st == 200 and "text/event-stream" in head and "datastar-patch-elements" in text and 'id="cform"' in text, (st, text[:300]))
+    live_id = db.execute("SELECT max(id) FROM comment WHERE post_id = ?", (tpid,)).fetchall()[0][0]
+    st, text, head = stream_read(f"/live/{tpid}?after={live_id - 1}&n=0", None, "Live one")
+    check("live: a newer comment is pushed at once, appended to the thread", st == 200 and "text/event-stream" in head and "data: selector #thread" in text and "data: mode append" in text and "Live one" in text, (st, text[:400]))
     got = {}
     def wait():
-        got["r"] = req("GET", f"/live/{tpid}?after={live_id}")
+        got["r"] = stream_read(f"/live/{tpid}?after={live_id}&n=0", None, "Wakes the reader", 8)
     th = threading.Thread(target=wait)
     t0 = time.time()
     th.start()
-    time.sleep(0.5)
-    st, _, text, _ = req("POST", f"/comment/{tpid}", b, {"body": "Wakes the reader", "parent": str(live_id), "frag": "1"})
+    time.sleep(0.8)
+    st, _, text, _ = req("POST", f"/comment/{tpid}?frag=1", b, {"body": "Wakes the reader", "parent": str(live_id)})
     th.join(10)
     r = got.get("r")
-    check("live: a waiting reader is woken by a new comment", r and r[0] == 200 and "Wakes the reader" in r[2] and f'data-parent="{live_id}"' in r[2] and time.time() - t0 < 5,
-          (r and r[0], time.time() - t0))
+    check("live: an open stream gets a new reply at once, under its parent", r and "Wakes the reader" in r[1] and f"data: selector #r{live_id}" in r[1] and time.time() - t0 < 4,
+          (r and r[1][-300:], time.time() - t0))
+    check("reply sent: its inline form is removed", "data: selector #rff" in text and "data: mode remove" in text, text[:300])
+    st, _, frag, head = req("GET", f"/reply/{live_id}?frag=1", b)
+    check("reply with frag: the form, inline", st == 200 and f"data: selector #rf{live_id}" in frag and f'id="rff{live_id}"' in frag, frag[:300])
+    st, _, frag, _ = req("POST", f"/comment/{live_id}/delete?frag=1", b)
+    check("delete with frag: [deleted] in place", st == 200 and f"#cb{live_id}" in frag and "[deleted]" in frag, frag[:300])
     st, _, _, _ = req("GET", f"/live/{qd}?after=0")
     check("live: not for a draft (404)", st == 404, st)
     st, _, _, _ = req("GET", f"/live/{qd}?after=0", c)
@@ -619,7 +650,7 @@ def run(dbpath):
     q.commit()
     q.close()
     _, _, body, _ = req("GET", "/b/bob-s-great-blog/busy")
-    check("long thread: top-level replies collapsed", '<details class="replies"><summary>3 replies</summary>' in body, body[body.find(f'id="c{first}"'):][:600])
+    check("long thread: top-level replies collapsed", f'<details class="replies" id="r{first}"><summary>3 replies</summary>' in body, body[body.find(f'id="c{first}"'):][:600])
     _, _, body, _ = req("GET", "/b/bob-s-great-blog/talk")
     check("short thread: replies open", '<details class="replies"><summary>' not in body)
 
