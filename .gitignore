@@ -1,0 +1,20 @@
+# build outputs
+*.o
+spike/**/render_c
+spike/**/render_bend
+spike/**/render_bend.c
+spike/**/parts
+spike/**/c_server
+spike/**/demo_server
+spike/**/page_server
+spike/**/page_server[0-9]
+spike/**/db_server
+spike/**/db_server_sync
+spike/**/db_server.c
+spike/**/qbench
+spike/**/loadgen/loadgen
+spike/**/*.html
+# data
+*.db
+*.db-wal
+*.db-shm
