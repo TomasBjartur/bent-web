@@ -18,3 +18,4 @@ spike/**/*.html
 *.db
 *.db-wal
 *.db-shm
+build/

@@ -120,6 +120,14 @@ Clang only (Bend requires it). All builds:
 -fno-strict-aliasing -fPIE -pie -Wl,-z,relro,-z,now
 ```
 
+Exception: the server binary is one translation unit containing Bend's
+runtime. There, `-ftrivial-auto-var-init=zero` is omitted (clang 19 runs
+out of registers on the runtime with it), and warnings are not enforced
+because the runtime is not our code. Our pure C cores (`src/c/`) are also
+compiled standalone with every flag above and `-Werror`, by
+`tests/c/build.sh`. Keep logic in the cores and glue in `src/effects/`
+thin.
+
 Debug and test builds also add `-fsanitize=address,undefined` (and
 `-fsanitize=thread` for code using `io_work`).
 
