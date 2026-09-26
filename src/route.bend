@@ -51,6 +51,7 @@ type Route is Data:
   RBlogDomain{blog: String}
   RDomainAsk{}
   RToMain{path: String}
+  RHandle{}
   RNotFound{}
 
 type Plan is Data:
@@ -98,6 +99,8 @@ def get1(k: Nat, +a: String) -> Route:
       RSearch{}
     case 8n:
       RDomainAsk{}
+    case 9n:
+      RHandle{}
     case _:
       RNotFound{}
 
@@ -141,7 +144,7 @@ def route_get(xs: List<&2, String>) -> Route:
     case Con{+a, t}:
       match t:
         case Nil{}:
-          get1(Nat.add(eq(a, "healthz"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.add(Nat.mul(eq(a, "login"), 4n), Nat.add(Nat.mul(eq(a, "verify"), 5n), Nat.add(Nat.mul(eq(a, "feed.xml"), 6n), Nat.add(Nat.mul(eq(a, "search"), 7n), Nat.mul(eq(a, "_domain"), 8n)))))))), a)
+          get1(Nat.add(eq(a, "healthz"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.add(Nat.mul(eq(a, "login"), 4n), Nat.add(Nat.mul(eq(a, "verify"), 5n), Nat.add(Nat.mul(eq(a, "feed.xml"), 6n), Nat.add(Nat.mul(eq(a, "search"), 7n), Nat.add(Nat.mul(eq(a, "_domain"), 8n), Nat.mul(eq(a, "handle"), 9n))))))))), a)
         case Con{+b, u}:
           match u:
             case Nil{}:

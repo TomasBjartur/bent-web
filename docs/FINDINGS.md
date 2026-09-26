@@ -12,20 +12,28 @@ of every large value before the column it wants, so post bodies moved out
 of the post row) and a search that ranked every match on the single event
 loop (a denial of service by typing a common word).
 
-**Datastar, considered.** The plan named it for server-driven updates. By
-default it compiles expressions with Function(), needing 'unsafe-eval';
-its CSP mode needs a fresh nonce per full page, which our shared page
-cache cannot give (a nonce reused across readers is no defense). Our
-proofs do rule out its main risk (user content becoming data-* code: the
-escaper and markup spec cannot emit attributes). What we needed (in-place
-likes, sending comments, live comments) took 3 KB of our own script with
-script-src 'self'. Worth revisiting for uncached, interaction-heavy pages
-(dashboard, editor), where a per-response nonce fits.
+**Datastar: first set aside, then adopted.** By default it compiles
+expressions with Function() ('unsafe-eval'); its CSP mode needs a fresh
+nonce per full page, which looked incompatible with a shared page cache.
+It is not: pages hold a mark only templates can write (bookended by byte
+1, which the proved escaper never emits), and C writes a fresh nonce over
+it on every serve, cached or not, matching the CSP header. Its main risk,
+user content becoming executable data-* expressions, is ruled out by the
+escaper's proof; that templates never put user text into an expression is
+checked on rendered pages with hostile titles, tags and comments
+(tests/app_test.py: every expression must match a template where only
+numbers and slugs vary). Cost: 13 KB gzipped, cached. Used for likes,
+comments and inline replies, deletes, live comments, search as you type,
+"older posts" in place, the username check and co-authors; every form and
+link still works without JavaScript.
 
-**Live comments by long polling, parked in C.** A reader's request waits
-on its own eventfd; writing a comment wakes that post's waiters. The Bend
-runtime select()s over every parked request on each loop pass, so waiters
-are capped (512) and hidden tabs do not wait.
+**Live comments: one open stream per reader.** First built as long
+polling; now a Datastar event stream held open: the handler loops (wait
+for a comment on the post's eventfd, push patches) with a keep-alive every
+25 s that also finds readers who left, and renews itself through a
+patched element every ~10 minutes. The Bend runtime select()s over every
+parked request each pass, so open streams are capped (512 per process);
+hidden tabs close theirs (Datastar's default).
 
 **Uniqueness is not a proof.** Handles are unique by a database index;
 Bend proves only their shape (ASCII, lowered: no case or look-alike

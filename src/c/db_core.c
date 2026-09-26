@@ -146,7 +146,7 @@ static const char *const DB_Q[Q_COUNT] = {
                       "FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.blog_id = ?1 AND p.published = 1 "
                       "ORDER BY p.published_ms DESC LIMIT 31 OFFSET ?2"),
   [Q_RECENT_PUBLIC] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.published = 1 "
-                       "ORDER BY p.published_ms DESC LIMIT 30"),
+                       "ORDER BY p.published_ms DESC LIMIT 31 OFFSET ?2"),
   [Q_POST_VIEW] = ("SELECT p.slug, p.title, p.published, b.slug, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_MINUTES ", p.author_id, "
                    "coalesce((SELECT handle FROM user WHERE id = p.author_id), '') FROM post p JOIN blog b ON b.id = p.blog_id "
                    "WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
@@ -208,6 +208,7 @@ static const char *const DB_Q[Q_COUNT] = {
                         "AND EXISTS (SELECT 1 FROM post p WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")) "
                         "ORDER BY c.id LIMIT 50"),
   [Q_LAST_COMMENT] = "SELECT coalesce(max(id), 0) FROM comment WHERE post_id = ?1",
+  [Q_HANDLE_TAKEN] = "SELECT 1 FROM user WHERE handle = ?3",
   [Q_COMMENT_INFO] = ("SELECT c.post_id, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted "
                       "FROM comment c JOIN post p ON p.id = c.post_id LEFT JOIN user u ON u.id = c.author_id "
                       "WHERE c.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),

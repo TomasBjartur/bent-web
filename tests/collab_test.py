@@ -212,6 +212,45 @@ def main():
                 break
         check("own comment sent without a reload and shown", seen and eb.js("window.__marker") == 42 and eb.js("document.querySelector('#comments textarea').value") == "")
 
+        # Search as you type, and "Older posts" in place (Datastar), in Chrome.
+        for i in range(32):
+            _, loc2, _ = http("POST", "/dash/team/posts", a, {"title": f"Batch {i:02d} zebra"})
+            http("POST", loc2, a, {"title": f"Batch {i:02d} zebra", "body": "zebra words", "action": "publish"})
+        eb.ws.call("Page.navigate", {"url": f"{BASE}/search"})
+        time.sleep(1.2)
+        eb.js("window.__marker = 7")
+        eb.js("const q = document.querySelector('input[name=q]'); q.focus(); q.value = 'zebr'; q.dispatchEvent(new Event('input', {bubbles: true}))")
+        found = 0
+        for _ in range(30):
+            time.sleep(0.2)
+            found = eb.js("document.querySelectorAll('#results .feed li').length") or 0
+            if found:
+                break
+        check("search results appear as you type, no reload", found > 0 and eb.js("window.__marker") == 7 and "q=zebr" in (eb.js("location.search") or ""),
+              (found, eb.js("location.href")))
+        eb.ws.call("Page.navigate", {"url": f"{BASE}/b/team"})
+        time.sleep(1.2)
+        eb.js("window.__marker = 8")
+        before = eb.js("document.querySelectorAll('#feed > li').length")
+        eb.js("document.querySelector('#pager a[href*=\"page=2\"]').click()")
+        after = before
+        for _ in range(30):
+            time.sleep(0.2)
+            after = eb.js("document.querySelectorAll('#feed > li').length")
+            if after and after > before:
+                break
+        check("older posts load in place", before == 30 and after > 30 and eb.js("window.__marker") == 8, (before, after))
+        eb.ws.call("Page.navigate", {"url": f"{BASE}/signup"})
+        time.sleep(1.2)
+        eb.js("const h = document.querySelector('input[name=handle]'); h.value = 'zed_new'; h.dispatchEvent(new Event('input', {bubbles: true}))")
+        note = ""
+        for _ in range(30):
+            time.sleep(0.2)
+            note = eb.js("document.getElementById('handle-note').innerText") or ""
+            if note:
+                break
+        check("username check as you type", "zed_new is free" in note, note)
+
         # An outsider can neither read nor write the document.
         st, _, _ = http("GET", f"/edit/{pid}", c)
         check("outsider: editor 404", st == 404, st)

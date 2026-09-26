@@ -52,7 +52,9 @@ Decide per feature, and note the choice in the code:
   writing or reviewing any C.** It is mandatory, not advisory.
 - **SQLite**: WAL mode, busy timeout, one serialized writer, many readers,
   prepared statements only.
-- **Datastar** for server-rendered pages and updates over SSE.
+- **Datastar** (vendored, pinned, CSP mode with a per-response nonce) for
+  server-driven updates: patches of server-rendered HTML, and event
+  streams. data-* expressions may hold only server-written ids and slugs.
 - **Vanilla JS** where the client must own the work (the editor).
 - **Caddy** (or similar) in front for TLS. We do not implement TLS.
 - Minimal dependencies. Each one needs a written reason.

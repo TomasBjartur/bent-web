@@ -231,25 +231,7 @@ def feed_or_empty(rows: List<&2, List<&2, String>>, msg: String) -> String:
     case Nil{}:
       "<div class=\"empty\"><p>" ++ (msg ++ "</p></div>")
     case Con{r, t}:
-      "<ul class=\"feed\">" ++ (recent_items(Con{r, t}) ++ "</ul>")
-
-def home_page(rows: List<&2, List<&2, String>>, signed: Bool) -> String:
-  intro(signed) ++ ("<div class=\"feed-head\"><h2>Recent posts</h2><a href=\"/search\">Search</a></div>" ++ feed_or_empty(rows, "Nothing published yet. Be the first!"))
-
-# A blog's posts: [post slug, title, author, date, excerpt, minutes].
-def post_items(+bslug: String, rows: List<&2, List<&2, String>>) -> String:
-  match rows:
-    case Nil{}:
-      ""
-    case Con{+r, t}:
-      "<li><h3><a href=\"/b/" ++ (e(bslug) ++ ("/" ++ (e(col(r, 0n)) ++ ("\">" ++ (e(col(r, 1n)) ++ ("</a></h3><p class=\"excerpt\">" ++ (e(col(r, 4n)) ++ ("</p>" ++ (meta3(col(r, 6n), col(r, 2n), col(r, 3n), col(r, 5n)) ++ ("</li>" ++ post_items(bslug, t)))))))))))
-
-def blog_feed(+slug: String, rows: List<&2, List<&2, String>>) -> String:
-  match rows:
-    case Nil{}:
-      "<div class=\"empty\"><p>No posts yet.</p></div>"
-    case Con{r, t}:
-      "<ul class=\"feed\">" ++ (post_items(slug, Con{r, t}) ++ "</ul>")
+      "<ul class=\"feed\" id=\"feed\">" ++ (recent_items(Con{r, t}) ++ "</ul>")
 
 # PAGES OF 30: rows holds up to 31 (one more means there are older ones).
 def rows_take(rows: List<&2, List<&2, String>>, n: Nat) -> List<&2, List<&2, String>>:
@@ -273,12 +255,40 @@ def pager.newer(b: Bool, +base: String, +page: U32) -> String:
 def pager.older(b: Bool, +base: String, +page: U32) -> String:
   match b:
     case True{}:
-      "<a href=\"" ++ (e(base) ++ ("?page=" ++ (U32.show((page + 1 : U32)) ++ "\">Older →</a>")))
+      "<a href=\"" ++ (e(base) ++ ("?page=" ++ (U32.show((page + 1 : U32)) ++ ("\" data-on:click__prevent=\"@get('" ++ (e(base) ++ ("?page=" ++ (U32.show((page + 1 : U32)) ++ "&amp;frag=1')\" data-indicator:_loading data-attr:aria-busy=\"$_loading\">Older posts →</a>")))))))
     case False{}:
       ""
 
+# With Datastar, "Older" loads the next page into this one (feed_more).
 def pager(+base: String, +page: U32, +rows: List<&2, List<&2, String>>) -> String:
-  "<nav class=\"pager\">" ++ (pager.newer(U32.is_gt(page, 1), base, page) ++ (pager.older(Nat.is_lt(30n, List.length(&2, List<&2, String>, rows)), base, page) ++ "</nav>"))
+  "<nav class=\"pager\" id=\"pager\">" ++ (pager.newer(U32.is_gt(page, 1), base, page) ++ (pager.older(Nat.is_lt(30n, List.length(&2, List<&2, String>, rows)), base, page) ++ "</nav>"))
+
+def home_page(+rows: List<&2, List<&2, String>>, signed: Bool, +page: U32) -> String:
+  intro(signed) ++ ("<div class=\"feed-head\"><h2>Recent posts</h2><a href=\"/search\">Search</a></div>" ++ (feed_or_empty(rows_take(rows, 30n), "Nothing published yet. Be the first!") ++ pager("/", page, rows)))
+
+# A blog's posts: [post slug, title, author, date, excerpt, minutes].
+def post_items(+bslug: String, rows: List<&2, List<&2, String>>) -> String:
+  match rows:
+    case Nil{}:
+      ""
+    case Con{+r, t}:
+      "<li><h3><a href=\"/b/" ++ (e(bslug) ++ ("/" ++ (e(col(r, 0n)) ++ ("\">" ++ (e(col(r, 1n)) ++ ("</a></h3><p class=\"excerpt\">" ++ (e(col(r, 4n)) ++ ("</p>" ++ (meta3(col(r, 6n), col(r, 2n), col(r, 3n), col(r, 5n)) ++ ("</li>" ++ post_items(bslug, t)))))))))))
+
+def blog_feed(+slug: String, rows: List<&2, List<&2, String>>) -> String:
+  match rows:
+    case Nil{}:
+      "<div class=\"empty\"><p>No posts yet.</p></div>"
+    case Con{r, t}:
+      "<ul class=\"feed\" id=\"feed\">" ++ (post_items(slug, Con{r, t}) ++ "</ul>")
+
+# The pager after loading more: only the way on.
+def pager_more(+base: String, +page: U32, +rows: List<&2, List<&2, String>>) -> String:
+  "<nav class=\"pager\" id=\"pager\"><span></span>" ++ (pager.older(Nat.is_lt(30n, List.length(&2, List<&2, String>, rows)), base, page) ++ "</nav>")
+
+# Datastar's answer to "Older": the page's items appended to #feed, and the
+# pager moved on. items: the rendered items of the first 30 rows.
+def feed_more(+base: String, +page: U32, +rows: List<&2, List<&2, String>>, +items: String) -> String:
+  patch("#feed", "append", items) ++ patch("", "outer", pager_more(base, page, rows))
 
 def blog_page(+slug: String, title: String, owner: String, +page: U32, +rows: List<&2, List<&2, String>>) -> String:
   "<header class=\"masthead\"><h1>" ++ (e(title) ++ ("</h1><p class=\"muted\">by " ++ (e(owner) ++ ("<span class=\"dot\"></span><a href=\"/b/" ++ (e(slug) ++ ("/feed.xml\">RSS</a></p></header>" ++ (blog_feed(slug, rows_take(rows, 30n)) ++ pager("/b/" ++ slug, page, rows))))))))
@@ -397,10 +407,10 @@ def member_posts(+bslug: String, rows: List<&2, List<&2, String>>) -> String:
     case Con{r, t}:
       "<table class=\"table\">" ++ (member_post_rows(bslug, Con{r, t}) ++ "</table>")
 
-def remove_button(b: Bool, +blog: String, uid: String) -> String:
+def remove_button(b: Bool, +blog: String, +uid: String) -> String:
   match b:
     case True{}:
-      "<form method=\"post\" action=\"/dash/" ++ (e(blog) ++ ("/authors/" ++ (e(uid) ++ "/remove\"><button class=\"danger\">Remove</button></form>")))
+      "<form method=\"post\" action=\"/dash/" ++ (e(blog) ++ ("/authors/" ++ (e(uid) ++ ("/remove\" data-on:submit=\"@post('/dash/" ++ (e(blog) ++ ("/authors/" ++ (e(uid) ++ "/remove?frag=1', {contentType: 'form'})\"><button class=\"danger\">Remove</button></form>")))))))
     case False{}:
       ""
 
@@ -412,10 +422,13 @@ def author_items(+blog: String, +is_owner: Bool, rows: List<&2, List<&2, String>
     case Con{+r, t}:
       "<li><span><strong>" ++ (e(col(r, 1n)) ++ ("</strong><br><span class=\"meta\">" ++ (role_name(col(r, 3n)) ++ ("<span class=\"dot\"></span>" ++ (e(col(r, 2n)) ++ ("</span></span>" ++ (remove_button(Bool.and(is_owner, Bool.not(String.eq(col(r, 3n), "1"))), blog, col(r, 0n)) ++ ("</li>" ++ author_items(blog, is_owner, t)))))))))
 
+def people_list(+blog: String, +is_owner: Bool, rows: List<&2, List<&2, String>>) -> String:
+  "<ul class=\"people\" id=\"people\">" ++ (author_items(blog, is_owner, rows) ++ "</ul>")
+
 def owner_tools(b: Bool, +blog: String) -> String:
   match b:
     case True{}:
-      "<form method=\"post\" action=\"/dash/" ++ (e(blog) ++ "/authors\" class=\"stack add-author\"><label>Add a co-author <span class=\"hint\">They need an account first.</span><input name=\"email\" type=\"email\" required placeholder=\"their@email.com\"></label><div><button>Add author</button></div></form>")
+      "<form id=\"add-author\" method=\"post\" action=\"/dash/" ++ (e(blog) ++ ("/authors\" class=\"stack add-author\" data-on:submit=\"@post('/dash/" ++ (e(blog) ++ "/authors?frag=1', {contentType: 'form'})\" data-indicator:_adding><label>Add a co-author <span class=\"hint\">They need an account first.</span><input name=\"email\" type=\"email\" required placeholder=\"their@email.com\"></label><p class=\"form-note meta\" id=\"add-author-note\" aria-live=\"polite\"></p><div><button data-attr:disabled=\"$_adding\">Add author</button></div></form>")))
     case False{}:
       ""
 
@@ -448,7 +461,7 @@ def domain_section(b: Bool, +slug: String, +dom: List<&2, String>, +main: String
       ""
 
 def dash_blog(+slug: String, title: String, +is_owner: Bool, posts: List<&2, List<&2, String>>, authors: List<&2, List<&2, String>>, +dom: List<&2, String>, +main: String, failed: Bool) -> String:
-  "<p class=\"meta crumb\"><a href=\"/dash\">← Your blogs</a></p><div class=\"dash-head\"><h1>" ++ (e(title) ++ ("</h1><div class=\"row\"><a class=\"btn\" href=\"/b/" ++ (e(slug) ++ ("\">View blog</a>" ++ (new_post_button(slug, "New post") ++ ("</div></div><div class=\"cols\"><section>" ++ (member_posts(slug, posts) ++ ("</section><aside><h2>Authors</h2><ul class=\"people\">" ++ (author_items(slug, is_owner, authors) ++ ("</ul>" ++ (owner_tools(is_owner, slug) ++ (domain_section(is_owner, slug, dom, main, failed) ++ "</aside></div>"))))))))))))
+  "<p class=\"meta crumb\"><a href=\"/dash\">← Your blogs</a></p><div class=\"dash-head\"><h1>" ++ (e(title) ++ ("</h1><div class=\"row\"><a class=\"btn\" href=\"/b/" ++ (e(slug) ++ ("\">View blog</a>" ++ (new_post_button(slug, "New post") ++ ("</div></div><div class=\"cols\"><section>" ++ (member_posts(slug, posts) ++ ("</section><aside><h2>Authors</h2>" ++ (people_list(slug, is_owner, authors) ++ ("" ++ (owner_tools(is_owner, slug) ++ (domain_section(is_owner, slug, dom, main, failed) ++ "</aside></div>"))))))))))))
 
 def schedule_ui.go(none: Bool, +at: String) -> String:
   match none:
@@ -586,8 +599,15 @@ def search_results(asked: Bool, rows: List<&2, List<&2, String>>) -> String:
         case Con{r, t}:
           "<ul class=\"feed\">" ++ (search_items(Con{r, t}) ++ "</ul>")
 
+def results_div(+q: String, rows: List<&2, List<&2, String>>) -> String:
+  "<div id=\"results\">" ++ (search_results(Bool.not(String.is_empty(q)), rows) ++ "</div>")
+
+# Results update as you type (Datastar: 250 ms after the last key, the
+# address bar follows); the form works without it. The query goes in only
+# as a signal ($_q, never sent as JSON: a leading _), percent-encoded
+# including !'()*, which this server's query syntax does not allow bare.
 def search_page(+q: String, rows: List<&2, List<&2, String>>) -> String:
-  "<form method=\"get\" action=\"/search\" class=\"searchbar\" role=\"search\"><input name=\"q\" type=\"search\" maxlength=\"200\" placeholder=\"Search posts\" aria-label=\"Search posts\" autofocus value=\"" ++ (e(q) ++ ("\"><button class=\"primary\">Search</button></form>" ++ search_results(Bool.not(String.is_empty(q)), rows)))
+  "<form method=\"get\" action=\"/search\" class=\"searchbar\" role=\"search\"><input name=\"q\" type=\"search\" maxlength=\"200\" placeholder=\"Search posts\" aria-label=\"Search posts\" autocomplete=\"off\" autofocus value=\"" ++ (e(q) ++ ("\" data-bind:_q data-computed:_qe=\"encodeURIComponent($_q).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16))\" data-on:input__debounce.250ms=\"history.replaceState(null, '', '/search?q=' + $_qe); @get('/search?frag=1&amp;q=' + $_qe)\" data-indicator:_searching><button class=\"primary\">Search</button></form>" ++ results_div(q, rows)))
 
 def page_cons(+t: String, +b: U32, p: Page) -> Page:
   match p:

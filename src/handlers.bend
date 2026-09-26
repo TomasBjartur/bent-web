@@ -107,31 +107,10 @@ def cached_or(r: Socket & Result<&1, &1, U32 & String, Unit>, render: Socket -> 
 
 # Results are cached like feeds (the key is the sanitized query; a long one
 # is simply not cached).
-def h_search3(s: Socket, +token: String, +who: U32, +q: String, +fq: String) -> IO(Unit):
-  do IO<Unit>:
-    rows : List<&2, List<&2, String>> <- Db.query(Db.q_search(), 0, 0, fq, token)
-    cache_send(s, cache_key("s", who, fq), Pages.layout("Search: " ++ q, signed(who), Pages.search_page(q, rows)))
-
 # SEARCH: /search?q=... (not cached: queries vary). An empty or wordless
 # query shows the box only.
-def h_search2(empty: Bool, s: Socket, +token: String, +who: U32, +q: String, +fq: String) -> IO(Unit):
-  match empty:
-    case True{}:
-      send(s, token, 200, Pages.layout("Search", signed(who), Pages.search_page(q, Nil{})))
-    case False{}:
-      do IO<Unit>:
-        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("s", who, fq))
-        cached_or(r, s2 => h_search3(s2, token, who, q, fq))
-
-def h_search.go(s: Socket, +token: String, +who: U32, +q: String) -> IO(Unit):
-  +fq = Text.fts_query(q)
-  h_search2(String.is_empty(fq), s, token, who, q, fq)
-
 def form(+body: String) -> List<&2, Text.Field>:
   Maybe.default(&2, List<&2, Text.Field>, Text.form_parse(body), Nil{})
-
-def h_search(s: Socket, +token: String, +who: U32, +query: String) -> IO(Unit):
-  h_search.go(s, token, who, String.take(Maybe.default(&2, String, Text.decode_of(Text.form_get(form(query), "q")), ""), 200n))
 
 # RSS: the site's recent posts, and a blog's posts (content type 6).
 def h_feed2(s: Socket, +token: String, +origin: String) -> IO(Unit):
@@ -162,24 +141,6 @@ def h_blog_feed(s: Socket, +token: String, +origin: String, +slug: String) -> IO
   do IO<Unit>:
     r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, "rss:" ++ slug)
     cached_or(r, s2 => h_blog_feed2(s2, token, origin, slug))
-
-def h_home2(s: Socket, +token: String, +who: U32) -> IO(Unit):
-  do IO<Unit>:
-    rows : List<&2, List<&2, String>> <- Db.query(Db.q_recent_public(), 0, 0, "", token)
-    cache_send(s, cache_key("h", who, ""), Pages.layout("Home", signed(who), Pages.home_page(rows, signed(who))))
-
-def h_home.go(r: Socket & Result<&1, &1, U32 & String, Unit>, +token: String, +who: U32) -> IO(Unit):
-  (s, x) = r
-  match x:
-    case Done{u}:
-      Socket.close(s)
-    case Fail{err}:
-      h_home2(s, token, who)
-
-def h_home(s: Socket, +token: String, +who: U32) -> IO(Unit):
-  do IO<Unit>:
-    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("h", who, ""))
-    h_home.go(r, token, who)
 
 def is_some_permit(m: Maybe<&2, Authz.Permit>) -> Bool:
   match m:
@@ -1083,43 +1044,81 @@ def h_delete(s: Socket, +token: String, +who: U32, +pid: U32) -> IO(Unit):
     f : Spec.Facts <- Db.facts(who, 0, pid)
     write(s, token, who, Authz.authorize(f, Spec.DeletePost{pid}), 0, Db.no_data(), "/dash")
 
-def h_add_author4(none: Bool, s: Socket, +token: String, +who: U32, +blog: U32, +bslug: String, +uid: U32) -> IO(Unit):
+# CO-AUTHORS: without Datastar back to the blog's page; with it the list
+# is patched in place, and a refusal is said next to the form.
+def author_note(frag: Bool, s: Socket, +token: String, +who: U32, +status: U32, +msg: String) -> IO(Unit):
+  match frag:
+    case True{}:
+      stream1(s, token, Pages.patch("#add-author-note", "inner", msg))
+    case False{}:
+      fail(s, token, who, status)
+
+def authors_patch(s: Socket, +token: String, +bslug: String, +blog: U32) -> IO(Unit):
+  do IO<Unit>:
+    rows : List<&2, List<&2, String>> <- Db.query(Db.q_authors(), blog, 0, "", token)
+    stream1(s, token, Pages.patch("", "outer", Pages.people_list(bslug, True{}, rows)) ++ Pages.patch("", "replace", Pages.owner_tools(True{}, bslug)))
+
+def authors_done.ok(frag: Bool, s: Socket, +token: String, +bslug: String, +blog: U32) -> IO(Unit):
+  match frag:
+    case True{}:
+      authors_patch(s, token, bslug, blog)
+    case False{}:
+      redirect(s, token, "/dash/" ++ bslug, "")
+
+def authors_done(frag: Bool, s: Socket, +token: String, +who: U32, +bslug: String, +blog: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+  match r:
+    case Done{id}:
+      authors_done.ok(frag, s, token, bslug, blog)
+    case Fail{err}:
+      (+code, msg) = err
+      author_note(frag, s, token, who, apply_status(code), "That did not work (only the blog's owner manages its authors, and they cannot be added twice).")
+
+def authors_write(frag: Bool, s: Socket, +token: String, +who: U32, +bslug: String, +blog: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match m:
+    case None{}:
+      author_note(frag, s, token, who, 403, "Only the blog's owner manages its authors.")
+    case Some{p}:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, 0, Db.no_data())
+        authors_done(frag, s, token, who, bslug, blog, r)
+
+def h_add_author4(none: Bool, frag: Bool, s: Socket, +token: String, +who: U32, +blog: U32, +bslug: String, +uid: U32) -> IO(Unit):
   match none:
     case True{}:
-      fail(s, token, who, 400)
+      author_note(frag, s, token, who, 400, "No account uses that email yet: they need to sign up first.")
     case False{}:
       do IO<Unit>:
         f : Spec.Facts <- Db.facts(who, blog, 0)
-        write(s, token, who, Authz.authorize(f, Spec.AddAuthor{blog, uid}), 0, Db.no_data(), "/dash/" ++ bslug)
+        authors_write(frag, s, token, who, bslug, blog, Authz.authorize(f, Spec.AddAuthor{blog, uid}))
 
-def h_add_author3(s: Socket, +token: String, +who: U32, +blog: U32, +bslug: String, +users: List<&2, List<&2, String>>) -> IO(Unit):
+def h_add_author3(frag: Bool, s: Socket, +token: String, +who: U32, +blog: U32, +bslug: String, +users: List<&2, List<&2, String>>) -> IO(Unit):
   +uid = num(first_col(users, 0n))
-  h_add_author4(U32.is_eq(uid, 0), s, token, who, blog, bslug, uid)
+  h_add_author4(U32.is_eq(uid, 0), frag, s, token, who, blog, bslug, uid)
 
-def h_add_author2(s: Socket, +token: String, +who: U32, +bslug: String, +blog: U32, email: Maybe<&2, Text.Title>) -> IO(Unit):
+def h_add_author2(frag: Bool, s: Socket, +token: String, +who: U32, +bslug: String, +blog: U32, email: Maybe<&2, Text.Title>) -> IO(Unit):
   match email:
     case None{}:
-      fail(s, token, who, 400)
+      author_note(frag, s, token, who, 400, "Enter their email address.")
     case Some{em}:
       do IO<Unit>:
         users : List<&2, List<&2, String>> <- Db.query(Db.q_user_by_email(), 0, 0, Text.Title.text(em), token)
-        h_add_author3(s, token, who, blog, bslug, users)
+        h_add_author3(frag, s, token, who, blog, bslug, users)
 
-def h_add_author.go(s: Socket, +token: String, +who: U32, +bslug: String, +xs: List<&2, Text.Field>) -> IO(Unit):
+def h_add_author.go(frag: Bool, s: Socket, +token: String, +who: U32, +bslug: String, +xs: List<&2, Text.Field>) -> IO(Unit):
   do IO<Unit>:
     blog : List<&2, List<&2, String>> <- blog_rows(token, bslug)
-    h_add_author2(s, token, who, bslug, num(first_col(blog, 0n)), Text.form_title(xs, "email"))
+    h_add_author2(frag, s, token, who, bslug, num(first_col(blog, 0n)), Text.form_title(xs, "email"))
 
-def h_add_author(s: Socket, +token: String, +who: U32, +bslug: String, +body: String) -> IO(Unit):
+def h_add_author(s: Socket, +token: String, +who: U32, +bslug: String, +body: String, +query: String) -> IO(Unit):
   +xs = form(body)
-  h_add_author.go(s, token, who, bslug, xs)
+  h_add_author.go(frag_of(query, body), s, token, who, bslug, xs)
 
-def h_remove_author(s: Socket, +token: String, +who: U32, +bslug: String, +uid: U32) -> IO(Unit):
+def h_remove_author(s: Socket, +token: String, +who: U32, +bslug: String, +uid: U32, +query: String) -> IO(Unit):
   do IO<Unit>:
     blog : List<&2, List<&2, String>> <- blog_rows(token, bslug)
     +id : U32 = num(first_col(blog, 0n))
     f : Spec.Facts <- Db.facts(who, id, 0)
-    write(s, token, who, Authz.authorize(f, Spec.RemoveAuthor{id, uid}), 0, Db.no_data(), "/dash/" ++ bslug)
+    authors_write(wants_frag(form(query)), s, token, who, bslug, id, Authz.authorize(f, Spec.RemoveAuthor{id, uid}))
 
 def h_logout(s: Socket, +token: String) -> IO(Unit):
   do IO<Unit>:
@@ -1185,53 +1184,151 @@ def page_key(+page: U32) -> String:
 def page_offset(+page: U32) -> U32:
   ((page - 1) * 30 : U32)
 
-def h_blog2(s: Socket, +token: String, +who: U32, +page: U32, +blog: List<&2, List<&2, String>>) -> IO(Unit):
+# FEEDS, SEARCH (cached; Datastar's ?frag=1 answers are cached apart)
+# ---------------------------------------------------------------------
+# Each feed page: a page of 30, or with frag the next 30 appended and the
+# pager moved on (Pages.feed_more). Keys: kind, signed in or not, the
+# thing, the page, and "&f" for fragments.
+def frag_key(+frag: Bool) -> String:
+  match frag:
+    case True{}:
+      "&f"
+    case False{}:
+      ""
+
+def feed_send(frag: Bool, s: Socket, +key: String, +title: String, +who: U32, +page: String, +more: String) -> IO(Unit):
+  match frag:
+    case True{}:
+      cache_send_t(s, key, 2, more)
+    case False{}:
+      cache_send(s, key, Pages.layout(title, signed(who), page))
+
+def h_home2(s: Socket, +token: String, +who: U32, +page: U32, +frag: Bool) -> IO(Unit):
+  do IO<Unit>:
+    +rows : List<&2, List<&2, String>> <- Db.query(Db.q_recent_public(), 0, page_offset(page), "", token)
+    feed_send(frag, s, cache_key("h", who, page_key(page) ++ frag_key(frag)), "Home", who, Pages.home_page(rows, signed(who), page), Pages.feed_more("/", page, rows, Pages.recent_items(Pages.rows_take(rows, 30n))))
+
+def h_home(s: Socket, +token: String, +who: U32, +query: String) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("h", who, page_key(page_num(query)) ++ frag_key(wants_frag(form(query)))))
+    cached_or(r, s2 => h_home2(s2, token, who, page_num(query), wants_frag(form(query))))
+
+def h_blog2(s: Socket, +token: String, +who: U32, +page: U32, +frag: Bool, +blog: List<&2, List<&2, String>>) -> IO(Unit):
   match blog:
     case Nil{}:
       fail(s, token, who, 404)
     case Con{+r, t}:
       do IO<Unit>:
-        rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_public(), num(Pages.col(r, 0n)), page_offset(page), "", token)
-        cache_send(s, cache_key("b", who, Pages.col(r, 2n) ++ page_key(page)), Pages.layout(Pages.col(r, 1n), signed(who), Pages.blog_page(Pages.col(r, 2n), Pages.col(r, 1n), Pages.col(r, 3n), page, rows)))
+        +rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_public(), num(Pages.col(r, 0n)), page_offset(page), "", token)
+        feed_send(frag, s, cache_key("b", who, Pages.col(r, 2n) ++ (page_key(page) ++ frag_key(frag))), Pages.col(r, 1n), who, Pages.blog_page(Pages.col(r, 2n), Pages.col(r, 1n), Pages.col(r, 3n), page, rows), Pages.feed_more("/b/" ++ Pages.col(r, 2n), page, rows, Pages.post_items(Pages.col(r, 2n), Pages.rows_take(rows, 30n))))
 
-def h_blog3(s: Socket, +token: String, +who: U32, +slug: String, +page: U32) -> IO(Unit):
+def h_blog3(s: Socket, +token: String, +who: U32, +slug: String, +page: U32, +frag: Bool) -> IO(Unit):
   do IO<Unit>:
     blog : List<&2, List<&2, String>> <- blog_rows(token, slug)
-    h_blog2(s, token, who, page, blog)
+    h_blog2(s, token, who, page, frag, blog)
 
 def h_blog(s: Socket, +token: String, +who: U32, +slug: String, +query: String) -> IO(Unit):
   do IO<Unit>:
-    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("b", who, slug ++ page_key(page_num(query))))
-    cached_or(r, s2 => h_blog3(s2, token, who, slug, page_num(query)))
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("b", who, slug ++ (page_key(page_num(query)) ++ frag_key(wants_frag(form(query))))))
+    cached_or(r, s2 => h_blog3(s2, token, who, slug, page_num(query), wants_frag(form(query))))
 
-def h_tag2(s: Socket, +token: String, +who: U32, +tag: String, +page: U32) -> IO(Unit):
+def h_tag2(s: Socket, +token: String, +who: U32, +tag: String, +page: U32, +frag: Bool) -> IO(Unit):
   do IO<Unit>:
-    rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_tag(), 0, page_offset(page), tag, token)
-    cache_send(s, cache_key("t", who, tag ++ page_key(page)), Pages.layout("#" ++ tag, signed(who), Pages.tag_page(tag, page, rows)))
+    +rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_tag(), 0, page_offset(page), tag, token)
+    feed_send(frag, s, cache_key("t", who, tag ++ (page_key(page) ++ frag_key(frag))), "#" ++ tag, who, Pages.tag_page(tag, page, rows), Pages.feed_more("/t/" ++ tag, page, rows, Pages.recent_items(Pages.rows_take(rows, 30n))))
 
 def h_tag(s: Socket, +token: String, +who: U32, +tag: String, +query: String) -> IO(Unit):
   do IO<Unit>:
-    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("t", who, tag ++ page_key(page_num(query))))
-    cached_or(r, s2 => h_tag2(s2, token, who, tag, page_num(query)))
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("t", who, tag ++ (page_key(page_num(query)) ++ frag_key(wants_frag(form(query))))))
+    cached_or(r, s2 => h_tag2(s2, token, who, tag, page_num(query), wants_frag(form(query))))
 
-def h_author3(s: Socket, +token: String, +who: U32, +uid: U32, +page: U32, +name: List<&2, List<&2, String>>) -> IO(Unit):
+def h_author3(s: Socket, +token: String, +who: U32, +uid: U32, +page: U32, +frag: Bool, +name: List<&2, List<&2, String>>) -> IO(Unit):
   match name:
     case Nil{}:
       fail(s, token, who, 404)
     case Con{+r, t}:
       do IO<Unit>:
-        rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_author(), uid, page_offset(page), "", token)
-        cache_send(s, cache_key("u", who, U32.show(uid) ++ page_key(page)), Pages.layout(Pages.col(r, 0n), signed(who), Pages.author_page(U32.show(uid), Pages.col(r, 0n), Pages.col(r, 1n), page, rows)))
+        +rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_author(), uid, page_offset(page), "", token)
+        feed_send(frag, s, cache_key("u", who, U32.show(uid) ++ (page_key(page) ++ frag_key(frag))), Pages.col(r, 0n), who, Pages.author_page(U32.show(uid), Pages.col(r, 0n), Pages.col(r, 1n), page, rows), Pages.feed_more("/u/" ++ U32.show(uid), page, rows, Pages.recent_items(Pages.rows_take(rows, 30n))))
 
-def h_author2(s: Socket, +token: String, +who: U32, +uid: U32, +page: U32) -> IO(Unit):
+def h_author2(s: Socket, +token: String, +who: U32, +uid: U32, +page: U32, +frag: Bool) -> IO(Unit):
   do IO<Unit>:
     name : List<&2, List<&2, String>> <- Db.query(Db.q_author_public(), uid, 0, "", token)
-    h_author3(s, token, who, uid, page, name)
+    h_author3(s, token, who, uid, page, frag, name)
 
 def h_author(s: Socket, +token: String, +who: U32, +uid: U32, +query: String) -> IO(Unit):
   do IO<Unit>:
-    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("u", who, U32.show(uid) ++ page_key(page_num(query))))
-    cached_or(r, s2 => h_author2(s2, token, who, uid, page_num(query)))
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("u", who, U32.show(uid) ++ (page_key(page_num(query)) ++ frag_key(wants_frag(form(query))))))
+    cached_or(r, s2 => h_author2(s2, token, who, uid, page_num(query), wants_frag(form(query))))
+
+# SEARCH: /search?q=... Results are cached like feeds (the key is the
+# sanitized query; a long one is simply not cached). With frag (as you
+# type): just #results.
+def search_send(frag: Bool, s: Socket, +key: String, +who: U32, +q: String, +rows: List<&2, List<&2, String>>) -> IO(Unit):
+  match frag:
+    case True{}:
+      cache_send_t(s, key, 2, Pages.patch("", "outer", Pages.results_div(q, rows)))
+    case False{}:
+      cache_send(s, key, Pages.layout("Search: " ++ q, signed(who), Pages.search_page(q, rows)))
+
+def h_search3(s: Socket, +token: String, +who: U32, +q: String, +fq: String, +frag: Bool) -> IO(Unit):
+  do IO<Unit>:
+    +rows : List<&2, List<&2, String>> <- Db.query(Db.q_search(), 0, 0, fq, token)
+    search_send(frag, s, cache_key("s", who, fq ++ frag_key(frag)), who, q, rows)
+
+def h_search_empty(frag: Bool, s: Socket, +token: String, +who: U32, +q: String) -> IO(Unit):
+  match frag:
+    case True{}:
+      stream1(s, token, Pages.patch("", "outer", Pages.results_div("", Nil{})))
+    case False{}:
+      send(s, token, 200, Pages.layout("Search", signed(who), Pages.search_page(q, Nil{})))
+
+def h_search2(empty: Bool, s: Socket, +token: String, +who: U32, +q: String, +fq: String, +frag: Bool) -> IO(Unit):
+  match empty:
+    case True{}:
+      h_search_empty(frag, s, token, who, q)
+    case False{}:
+      do IO<Unit>:
+        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("s", who, fq ++ frag_key(frag)))
+        cached_or(r, s2 => h_search3(s2, token, who, q, fq, frag))
+
+def h_search.go(s: Socket, +token: String, +who: U32, +q: String, +frag: Bool) -> IO(Unit):
+  +fq = Text.fts_query(q)
+  h_search2(String.is_empty(fq), s, token, who, q, fq, frag)
+
+def h_search(s: Socket, +token: String, +who: U32, +query: String) -> IO(Unit):
+  h_search.go(s, token, who, String.take(Maybe.default(&2, String, Text.decode_of(Text.form_get(form(query), "q")), ""), 200n), wants_frag(form(query)))
+
+# USERNAME CHECK (sign-up, as you type): GET /handle?h=... answers a note
+# for #handle-note. Handles are public, so saying one is taken reveals
+# nothing an author page would not.
+def handle_note(k: Nat, +h: String) -> String:
+  match k:
+    case 1n:
+      "<span class=\"ok\">@" ++ (Pages.e(h) ++ " is free</span>")
+    case 2n:
+      "<span class=\"bad\">@" ++ (Pages.e(h) ++ " is taken</span>")
+    case _:
+      "3 to 30 of a-z, 0-9 and _, starting with a letter"
+
+def h_handle3(s: Socket, +token: String, +h: String, +rows: List<&2, List<&2, String>>) -> IO(Unit):
+  match rows:
+    case Nil{}:
+      stream1(s, token, Pages.patch("#handle-note", "inner", handle_note(1n, h)))
+    case Con{r, t}:
+      stream1(s, token, Pages.patch("#handle-note", "inner", handle_note(2n, h)))
+
+def h_handle2(s: Socket, +token: String, m: Maybe<&2, Text.Handle>) -> IO(Unit):
+  match m:
+    case None{}:
+      stream1(s, token, Pages.patch("#handle-note", "inner", handle_note(0n, "")))
+    case Some{+x}:
+      do IO<Unit>:
+        rows : List<&2, List<&2, String>> <- Db.query(Db.q_handle_taken(), 0, 0, Text.Handle.text(x), token)
+        h_handle3(s, token, Text.Handle.text(x), rows)
+
+def h_handle(s: Socket, +token: String, +query: String) -> IO(Unit):
+  h_handle2(s, token, Text.form_handle(form(query), "h"))
 
 # DISPATCH
 # --------
@@ -1245,6 +1342,8 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
       redirect(s, token, origin ++ p, "")
     case Route.RSearch{}:
       h_search(s, token, who, query)
+    case Route.RHandle{}:
+      h_handle(s, token, query)
     case Route.RReply{+id}:
       h_reply(s, token, who, id, query)
     case Route.RLive{+id}:
@@ -1258,7 +1357,7 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
     case Route.RBlogFeed{+b}:
       h_blog_feed(s, token, origin, b)
     case Route.RHome{}:
-      h_home(s, token, who)
+      h_home(s, token, who, query)
     case Route.RHealth{}:
       send_text(s, token, 200, "ok\n")
     case Route.RBlog{+slug}:
@@ -1299,9 +1398,9 @@ def write_route(s: Socket, r: Route.Route, +c: Auth.Conf, +token: String, +who: 
     case Route.RDeletePost{+id}:
       h_delete(s, token, who, id)
     case Route.RAddAuthor{+b}:
-      h_add_author(s, token, who, b, body)
+      h_add_author(s, token, who, b, body, query)
     case Route.RRemoveAuthor{+b, +u}:
-      h_remove_author(s, token, who, b, u)
+      h_remove_author(s, token, who, b, u, query)
     case Route.RLogout{}:
       h_logout(s, token)
     case Route.RWrite{}:

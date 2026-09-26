@@ -217,6 +217,12 @@ button.like.on { color: var(--accent); border-color: var(--accent); background: 
 @keyframes arrive { from { background: var(--accent-soft); } to { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { .comment.new > .cbody { animation: none; } }
 .form-note:empty { display: none; }
+.form-note { margin: 4px 0 0; font-weight: 400; }
+.form-note .ok { color: var(--ok); }
+.form-note .bad { color: var(--danger); }
+[aria-busy="true"] { opacity: 0.6; pointer-events: none; }
+.rf:empty { display: none; }
+.rf { margin: 8px 0 4px; }
 .comment:target > .cbody { background: var(--accent-soft); border-radius: 4px; }
 
 /* FORMS */

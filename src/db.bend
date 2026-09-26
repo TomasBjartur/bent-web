@@ -256,6 +256,9 @@ def q_comments_after() -> U32:
 def q_last_comment() -> U32:
   23
 
+def q_handle_taken() -> U32:
+  24
+
 def principal.go(anon: Bool, +who: U32) -> Spec.Principal:
   match anon:
     case True{}:

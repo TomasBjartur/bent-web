@@ -654,6 +654,90 @@ def run(dbpath):
     _, _, body, _ = req("GET", "/b/bob-s-great-blog/talk")
     check("short thread: replies open", '<details class="replies"><summary>' not in body)
 
+    # Datastar: every data-* expression on real pages matches one of these
+    # templates, where only server-written numbers and slugs vary; hostile
+    # titles, tags, names and comments never reach an expression.
+    from html.parser import HTMLParser
+    EXPR = [re.compile(x) for x in [
+        r"@post\('/like/\d+\?frag=1', \{contentType: 'form'\}\)",
+        r"@post\('/comment/\d+\?frag=1', \{contentType: 'form'\}\)",
+        r"@post\('/comment/\d+/delete\?frag=1', \{contentType: 'form'\}\)",
+        r"@get\('/reply/\d+\?frag=1'\)",
+        r"document\.getElementById\('rf\d+'\)\.replaceChildren\(\)",
+        r"@get\('/live/\d+\?after=\d+&n=\d+', \{requestCancellation: 'cleanup'\}\)",
+        r"@get\('(/|/b/[a-z0-9-]+|/t/[a-z0-9-]+|/u/\d+)\?page=\d+&frag=1'\)",
+        r"@post\('/dash/[a-z0-9-]+/authors\?frag=1', \{contentType: 'form'\}\)",
+        r"@post\('/dash/[a-z0-9-]+/authors/\d+/remove\?frag=1', \{contentType: 'form'\}\)",
+        re.escape("encodeURIComponent($_q).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16))"),
+        re.escape("history.replaceState(null, '', '/search?q=' + $_qe); @get('/search?frag=1&q=' + $_qe)"),
+        re.escape("@get('/handle?h=' + encodeURIComponent($_h).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16)))"),
+        r"\$_(liking|sending|adding|loading)",
+        r"",
+    ]]
+    class Attrs(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.bad = []
+            self.n = 0
+        def handle_starttag(self, tag, attrs):
+            for k, v in attrs:
+                if k.startswith("data-") and k not in ("data-nonce", "data-parent", "data-post", "data-rep", "data-published", "data-confirm"):
+                    self.n += 1
+                    if not any(x.fullmatch(v or "") for x in EXPR):
+                        self.bad.append((k, v))
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b, {"title": "x"})
+    hostile = "'); alert(1); (' \" onmouseover=\"alert(2) </script><b data-on:click=\"alert(3)\">"
+    req("POST", loc, b, {"title": hostile, "body": hostile + "\n\n[x](javascript:alert(4))", "tags": hostile, "action": "publish"})
+    hpid = loc.rsplit("/", 1)[1]
+    req("POST", f"/comment/{hpid}", b, {"body": hostile})
+    _, _, view, _ = req("GET", f"/edit/{hpid}", b)
+    hslug = db.execute("SELECT slug FROM post WHERE id = ?", (hpid,)).fetchall()[0][0]
+    seen = 0
+    for path, tok in [(f"/b/bob-s-great-blog/{hslug}", b), (f"/b/bob-s-great-blog/{hslug}", None), ("/", None), ("/", b), ("/b/bob-s-great-blog", b),
+                      ("/search?q=alert", None), ("/signup", None), ("/dash/bob-s-great-blog", b), (f"/reply/{live_id}", b), ("/t/b-onmouseover-alert-2", None)]:
+        st, _, body, _ = req("GET", path, tok)
+        pa = Attrs()
+        pa.feed(body)
+        seen += pa.n
+        check(f"datastar expressions are templates only: {path}", not pa.bad, pa.bad[:3])
+    check("datastar attributes were found at all", seen > 20, seen)
+    check("the hostile post shows its text, not markup", "&lt;/script&gt;" in req("GET", f"/b/bob-s-great-blog/{hslug}")[2])
+
+    # Pages carry a fresh nonce, matching their CSP; cached pages too.
+    def nonce_of(path):
+        st, _, body, head = req("GET", path)
+        m1 = re.search(r'<html lang="en" data-nonce="([0-9a-f]{32})"', body)
+        m2 = re.search(r"script-src 'self' 'nonce-([0-9a-f]{32})'", head)
+        return (m1 and m1.group(1)), (m2 and m2.group(1)), "unsafe-eval" in head
+    n1, h1, ev1 = nonce_of("/")
+    n2, h2, ev2 = nonce_of("/")
+    check("page nonce matches its CSP", n1 and n1 == h1, (n1, h1))
+    check("a cached page gets a new nonce each time", n2 and n2 == h2 and n1 != n2, (n1, n2))
+    check("never unsafe-eval", not ev1 and not ev2)
+    st, _, css, head = req("GET", "/s/datastar.js")
+    check("datastar served from our origin", st == 200 and "javascript" in head and "Datastar v1.0.4" in css, head[:200])
+
+    # Load more, search as you type, the username check, co-authors.
+    st, _, more, head = req("GET", "/b/bob-two?page=2&frag=1")
+    check("load more: items appended, pager moved on", st == 200 and "data: selector #feed" in more and "data: mode append" in more and 'id="pager"' in more, more[:300])
+    st, _, more, _ = req("GET", "/?page=1&frag=1")
+    check("home loads more too", st == 200 and "#feed" in more)
+    st, _, res, _ = req("GET", "/search?q=zebracorn&frag=1")
+    check("search as you type: just the results", st == 200 and 'id="results"' in res and "Searchable" in res and "<html" not in res, res[:300])
+    st, _, res, _ = req("GET", "/search?q=&frag=1")
+    check("search as you type: empty clears the results", st == 200 and 'id="results"' in res)
+    for h, want in [("ann", "is free"), ("bob", ""), ("1x", "3 to 30")]:
+        st, _, note, _ = req("GET", f"/handle?h={h}")
+        check(f"username check {h!r}", st == 200 and "#handle-note" in note and want in note, note[:300])
+    st, _, note, _ = req("POST", "/dash/bob-s-great-blog/authors?frag=1", b, {"email": "nobody-at-all@example.com"})
+    check("add author, unknown email: said in place", st == 200 and "#add-author-note" in note and "sign up first" in note, note[:300])
+    st, _, note, _ = req("POST", "/dash/bob-s-great-blog/authors?frag=1", b, {"email": "mallory@example.com"})
+    check("add author: the list, patched", st == 200 and 'id="people"' in note and "Mallory" in note, note[:300])
+    st, _, note, _ = req("POST", f"/dash/bob-s-great-blog/authors/{c_id}/remove?frag=1", b)
+    check("remove author: the list, patched", st == 200 and 'id="people"' in note and "Mallory" not in note, note[:300])
+    st, _, note, _ = req("POST", "/dash/bob-s-great-blog/authors?frag=1", c, {"email": "mallory@example.com"})
+    check("non-owner: refused, said in place", st == 200 and "Only the blog" in note, note[:300])
+
     # Security headers everywhere.
     _, _, _, head = req("GET", "/b/alice/first")
     check("CSP present", "Content-Security-Policy: default-src 'none'" in head)

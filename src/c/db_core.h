@@ -89,7 +89,7 @@ enum {
   Q_POST_ID,            // a=blog, text=slug -> id  (any state; callers answer 404 unless allowed)
   Q_POSTS_PUBLIC,       // a=blog -> slug, title, author, date, excerpt, minutes, author_id, rfc822 date
                         //    (published only)
-  Q_RECENT_PUBLIC,      // -> blog_slug, post_slug, title, blog_title, author, date, excerpt, minutes, author_id,
+  Q_RECENT_PUBLIC,      // b=offset -> blog_slug, post_slug, title, blog_title, author, date, excerpt, minutes, author_id,
                         //    rfc822 date  (published only)
   Q_POST_VIEW,          // a=post -> slug, title, published, blog_slug, blog_title, author, date, minutes,
                         //    author_id, author handle  (published, or member)
@@ -116,6 +116,7 @@ enum {
   Q_BLOG_BY_DOMAIN,     // text=host -> slug  (verified domains only)
   Q_COMMENTS_AFTER,     // a=post, b=comment id -> as Q_COMMENTS (depth 0), newer than b, by id, at most 50
   Q_LAST_COMMENT,       // a=post -> the newest comment's id, or 0
+  Q_HANDLE_TAKEN,       // text=handle -> 1 if an account has it
   Q_COUNT
 };
 
