@@ -6,6 +6,7 @@ import ./src/http.bend as Http
 import ./proof/lemmas.bend as L
 import ./spec/authz.bend as AuthzSpec
 import ./src/authz.bend as Authz
+import ./src/text.bend as Text
 import ./LAWS.bend as Laws
 
 # Each encoding branch emits a fixed entity (whose characters compute to
@@ -289,3 +290,20 @@ def Laws.authz_members_write(k, who, blog, role, post, b, q, e):
       cwp_member(who, blog, role, post, q, e)
     case 3n+r:
       cwp_member(who, blog, role, post, q, e)
+
+# USER TEXT: each refinement carries its proof.
+
+def Laws.text_title_ok(t):
+  match t:
+    case Text.Title{s, p}:
+      p
+
+def Laws.text_body_ok(t):
+  match t:
+    case Text.Body{s, p}:
+      p
+
+def Laws.text_slug_ok(t):
+  match t:
+    case Text.Slug{s, p}:
+      p

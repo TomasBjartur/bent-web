@@ -16,6 +16,8 @@ import ./src/html.bend as Html
 import ./src/http.bend as Http
 import ./spec/authz.bend as AuthzSpec
 import ./src/authz.bend as Authz
+import ./spec/text.bend as TextSpec
+import ./src/text.bend as Text
 
 # HTML ESCAPING
 # -------------
@@ -278,3 +280,40 @@ law authz_members_write:
   for +q: U32
   for e: {AuthzSpec.permitted(AuthzSpec.Facts{who, blog, role, post}, post_any_write(k, b, q)) == True{} : Bool}
   {AuthzSpec.is_member(role) == True{} : Bool}
+
+# USER TEXT
+# ---------
+# Type invariants: every Title, Body and Slug anywhere in the program was
+# checked against spec/text.bend, whatever the decoder did.
+
+def title_text(t: Text.Title) -> String:
+  match t:
+    case Text.Title{s, p}:
+      s
+
+def body_text(t: Text.Body) -> String:
+  match t:
+    case Text.Body{s, p}:
+      s
+
+def slug_text(t: Text.Slug) -> String:
+  match t:
+    case Text.Slug{s, p}:
+      s
+
+# LAW: a title is 1..200 characters, all valid Unicode scalars, none of them
+# control characters (C0, DEL or C1).
+law text_title_ok:
+  for t: Text.Title
+  {TextSpec.title_ok(title_text(t)) == True{} : Bool}
+
+# LAW: a post body has only valid scalars, and no control characters other
+# than newline and tab.
+law text_body_ok:
+  for t: Text.Body
+  {TextSpec.body_ok(body_text(t)) == True{} : Bool}
+
+# LAW: a slug is 1..64 of a-z, 0-9 and '-'.
+law text_slug_ok:
+  for t: Text.Slug
+  {TextSpec.slug_ok(slug_text(t)) == True{} : Bool}
