@@ -4,6 +4,33 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-26: Features, a load test, live comments
+
+**Load test** (docs/LOAD.md): 15 -> 450 req/s on 100k posts after eight
+fixes, the deepest being storage layout (SQLite walks the overflow pages
+of every large value before the column it wants, so post bodies moved out
+of the post row) and a search that ranked every match on the single event
+loop (a denial of service by typing a common word).
+
+**Datastar, considered.** The plan named it for server-driven updates. By
+default it compiles expressions with Function(), needing 'unsafe-eval';
+its CSP mode needs a fresh nonce per full page, which our shared page
+cache cannot give (a nonce reused across readers is no defense). Our
+proofs do rule out its main risk (user content becoming data-* code: the
+escaper and markup spec cannot emit attributes). What we needed (in-place
+likes, sending comments, live comments) took 3 KB of our own script with
+script-src 'self'. Worth revisiting for uncached, interaction-heavy pages
+(dashboard, editor), where a per-response nonce fits.
+
+**Live comments by long polling, parked in C.** A reader's request waits
+on its own eventfd; writing a comment wakes that post's waiters. The Bend
+runtime select()s over every parked request on each loop pass, so waiters
+are capped (512) and hidden tabs do not wait.
+
+**Uniqueness is not a proof.** Handles are unique by a database index;
+Bend proves only their shape (ASCII, lowered: no case or look-alike
+variants). Checked at sign-up and again at account creation; tested.
+
 ## 2026-09-26: Usability walkthrough, and a held read snapshot
 
 **Walkthrough.** A scripted headless-Chrome walk as a new user (click by
