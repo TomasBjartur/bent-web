@@ -25,6 +25,7 @@
 // One process owns the database; several would need a shared counter
 // (PRAGMA data_version).
 static uint64_t app_write_gen = 1;
+static void page_cache_drop(const char *k, u64 n);
 
 // SCHEDULED POSTS
 // ---------------
@@ -194,8 +195,15 @@ Term apply_raw_run(Env e, Term *f, IoWork *w) {
                   {slug, (uint32_t)n1}, {title, (uint32_t)n2}, {md, (uint32_t)n3}, {html, (uint32_t)n4}};
     uint32_t id = 0;
     DbResult res = db_apply(&app_db, h, app_now_ms(), &x, &wr, &id);
-    // Likes and comments appear only on (uncached) post pages.
-    if (res == DB_OK && wr.kind < A_LIKE_POST) app_write_gen++;
+    if (res == DB_OK && db_write_is_public(&x, &wr)) app_write_gen++;
+    // A like or comment changes only that post's page (cached for
+    // signed-out visitors under "p0:<post id>").
+    if (res == DB_OK && (wr.kind == A_LIKE_POST || wr.kind == A_COMMENT || wr.kind == A_DELETE_COMMENT) && x.has_post) {
+      char k[32];
+      int kn = snprintf(k, sizeof k, "p0:%u", x.post);
+      ASSERT(kn > 0 && (size_t)kn < sizeof k);
+      page_cache_drop(k, (u64)kn);
+    }
     r = res == DB_OK ? io_done(e, (Term)id) : io_fail(e, (uint32_t)res, NULL);
   }
   free(slug);
@@ -655,9 +663,11 @@ static void __attribute__((constructor)) dns_txt_has_use(void) {
 // never cached. Entries are valid only at the write generation they were
 // stored at.
 // Direct-mapped: a key's slot is its hash; a new entry replaces the old.
-#define PAGE_CACHE_SLOTS 32u
+// 4096 slots of at most 64 KiB: 256 MiB of address space, touched (and so
+// resident) only as pages are cached. Bigger pages are not cached.
+#define PAGE_CACHE_SLOTS 4096u
 #define PAGE_CACHE_KEY_MAX 96u
-#define PAGE_CACHE_BYTES (256u * 1024u)
+#define PAGE_CACHE_BYTES (64u * 1024u)
 
 typedef struct {
   uint64_t gen;  // 0: empty
@@ -695,6 +705,13 @@ static Term page_emit(Env e, IoWork *w, uint32_t ctype, PageOut *body) {
   return page_more(e, w);
 }
 
+// Drops key's entry (a post's cached page after a like or comment on it).
+static void page_cache_drop(const char *k, u64 n) {
+  if (n == 0u || n > PAGE_CACHE_KEY_MAX) return;
+  PageCacheSlot *c = &page_cache[page_cache_slot(k, n)];
+  if (c->key_len == n && memcmp(c->key, k, n) == 0) c->gen = 0;
+}
+
 #ifdef CID(cached)
 // cached(sock, key): sends the cached page for key and answers Done, or
 // sends nothing and answers Fail (then the handler renders it).
@@ -724,22 +741,35 @@ static void __attribute__((constructor)) cached_use(void) {
 #endif
 
 #ifdef CID(page_cache_put)
-// page_cache_put(sock, key, ctype, texts): sends texts as a 200 response
-// of content type ctype and stores it under key at the current write
-// generation (if it fits).
+// page_cache_put(sock, key, ctype, texts, bodies): sends texts[0] body[0]
+// texts[1] ... as a 200 response of content type ctype (bodies spliced as
+// for page(), as a signed-out visitor: published only) and stores it under
+// key at the current write generation (if it fits).
 Term page_cache_put_run(Env e, Term *f, IoWork *w) {
   w->hand = (intptr_t)io_hand_v(f[0]);
   u64 kn = 0;
   char *key = io_cstr(e, f[1], &kn);
   uint32_t ctype = (uint32_t)f[2];
   PageOut body = {io_mem(malloc(16384)), 0, 16384, 0};
-  Term texts = f[3], x, rest;
+  Term texts = f[3], ids = f[4], x, rest;
+  uint8_t anon[32];
+  memset(anon, 0, sizeof anon);  // no session has this hash
+  uint64_t now = app_now_ms();
   for (uint32_t i = 0; i < 100000u && app_uncons(e, CID(Con), texts, &x, &rest); i++) {
     u64 n = 0;
     char *s = io_cstr(e, x, &n);
     page_put(&body, s, n);
     free(s);
     texts = rest;
+    Term id;
+    if (app_uncons(e, CID(Con), ids, &id, &rest)) {
+      if (((uint32_t)id & PAGE_COMMENT_BIT) != 0u) {
+        db_comment_body(&app_db, (uint32_t)id & ~PAGE_COMMENT_BIT, anon, now, page_body_put, &body);
+      } else {
+        db_body(&app_db, (uint32_t)id, anon, now, page_body_put, &body);
+      }
+      ids = rest;
+    }
   }
   if (body.overflow || ctype >= sizeof page_ctypes / sizeof page_ctypes[0]) {
     free(key);

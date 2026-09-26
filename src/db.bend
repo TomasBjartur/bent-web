@@ -160,7 +160,7 @@ def dns_txt_has(name: String, expect: String) -> IO(Bool):
 def cached(sock: Socket, key: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
   import "./effects/db.c"
 
-def page_cache_put(sock: Socket, key: String, ctype: U32, texts: List<&2, String>) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+def page_cache_put(sock: Socket, key: String, ctype: U32, texts: List<&2, String>, bodies: List<&2, U32>) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
   import "./effects/db.c"
 
 # Sends an embedded static file (0: the editor bundle).

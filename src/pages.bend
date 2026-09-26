@@ -219,8 +219,37 @@ def blog_feed(+slug: String, rows: List<&2, List<&2, String>>) -> String:
     case Con{r, t}:
       "<ul class=\"feed\">" ++ (post_items(slug, Con{r, t}) ++ "</ul>")
 
-def blog_page(+slug: String, title: String, owner: String, rows: List<&2, List<&2, String>>) -> String:
-  "<header class=\"masthead\"><h1>" ++ (e(title) ++ ("</h1><p class=\"muted\">by " ++ (e(owner) ++ ("<span class=\"dot\"></span><a href=\"/b/" ++ (e(slug) ++ ("/feed.xml\">RSS</a></p></header>" ++ blog_feed(slug, rows)))))))
+# PAGES OF 30: rows holds up to 31 (one more means there are older ones).
+def rows_take(rows: List<&2, List<&2, String>>, n: Nat) -> List<&2, List<&2, String>>:
+  match rows:
+    case Nil{}:
+      Nil{}
+    case Con{r, t}:
+      match n:
+        case 0n:
+          Nil{}
+        case 1n+k:
+          Con{r, rows_take(t, k)}
+
+def pager.newer(b: Bool, +base: String, +page: U32) -> String:
+  match b:
+    case True{}:
+      "<a href=\"" ++ (e(base) ++ ("?page=" ++ (U32.show((page - 1 : U32)) ++ "\">← Newer</a>")))
+    case False{}:
+      "<span></span>"
+
+def pager.older(b: Bool, +base: String, +page: U32) -> String:
+  match b:
+    case True{}:
+      "<a href=\"" ++ (e(base) ++ ("?page=" ++ (U32.show((page + 1 : U32)) ++ "\">Older →</a>")))
+    case False{}:
+      ""
+
+def pager(+base: String, +page: U32, +rows: List<&2, List<&2, String>>) -> String:
+  "<nav class=\"pager\">" ++ (pager.newer(U32.is_gt(page, 1), base, page) ++ (pager.older(Nat.is_lt(30n, List.length(&2, List<&2, String>, rows)), base, page) ++ "</nav>"))
+
+def blog_page(+slug: String, title: String, owner: String, +page: U32, +rows: List<&2, List<&2, String>>) -> String:
+  "<header class=\"masthead\"><h1>" ++ (e(title) ++ ("</h1><p class=\"muted\">by " ++ (e(owner) ++ ("<span class=\"dot\"></span><a href=\"/b/" ++ (e(slug) ++ ("/feed.xml\">RSS</a></p></header>" ++ (blog_feed(slug, rows_take(rows, 30n)) ++ pager("/b/" ++ slug, page, rows))))))))
 
 # POST (the stored body is spliced in between the two halves)
 # ----
@@ -443,8 +472,8 @@ def tag_chips(rows: List<&2, List<&2, String>>) -> String:
     case Con{r, t}:
       "<div class=\"tags\">" ++ (tag_chip_items(Con{r, t}) ++ "</div>")
 
-def tag_page(+tag: String, rows: List<&2, List<&2, String>>) -> String:
-  "<header class=\"masthead\"><h1>#" ++ (e(tag) ++ ("</h1><p class=\"muted\">Posts tagged " ++ (e(tag) ++ ("</p></header>" ++ feed_or_empty(rows, "No posts with this tag yet.")))))
+def tag_page(+tag: String, +page: U32, +rows: List<&2, List<&2, String>>) -> String:
+  "<header class=\"masthead\"><h1>#" ++ (e(tag) ++ ("</h1><p class=\"muted\">Posts tagged " ++ (e(tag) ++ ("</p></header>" ++ (feed_or_empty(rows_take(rows, 30n), "No posts with this tag yet.") ++ pager("/t/" ++ tag, page, rows))))))
 
 # md: [body markdown, title, published, blog slug, post slug]. The HTML
 # parser drops one newline right after <textarea>, so one is put there for
@@ -455,8 +484,8 @@ def edit_page(+id: String, +rep: String, +md: List<&2, String>, +tags: String) -
 # AUTHOR PAGE
 # -----------
 # rows: as recent_items.
-def author_page(+name: String, rows: List<&2, List<&2, String>>) -> String:
-  "<header class=\"masthead\"><h1>" ++ (e(name) ++ ("</h1><p class=\"muted\">Posts by " ++ (e(name) ++ ("</p></header>" ++ feed_or_empty(rows, "Nothing published yet.")))))
+def author_page(+uid: String, +name: String, +page: U32, +rows: List<&2, List<&2, String>>) -> String:
+  "<header class=\"masthead\"><h1>" ++ (e(name) ++ ("</h1><p class=\"muted\">Posts by " ++ (e(name) ++ ("</p></header>" ++ (feed_or_empty(rows_take(rows, 30n), "Nothing published yet.") ++ pager("/u/" ++ uid, page, rows))))))
 
 # RSS
 # ---

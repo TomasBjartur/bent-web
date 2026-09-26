@@ -21,6 +21,12 @@ static const char DB_SCHEMA[] = {
   , 0
 };
 
+// A post's excerpt from its Markdown (x: an SQL expression): the first
+// 240 characters of the first 1200 with line breaks and markup characters
+// removed.
+#define POST_EXCERPT_OF(x) \
+  "substr(trim(replace(replace(replace(replace(replace(replace(substr(" x ", 1, 1200), char(13), ''), char(10), ' '), '#', ''), '*', ''), '>', ''), '`', '')), 1, 240)"
+
 static const char *const DB_SQL[ST_COUNT] = {
   [ST_BEGIN] = "BEGIN IMMEDIATE",
   [ST_COMMIT] = "COMMIT",
@@ -38,7 +44,12 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_MEMBER_DELETE] = "DELETE FROM member WHERE blog_id = ?1 AND user_id = ?2 AND role = 2",
   [ST_POST_NEW] = ("INSERT INTO post(blog_id, slug, title, body_md, body_html, published, created_ms, updated_ms, author_id) "
                    "VALUES (?1, ?2, ?3, '', '', 0, ?4, ?4, ?5)"),
-  [ST_POST_EDIT] = "UPDATE post SET title = ?2, body_md = ?3, body_html = ?4, updated_ms = ?5 WHERE id = ?1",
+  // Bodies live in post_body (v10); the post row keeps a short excerpt and
+  // the length, computed here from the first 1200 characters.
+  [ST_BODY_NEW] = "INSERT INTO post_body(post_id, body_md, body_html) VALUES (?1, '', '')",
+  [ST_POST_EDIT] = ("UPDATE post SET title = ?2, updated_ms = ?5, excerpt = " POST_EXCERPT_OF("?3") ", "
+                    "body_len = length(?3) WHERE id = ?1"),
+  [ST_BODY_SET] = "UPDATE post_body SET body_md = ?2, body_html = ?3 WHERE post_id = ?1",
   [ST_POST_PUBLISH] = ("UPDATE post SET published = ?2, updated_ms = ?3, "
                        "published_ms = CASE WHEN ?2 = 1 THEN coalesce(published_ms, ?3) ELSE published_ms END WHERE id = ?1"),
   [ST_POST_DELETE] = "DELETE FROM post WHERE id = ?1",
@@ -100,7 +111,7 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_COMMENT_BODY] = ("SELECT c.body_html FROM comment c JOIN post p ON p.id = c.post_id WHERE c.id = ?1 AND c.deleted = 0 "
                        "AND (p.published = 1 OR EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id "
                        "WHERE m.blog_id = p.blog_id AND s.token_hash = ?2 AND s.expires_ms > ?3))"),
-  [ST_BODY] = ("SELECT p.body_html FROM post p WHERE p.id = ?1 AND (p.published = 1 OR EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id WHERE m.blog_id = p.blog_id AND s.token_hash = ?2 AND s.expires_ms > ?3))"),
+  [ST_BODY] = ("SELECT pb.body_html FROM post p JOIN post_body pb ON pb.post_id = p.id WHERE p.id = ?1 AND (p.published = 1 OR EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id WHERE m.blog_id = p.blog_id AND s.token_hash = ?2 AND s.expires_ms > ?3))"),
 };
 
 // Query parameters: ?1 = a, ?2 = b, ?3 = text, ?8 = token hash, ?9 = now.
@@ -111,9 +122,8 @@ static const char *const DB_SQL[ST_COUNT] = {
 // Shared SQL pieces for what the pages show about a post p of blog b.
 #define POST_AUTHOR "coalesce((SELECT name FROM user WHERE id = p.author_id), '')"
 #define POST_DATE "strftime('%Y-%m-%d', coalesce(p.published_ms, p.updated_ms) / 1000, 'unixepoch')"
-#define POST_EXCERPT \
-  "substr(trim(replace(replace(replace(replace(replace(replace(p.body_md, char(13), ''), char(10), ' '), '#', ''), '*', ''), '>', ''), '`', '')), 1, 240)"
-#define POST_MINUTES "max(1, (length(p.body_md) + 999) / 1100)"
+#define POST_EXCERPT "p.excerpt"
+#define POST_MINUTES "max(1, (p.body_len + 999) / 1100)"
 
 // RFC 822 date for RSS, e.g. "Sat, 26 Sep 2026 18:20:35 +0000".
 #define POST_RFC822_AT(t) \
@@ -131,7 +141,7 @@ static const char *const DB_Q[Q_COUNT] = {
   [Q_POST_ID] = "SELECT id FROM post WHERE blog_id = ?1 AND slug = ?3",
   [Q_POSTS_PUBLIC] = ("SELECT p.slug, p.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES ", p.author_id, " POST_RFC822 " "
                       "FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.blog_id = ?1 AND p.published = 1 "
-                      "ORDER BY p.published_ms DESC LIMIT 100"),
+                      "ORDER BY p.published_ms DESC LIMIT 31 OFFSET ?2"),
   [Q_RECENT_PUBLIC] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.published = 1 "
                        "ORDER BY p.published_ms DESC LIMIT 30"),
   [Q_POST_VIEW] = ("SELECT p.slug, p.title, p.published, b.slug, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_MINUTES ", p.author_id "
@@ -146,7 +156,7 @@ static const char *const DB_Q[Q_COUNT] = {
   [Q_POSTS_MEMBER] = ("SELECT p.id, p.slug, p.title, p.published, strftime('%Y-%m-%d', p.updated_ms / 1000, 'unixepoch'), "
                       POST_AUTHOR ", coalesce(strftime('%Y-%m-%d', p.publish_at_ms / 1000, 'unixepoch'), '') FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.blog_id = ?1 AND "
                       MEMBER_OF("?1") " ORDER BY p.updated_ms DESC LIMIT 100"),
-  [Q_POST_MD] = ("SELECT p.body_md, p.title, p.published, b.slug, p.slug, "
+  [Q_POST_MD] = ("SELECT (SELECT body_md FROM post_body WHERE post_id = p.id), p.title, p.published, b.slug, p.slug, "
                  "coalesce(strftime('%Y-%m-%dT%H:%MZ', p.publish_at_ms / 1000, 'unixepoch'), '') FROM post p JOIN blog b ON b.id = p.blog_id "
                  "WHERE p.id = ?1 AND " MEMBER_OF("p.blog_id")),
   [Q_USER_BY_EMAIL] = "SELECT id FROM user WHERE email = ?3",
@@ -160,26 +170,32 @@ static const char *const DB_Q[Q_COUNT] = {
   [Q_AUTHOR_PUBLIC] = ("SELECT u.name FROM user u WHERE u.id = ?1 AND EXISTS "
                        "(SELECT 1 FROM post p WHERE p.author_id = u.id AND p.published = 1)"),
   // ?3 is an FTS5 expression built by Text.fts_query (quoted terms only).
-  // The snippet marks matches with bytes 1 and 2, which stored text never
-  // contains (bodies have no control characters but newline and tab).
-  [Q_SEARCH] = ("SELECT b.slug, p.slug, p.title, b.title, " POST_AUTHOR ", " POST_DATE ", "
-                "snippet(post_fts, 1, char(1), char(2), '…', 24), " POST_MINUTES ", p.author_id "
-                "FROM post_fts JOIN post p ON p.id = post_fts.rowid JOIN blog b ON b.id = p.blog_id "
-                "WHERE post_fts MATCH ?3 AND p.published = 1 ORDER BY rank LIMIT 30"),
-  [Q_POST_SOCIAL] = ("SELECT (SELECT count(*) FROM post_like WHERE post_id = p.id), "
+  // Newest matches first, found by FTS5 alone (it walks its index in rowid
+  // order and stops at the limit: ~7 ms however common the words); then the
+  // posts are looked up by id. No snippet(): it re-evaluates the match per
+  // row, which for a common word cost 2-8 s on 100k posts (docs/LOAD.md);
+  // results show the usual excerpt instead.
+  [Q_SEARCH] = ("WITH m AS MATERIALIZED (SELECT rowid AS rid FROM post_fts WHERE post_fts MATCH ?3 ORDER BY rowid DESC LIMIT 40) "
+                "SELECT " FEED_COLS " FROM m CROSS JOIN post p ON p.id = m.rid JOIN blog b ON b.id = p.blog_id "
+                "WHERE p.published = 1 ORDER BY m.rid DESC LIMIT 30"),
+  [Q_POST_SOCIAL] = ("SELECT p.like_count, "
                      "EXISTS (SELECT 1 FROM post_like l JOIN session s ON s.user_id = l.user_id "
                      "WHERE l.post_id = p.id AND s.token_hash = ?8 AND s.expires_ms > ?9), "
-                     "(SELECT count(*) FROM comment WHERE post_id = p.id AND deleted = 0) "
+                     "p.comment_count "
                      "FROM post p WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
   // Threads in order (a path of zero-padded ids), at most 50 deep.
+  // The recursion takes the smallest path first (depth-first, in thread
+  // order) and stops at 300 rows, so a post with thousands of comments
+  // costs no more than 300; CROSS JOIN makes SQLite look comments up by id
+  // (left to right) instead of scanning the table.
   [Q_COMMENTS] = ("WITH RECURSIVE t(id, depth, path) AS ("
                   "SELECT id, 0, printf('%010d', id) FROM comment WHERE post_id = ?1 AND parent_id IS NULL "
-                  "UNION ALL SELECT c.id, t.depth + 1, t.path || printf('%010d', c.id) FROM comment c JOIN t ON c.parent_id = t.id "
-                  "WHERE t.depth < 50) "
+                  "UNION ALL SELECT c.id, t.depth + 1, t.path || printf('%010d', c.id) FROM t CROSS JOIN comment c "
+                  "ON c.parent_id = t.id WHERE t.depth < 50 ORDER BY 3 LIMIT 300) "
                   "SELECT c.id, t.depth, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted, "
                   "EXISTS (SELECT 1 FROM session s WHERE s.user_id = c.author_id AND s.token_hash = ?8 AND s.expires_ms > ?9), "
                   "coalesce(c.parent_id, 0) "
-                  "FROM t JOIN comment c ON c.id = t.id LEFT JOIN user u ON u.id = c.author_id "
+                  "FROM t CROSS JOIN comment c ON c.id = t.id LEFT JOIN user u ON u.id = c.author_id "
                   "WHERE EXISTS (SELECT 1 FROM post p WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")) "
                   "ORDER BY t.path LIMIT 300"),
   [Q_COMMENT_INFO] = ("SELECT c.post_id, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted "
@@ -187,13 +203,13 @@ static const char *const DB_Q[Q_COUNT] = {
                       "WHERE c.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
   [Q_POST_TAGS] = ("SELECT t.tag FROM post_tag t JOIN post p ON p.id = t.post_id WHERE t.post_id = ?1 "
                    "AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ") ORDER BY t.rowid LIMIT 5"),
-  [Q_POSTS_BY_TAG] = ("SELECT " FEED_COLS " FROM post_tag t JOIN post p ON p.id = t.post_id JOIN blog b ON b.id = p.blog_id "
-                      "WHERE t.tag = ?3 AND p.published = 1 ORDER BY p.published_ms DESC LIMIT 100"),
+  [Q_POSTS_BY_TAG] = ("SELECT " FEED_COLS " FROM post_tag t CROSS JOIN post p ON p.id = t.post_id JOIN blog b ON b.id = p.blog_id "
+                      "WHERE t.tag = ?3 AND t.pub_ms IS NOT NULL ORDER BY t.pub_ms DESC LIMIT 31 OFFSET ?2"),
   [Q_BLOG_DOMAIN] = ("SELECT coalesce(b.domain, ''), coalesce(b.domain_token, ''), b.domain_ok FROM blog b "
                      "WHERE b.id = ?1 AND " MEMBER_OF("b.id")),
   [Q_BLOG_BY_DOMAIN] = "SELECT slug FROM blog WHERE domain = ?3 AND domain_ok = 1",
   [Q_POSTS_BY_AUTHOR] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id "
-                         "WHERE p.author_id = ?1 AND p.published = 1 ORDER BY p.published_ms DESC LIMIT 100"),
+                         "WHERE p.author_id = ?1 AND p.published = 1 ORDER BY p.published_ms DESC LIMIT 31 OFFSET ?2"),
 };
 
 // Schema migrations, in order; PRAGMA user_version counts those applied.
@@ -259,6 +275,54 @@ static const char *const DB_MIGRATIONS[] = {
   "ALTER TABLE blog ADD COLUMN domain_ok INTEGER NOT NULL DEFAULT 0 CHECK (domain_ok IN (0, 1));"
   "CREATE UNIQUE INDEX blog_domain_ok ON blog(domain) WHERE domain_ok = 1;"
   "CREATE INDEX blog_domain ON blog(domain);",
+  // v9 (load test, 100k posts): counts kept by triggers instead of counted
+  // per view; tag rows carry their post's publish time (NULL unless
+  // published) so a tag page reads an index in order.
+  "ALTER TABLE post ADD COLUMN like_count INTEGER NOT NULL DEFAULT 0;"
+  "ALTER TABLE post ADD COLUMN comment_count INTEGER NOT NULL DEFAULT 0;"
+  "UPDATE post SET like_count = (SELECT count(*) FROM post_like WHERE post_id = post.id),"
+  " comment_count = (SELECT count(*) FROM comment WHERE post_id = post.id AND deleted = 0);"
+  "CREATE TRIGGER like_ai AFTER INSERT ON post_like BEGIN"
+  " UPDATE post SET like_count = like_count + 1 WHERE id = new.post_id; END;"
+  "CREATE TRIGGER like_ad AFTER DELETE ON post_like BEGIN"
+  " UPDATE post SET like_count = like_count - 1 WHERE id = old.post_id; END;"
+  "CREATE TRIGGER comment_ai AFTER INSERT ON comment BEGIN"
+  " UPDATE post SET comment_count = comment_count + 1 WHERE id = new.post_id; END;"
+  "CREATE TRIGGER comment_au AFTER UPDATE OF deleted ON comment WHEN new.deleted = 1 AND old.deleted = 0 BEGIN"
+  " UPDATE post SET comment_count = comment_count - 1 WHERE id = new.post_id; END;"
+  "ALTER TABLE post_tag ADD COLUMN pub_ms INTEGER;"
+  "UPDATE post_tag SET pub_ms = (SELECT CASE WHEN published = 1 THEN published_ms END FROM post WHERE id = post_tag.post_id);"
+  "CREATE INDEX post_tag_feed ON post_tag(tag, pub_ms DESC);"
+  "CREATE TRIGGER tag_ai AFTER INSERT ON post_tag BEGIN"
+  " UPDATE post_tag SET pub_ms = (SELECT CASE WHEN published = 1 THEN published_ms END FROM post WHERE id = new.post_id)"
+  " WHERE rowid = new.rowid; END;"
+  "CREATE TRIGGER tag_pub AFTER UPDATE OF published, published_ms ON post BEGIN"
+  " UPDATE post_tag SET pub_ms = CASE WHEN new.published = 1 THEN new.published_ms END WHERE post_id = new.id; END;",
+  // v10 (load test): bodies move to their own table. SQLite reaches a
+  // column only by walking the pages of every large value before it, so
+  // with bodies in the post row every feed query read whole bodies (1 MB
+  // for a novel) to get a date. The row keeps a short excerpt and the
+  // length. The search index becomes contentless (deletes by rowid), fed
+  // from both tables by triggers.
+  "DROP TRIGGER post_fts_ai; DROP TRIGGER post_fts_ad; DROP TRIGGER post_fts_au; DROP TABLE post_fts;"
+  "CREATE TABLE post_body (post_id INTEGER PRIMARY KEY REFERENCES post(id) ON DELETE CASCADE,"
+  " body_md TEXT NOT NULL CHECK (length(body_md) <= 1048576), body_html TEXT NOT NULL CHECK (length(body_html) <= 8388608));"
+  "INSERT INTO post_body SELECT id, body_md, body_html FROM post;"
+  "ALTER TABLE post ADD COLUMN excerpt TEXT NOT NULL DEFAULT '';"
+  "ALTER TABLE post ADD COLUMN body_len INTEGER NOT NULL DEFAULT 0;"
+  "UPDATE post SET excerpt = " POST_EXCERPT_OF("body_md") ", body_len = length(body_md), body_md = '', body_html = '';"
+  "CREATE VIRTUAL TABLE post_fts USING fts5(title, body_md, content='', contentless_delete=1,"
+  " tokenize='unicode61 remove_diacritics 2');"
+  "INSERT INTO post_fts(rowid, title, body_md) SELECT p.id, p.title, b.body_md FROM post p JOIN post_body b ON b.post_id = p.id;"
+  "CREATE TRIGGER post_fts_body_ai AFTER INSERT ON post_body BEGIN"
+  " INSERT INTO post_fts(rowid, title, body_md) VALUES (new.post_id, (SELECT title FROM post WHERE id = new.post_id), new.body_md); END;"
+  "CREATE TRIGGER post_fts_body_au AFTER UPDATE OF body_md ON post_body BEGIN"
+  " DELETE FROM post_fts WHERE rowid = new.post_id;"
+  " INSERT INTO post_fts(rowid, title, body_md) VALUES (new.post_id, (SELECT title FROM post WHERE id = new.post_id), new.body_md); END;"
+  "CREATE TRIGGER post_fts_title AFTER UPDATE OF title ON post BEGIN"
+  " DELETE FROM post_fts WHERE rowid = new.id;"
+  " INSERT INTO post_fts(rowid, title, body_md) VALUES (new.id, new.title, (SELECT body_md FROM post_body WHERE post_id = new.id)); END;"
+  "CREATE TRIGGER post_fts_del AFTER DELETE ON post BEGIN DELETE FROM post_fts WHERE rowid = old.id; END;",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 
@@ -281,6 +345,9 @@ static int32_t db_migrate(Db *db) {
     }
     if (sqlite3_exec(db->conn, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) return -1;
   }
+  // A migration may rewrite every row (v9 wrote a 1.2 GB log on 100k
+  // posts); fold the log back now, before serving, not during requests.
+  if ((uint64_t)v < DB_MIGRATION_COUNT && sqlite3_exec(db->conn, "PRAGMA wal_checkpoint(TRUNCATE)", NULL, NULL, NULL) != SQLITE_OK) return -1;
   return 0;
 }
 
@@ -626,14 +693,20 @@ static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *
       sqlite3_bind_int64(st, 5, f->who);
       if ((r = db_rc(db_exec(st))) != DB_OK) return r;
       *new_id = (uint32_t)sqlite3_last_insert_rowid(db->conn);
-      return DB_OK;
+      st = db->st[ST_BODY_NEW];
+      sqlite3_bind_int64(st, 1, *new_id);
+      return db_rc(db_exec(st));
     case A_EDIT_POST:
       st = db->st[ST_POST_EDIT];
       sqlite3_bind_int64(st, 1, w->target);
       bind_text(st, 2, w->title);
       bind_text(st, 3, w->body_md);
-      bind_text(st, 4, w->body_html);
       sqlite3_bind_int64(st, 5, (sqlite3_int64)now_ms);
+      if ((r = db_rc(db_exec(st))) != DB_OK) return r;
+      st = db->st[ST_BODY_SET];
+      sqlite3_bind_int64(st, 1, w->target);
+      bind_text(st, 2, w->body_md);
+      bind_text(st, 3, w->body_html);
       if ((r = db_rc(db_exec(st))) != DB_OK) return r;
       return w->flag != 0u ? db_set_tags(db, w->target, w->slug) : DB_OK;
     case A_PUBLISH_POST:

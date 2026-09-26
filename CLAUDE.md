@@ -174,7 +174,12 @@ result.
   framework, no web fonts; Substack-style post pages and LessWrong-style
   feed; assets versioned and cached immutably; schema migrations
   (`DB_MIGRATIONS`, PRAGMA user_version).
-- Next: novel-length documents (blocks), deterministic simulation, red team.
+- Substack-like features: RSS, search (FTS5), likes, threaded comments,
+  tags, scheduled posts, image uploads, custom domains (DNS-verified).
+- Load test with 100k posts and mixed traffic: `docs/LOAD.md`
+  (`tests/load/`).
+- Next: multi-process serving (sharding decision), novel-length documents
+  (blocks), deterministic simulation, red team.
 
 ## Checks (run all before committing)
 
@@ -191,4 +196,6 @@ result.
 - `node tests/fugue_diff.mjs 300 <seed>` (browser CRDT vs the Bend
   reference `build/crdt_ref`, built with `bend tests/crdt_ref.bend -o build/crdt_ref`)
 - with a server running: `tests/server_test.py`, `tests/fuzz_server.py`
+- load (optional, ~15 min): `tests/load/make_data.py DB` once, then
+  `tests/load/run.py DB`
 - `spike/` holds throwaway measurement code (not C_STYLE-compliant).

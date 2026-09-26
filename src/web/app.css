@@ -135,6 +135,9 @@ h2 { font-size: 1.35rem; margin: 40px 0 12px; }
 .searchbar input { flex: 1; }
 .snippet mark { background: var(--accent-soft); color: inherit; padding: 0 2px; border-radius: 3px; }
 
+.pager { display: flex; justify-content: space-between; padding: 24px 0 0; }
+.pager:empty { display: none; }
+
 /* PUBLICATION HEADER */
 
 .masthead { text-align: center; padding: 16px 0 36px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }

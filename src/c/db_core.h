@@ -104,7 +104,7 @@ enum {
   Q_OP_COUNT,           // a=post -> number of ops  (member only)
   Q_AUTHOR_PUBLIC,      // a=user -> name  (only if they have a published post)
   Q_POSTS_BY_AUTHOR,    // a=user -> as Q_RECENT_PUBLIC  (published only)
-  Q_SEARCH,             // text=FTS5 query -> as Q_RECENT_PUBLIC, excerpt = marked snippet, no rfc822
+  Q_SEARCH,             // text=FTS5 query -> as Q_RECENT_PUBLIC  (published only, newest first)
   Q_POST_SOCIAL,        // a=post -> likes, liked by the session's user (0/1), comments  (published, or member)
   Q_COMMENTS,           // a=post -> id, depth, author_id, author, date, deleted, mine (0/1), parent
                         //    in thread order (published, or member)
@@ -147,7 +147,7 @@ enum {
   ST_SESSION_USER, ST_SESSION_NEW, ST_ROLE, ST_POST_FACTS,
   ST_USER_NEW, ST_USER_BY_EMAIL,
   ST_BLOG_NEW, ST_MEMBER_NEW, ST_BLOG_TITLE, ST_BLOG_DELETE, ST_MEMBER_DELETE,
-  ST_POST_NEW, ST_POST_EDIT, ST_POST_PUBLISH, ST_POST_DELETE, ST_BODY, ST_SESSION_DELETE,
+  ST_POST_NEW, ST_BODY_NEW, ST_POST_EDIT, ST_BODY_SET, ST_POST_PUBLISH, ST_POST_DELETE, ST_BODY, ST_SESSION_DELETE,
   ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
   ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
   ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT, ST_SLUG_TAKEN, ST_POST_RENAME,
@@ -178,6 +178,25 @@ int32_t db_body(Db *db, uint32_t post, const uint8_t token_hash[32], uint64_t no
 // the session a member of the post's blog).
 // The image type for these bytes, or NULL if not an accepted image.
 const char *db_image_type(const uint8_t *p, uint32_t n);
+
+// Can this successful write change a public (cacheable) page? Blog
+// edits and deletions, publishing and unpublishing, and edits or deletions
+// of published posts. Drafts, schedules, authors, likes and comments
+// (shown only on uncached post pages) cannot.
+static inline int db_write_is_public(const DbFacts *f, const DbWrite *w) {
+  switch (w->kind) {
+    case A_EDIT_BLOG:
+    case A_DELETE_BLOG:
+      return 1;
+    case A_PUBLISH_POST:
+      return w->flag <= 1u;
+    case A_EDIT_POST:
+    case A_DELETE_POST:
+      return f->post_pub != 0u;
+    default:
+      return 0;
+  }
+}
 
 // Stores an image for a post, as a write: the floor (a member of the post's
 // blog), then in one IMMEDIATE transaction the facts are re-checked, the

@@ -89,7 +89,7 @@ def cache_key(+kind: String, +who: U32, +rest: String) -> String:
 
 def cache_send_t(s: Socket, +key: String, +ctype: U32, +text: String) -> IO(Unit):
   do IO<Unit>:
-    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page_cache_put(s, key, ctype, one(text))
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page_cache_put(s, key, ctype, one(text), Nil{})
     done(r)
 
 def cache_send(s: Socket, +key: String, +html: String) -> IO(Unit):
@@ -105,6 +105,13 @@ def cached_or(r: Socket & Result<&1, &1, U32 & String, Unit>, render: Socket -> 
     case Fail{err}:
       render(s)
 
+# Results are cached like feeds (the key is the sanitized query; a long one
+# is simply not cached).
+def h_search3(s: Socket, +token: String, +who: U32, +q: String, +fq: String) -> IO(Unit):
+  do IO<Unit>:
+    rows : List<&2, List<&2, String>> <- Db.query(Db.q_search(), 0, 0, fq, token)
+    cache_send(s, cache_key("s", who, fq), Pages.layout("Search: " ++ q, signed(who), Pages.search_page(q, rows)))
+
 # SEARCH: /search?q=... (not cached: queries vary). An empty or wordless
 # query shows the box only.
 def h_search2(empty: Bool, s: Socket, +token: String, +who: U32, +q: String, +fq: String) -> IO(Unit):
@@ -113,8 +120,8 @@ def h_search2(empty: Bool, s: Socket, +token: String, +who: U32, +q: String, +fq
       send(s, token, 200, Pages.layout("Search", signed(who), Pages.search_page(q, Nil{})))
     case False{}:
       do IO<Unit>:
-        rows : List<&2, List<&2, String>> <- Db.query(Db.q_search(), 0, 0, fq, token)
-        send(s, token, 200, Pages.layout("Search: " ++ q, signed(who), Pages.search_page(q, rows)))
+        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("s", who, fq))
+        cached_or(r, s2 => h_search3(s2, token, who, q, fq))
 
 def h_search.go(s: Socket, +token: String, +who: U32, +q: String) -> IO(Unit):
   +fq = Text.fts_query(q)
@@ -174,33 +181,6 @@ def h_home(s: Socket, +token: String, +who: U32) -> IO(Unit):
     r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("h", who, ""))
     h_home.go(r, token, who)
 
-def h_blog2(s: Socket, +token: String, +who: U32, +blog: List<&2, List<&2, String>>) -> IO(Unit):
-  match blog:
-    case Nil{}:
-      fail(s, token, who, 404)
-    case Con{+r, t}:
-      do IO<Unit>:
-        rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_public(), num(Pages.col(r, 0n)), 0, "", token)
-        cache_send(s, cache_key("b", who, Pages.col(r, 2n)), Pages.layout(Pages.col(r, 1n), signed(who), Pages.blog_page(Pages.col(r, 2n), Pages.col(r, 1n), Pages.col(r, 3n), rows)))
-
-def h_blog3(s: Socket, +token: String, +who: U32, +slug: String) -> IO(Unit):
-  do IO<Unit>:
-    blog : List<&2, List<&2, String>> <- blog_rows(token, slug)
-    h_blog2(s, token, who, blog)
-
-def h_blog.go(r: Socket & Result<&1, &1, U32 & String, Unit>, +token: String, +who: U32, +slug: String) -> IO(Unit):
-  (s, x) = r
-  match x:
-    case Done{u}:
-      Socket.close(s)
-    case Fail{err}:
-      h_blog3(s, token, who, slug)
-
-def h_blog(s: Socket, +token: String, +who: U32, +slug: String) -> IO(Unit):
-  do IO<Unit>:
-    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("b", who, slug))
-    h_blog.go(r, token, who, slug)
-
 def is_some_permit(m: Maybe<&2, Authz.Permit>) -> Bool:
   match m:
     case None{}:
@@ -215,10 +195,19 @@ def first_row(+rows: List<&2, List<&2, String>>) -> List<&2, String>:
     case Con{r, t}:
       r
 
-def h_post5(s: Socket, +token: String, +pg: Pages.Page) -> IO(Unit):
-  do IO<Unit>:
-    x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, Pages.page_texts(pg), Pages.page_bodies(pg), token, "", "")
-    done(x)
+# A signed-out visitor's post page is the same for all of them: cached
+# under p0:<id> (dropped on each like or comment, and with every write to
+# public pages).
+def h_post5(anon: Bool, s: Socket, +token: String, +pid: U32, +pg: Pages.Page) -> IO(Unit):
+  match anon:
+    case True{}:
+      do IO<Unit>:
+        x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page_cache_put(s, "p0:" ++ U32.show(pid), 0, Pages.page_texts(pg), Pages.page_bodies(pg))
+        done(x)
+    case False{}:
+      do IO<Unit>:
+        x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, Pages.page_texts(pg), Pages.page_bodies(pg), token, "", "")
+        done(x)
 
 # The post page: the stored body is spliced in by C (with its own floor).
 # Members see an Edit link (only if they could open the editor).
@@ -231,7 +220,7 @@ def h_post4(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +n
         +social : List<&2, List<&2, String>> <- Db.query(Db.q_post_social(), pid, 0, "", token)
         tags : List<&2, List<&2, String>> <- Db.query(Db.q_post_tags(), pid, 0, "", token)
         comments : List<&2, List<&2, String>> <- Db.query(Db.q_comments(), pid, 0, "", token)
-        h_post5(s, token, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.tag_chips(tags) ++ Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), comments), Con{Pages.T{Pages.layout_bottom()}, Nil{}})}}}, ""))
+        h_post5(Bool.not(signed(who)), s, token, pid, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.tag_chips(tags) ++ Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), comments), Con{Pages.T{Pages.layout_bottom()}, Nil{}})}}}, ""))
 
 def h_post3(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +notice: Bool, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
@@ -287,16 +276,6 @@ def h_upload(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> 
     h_upload2(s, token, who, body, Authz.authorize(f, Spec.UploadImage{pid}))
 
 # TAG PAGES (cached): /t/<tag>.
-def h_tag2(s: Socket, +token: String, +who: U32, +tag: String) -> IO(Unit):
-  do IO<Unit>:
-    rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_tag(), 0, 0, tag, token)
-    cache_send(s, cache_key("t", who, tag), Pages.layout("#" ++ tag, signed(who), Pages.tag_page(tag, rows)))
-
-def h_tag(s: Socket, +token: String, +who: U32, +tag: String) -> IO(Unit):
-  do IO<Unit>:
-    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("t", who, tag))
-    cached_or(r, s2 => h_tag2(s2, token, who, tag))
-
 # LIKES AND COMMENTS
 # ------------------
 # Each ends on the post's page (at an anchor); the post's address comes
@@ -449,11 +428,20 @@ def h_reply(s: Socket, +token: String, +who: U32, +cid: U32) -> IO(Unit):
 def just_published(+query: String) -> Bool:
   String.eq(Maybe.default(&2, String, Text.form_raw(form(query), "published"), ""), "1")
 
+def h_post.anon(anon: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +notice: Bool) -> IO(Unit):
+  match anon:
+    case True{}:
+      do IO<Unit>:
+        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, "p0:" ++ U32.show(pid))
+        cached_or(r, s2 => h_post2(s2, token, who, pid, notice))
+    case False{}:
+      h_post2(s, token, who, pid, notice)
+
 def h_post(s: Socket, +token: String, +who: U32, +bslug: String, +pslug: String, +query: String) -> IO(Unit):
   do IO<Unit>:
     blog : List<&2, List<&2, String>> <- blog_rows(token, bslug)
-    ids : List<&2, List<&2, String>> <- Db.query(Db.q_post_id(), num(first_col(blog, 0n)), 0, pslug, token)
-    h_post2(s, token, who, num(first_col(ids, 0n)), just_published(query))
+    +ids : List<&2, List<&2, String>> <- Db.query(Db.q_post_id(), num(first_col(blog, 0n)), 0, pslug, token)
+    h_post.anon(Bool.and(Bool.not(signed(who)), U32.is_ne(num(first_col(ids, 0n)), 0)), s, token, who, num(first_col(ids, 0n)), just_published(query))
 
 def h_dash2(b: Bool, s: Socket, +token: String, +who: U32) -> IO(Unit):
   match b:
@@ -731,33 +719,6 @@ def h_write(s: Socket, +token: String, +who: U32) -> IO(Unit):
     h_write2(s, token, who, rows)
 
 # AUTHOR PAGES (cached like the feeds)
-def h_author3(s: Socket, +token: String, +who: U32, +uid: U32, +name: List<&2, List<&2, String>>) -> IO(Unit):
-  match name:
-    case Nil{}:
-      fail(s, token, who, 404)
-    case Con{+r, t}:
-      do IO<Unit>:
-        rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_author(), uid, 0, "", token)
-        cache_send(s, cache_key("u", who, U32.show(uid)), Pages.layout(Pages.col(r, 0n), signed(who), Pages.author_page(Pages.col(r, 0n), rows)))
-
-def h_author2(s: Socket, +token: String, +who: U32, +uid: U32) -> IO(Unit):
-  do IO<Unit>:
-    name : List<&2, List<&2, String>> <- Db.query(Db.q_author_public(), uid, 0, "", token)
-    h_author3(s, token, who, uid, name)
-
-def h_author.go(r: Socket & Result<&1, &1, U32 & String, Unit>, +token: String, +who: U32, +uid: U32) -> IO(Unit):
-  (s, x) = r
-  match x:
-    case Done{u}:
-      Socket.close(s)
-    case Fail{err}:
-      h_author2(s, token, who, uid)
-
-def h_author(s: Socket, +token: String, +who: U32, +uid: U32) -> IO(Unit):
-  do IO<Unit>:
-    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("u", who, U32.show(uid)))
-    h_author.go(r, token, who, uid)
-
 def h_create_post(s: Socket, +token: String, +who: U32, +bslug: String, +body: String) -> IO(Unit):
   +xs = form(body)
   h_create_post.go(s, token, who, bslug, xs)
@@ -1045,6 +1006,68 @@ def h_sync(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO
   +xs = form(body)
   h_sync.go(s, token, who, pid, Maybe.default(&2, String, Text.form_raw(xs, "ops"), ""), form_num(xs, "since"))
 
+def page_num.clamp(+n: U32) -> U32:
+  (U32.max(1, U32.min(n, 1000)) : U32)
+
+# FEED PAGES (cached): a blog, a tag, an author. 30 posts a page
+# (?page=N, at most 1000); the query fetches 31 to know if there are more.
+def page_num(+query: String) -> U32:
+  page_num.clamp(form_num(form(query), "page"))
+
+def page_key(+page: U32) -> String:
+  "?" ++ U32.show(page)
+
+def page_offset(+page: U32) -> U32:
+  ((page - 1) * 30 : U32)
+
+def h_blog2(s: Socket, +token: String, +who: U32, +page: U32, +blog: List<&2, List<&2, String>>) -> IO(Unit):
+  match blog:
+    case Nil{}:
+      fail(s, token, who, 404)
+    case Con{+r, t}:
+      do IO<Unit>:
+        rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_public(), num(Pages.col(r, 0n)), page_offset(page), "", token)
+        cache_send(s, cache_key("b", who, Pages.col(r, 2n) ++ page_key(page)), Pages.layout(Pages.col(r, 1n), signed(who), Pages.blog_page(Pages.col(r, 2n), Pages.col(r, 1n), Pages.col(r, 3n), page, rows)))
+
+def h_blog3(s: Socket, +token: String, +who: U32, +slug: String, +page: U32) -> IO(Unit):
+  do IO<Unit>:
+    blog : List<&2, List<&2, String>> <- blog_rows(token, slug)
+    h_blog2(s, token, who, page, blog)
+
+def h_blog(s: Socket, +token: String, +who: U32, +slug: String, +query: String) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("b", who, slug ++ page_key(page_num(query))))
+    cached_or(r, s2 => h_blog3(s2, token, who, slug, page_num(query)))
+
+def h_tag2(s: Socket, +token: String, +who: U32, +tag: String, +page: U32) -> IO(Unit):
+  do IO<Unit>:
+    rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_tag(), 0, page_offset(page), tag, token)
+    cache_send(s, cache_key("t", who, tag ++ page_key(page)), Pages.layout("#" ++ tag, signed(who), Pages.tag_page(tag, page, rows)))
+
+def h_tag(s: Socket, +token: String, +who: U32, +tag: String, +query: String) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("t", who, tag ++ page_key(page_num(query))))
+    cached_or(r, s2 => h_tag2(s2, token, who, tag, page_num(query)))
+
+def h_author3(s: Socket, +token: String, +who: U32, +uid: U32, +page: U32, +name: List<&2, List<&2, String>>) -> IO(Unit):
+  match name:
+    case Nil{}:
+      fail(s, token, who, 404)
+    case Con{+r, t}:
+      do IO<Unit>:
+        rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_author(), uid, page_offset(page), "", token)
+        cache_send(s, cache_key("u", who, U32.show(uid) ++ page_key(page)), Pages.layout(Pages.col(r, 0n), signed(who), Pages.author_page(U32.show(uid), Pages.col(r, 0n), page, rows)))
+
+def h_author2(s: Socket, +token: String, +who: U32, +uid: U32, +page: U32) -> IO(Unit):
+  do IO<Unit>:
+    name : List<&2, List<&2, String>> <- Db.query(Db.q_author_public(), uid, 0, "", token)
+    h_author3(s, token, who, uid, page, name)
+
+def h_author(s: Socket, +token: String, +who: U32, +uid: U32, +query: String) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("u", who, U32.show(uid) ++ page_key(page_num(query))))
+    cached_or(r, s2 => h_author2(s2, token, who, uid, page_num(query)))
+
 # DISPATCH
 # --------
 def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +origin: String) -> IO(Unit):
@@ -1060,7 +1083,7 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
     case Route.RReply{+id}:
       h_reply(s, token, who, id)
     case Route.RTag{+t}:
-      h_tag(s, token, who, t)
+      h_tag(s, token, who, t, query)
     case Route.RImage{+k}:
       do IO<Unit>:
         r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.image(s, k)
@@ -1072,11 +1095,11 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
     case Route.RHealth{}:
       send_text(s, token, 200, "ok\n")
     case Route.RBlog{+slug}:
-      h_blog(s, token, who, slug)
+      h_blog(s, token, who, slug, query)
     case Route.RPost{+b, +p}:
       h_post(s, token, who, b, p, query)
     case Route.RAuthor{+id}:
-      h_author(s, token, who, id)
+      h_author(s, token, who, id, query)
     case Route.RDash{}:
       h_dash(s, token, who)
     case Route.RDashBlog{+slug}:

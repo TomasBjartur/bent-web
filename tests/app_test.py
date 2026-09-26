@@ -379,8 +379,7 @@ def run(dbpath):
     st, _, body, _ = req("GET", "/search?q=zebracorn")
     check("search finds the published post", st == 200 and "Searchable" in body, st)
     check("search never shows drafts", "Secret draft" not in body and "nobody may read" not in body)
-    check("snippet marks the match", "<mark>zebracorn</mark>" in body, body[body.find("snippet"):][:300])
-    check("snippet is escaped", "&lt;b&gt;galloped&lt;/b&gt; &amp; sang" in body and "<b>galloped" not in body)
+    check("result excerpt is escaped", "galloped" in body and "<b" not in body.split('class="feed"')[1] and "&amp; sang" in body)
     check("prefix search", "Searchable" in req("GET", "/search?q=zebrac")[2])
     check("case and accents folded", "Searchable" in req("GET", "/search?q=" + urllib.parse.quote("ZEBRACÓRN"))[2])
     for q in ['"', '""', 'zebracorn"', 'NEAR(', 'a OR', '*', '^', ')(', "'", '%00', 'x' * 600, ' ' * 50, '\x01zebracorn']:
@@ -568,6 +567,17 @@ def run(dbpath):
     check("unknown host: 404", req("GET", "/", host="nobody.example.net")[0] == 404)
     st, _, _, _ = req("POST", "/dash/bob-s-great-blog/domain", b, {"action": "remove"})
     check("remove", st == 303 and req("GET", "/_domain?domain=blog.example.org")[0] == 404 and req("GET", "/", host="blog.example.org")[0] == 404)
+
+    # Pagination: 30 posts a page on blog, tag and author pages.
+    for i in range(32):
+        st, loc, _, _ = req("POST", "/dash/bob-two/posts", b, {"title": f"Many {i:02d}"})
+        req("POST", loc, b, {"title": f"Many {i:02d}", "body": "m", "tags": "many", "action": "publish"})
+    _, _, p1, _ = req("GET", "/b/bob-two")
+    _, _, p2, _ = req("GET", "/b/bob-two?page=2")
+    check("page 1: 30 posts and an Older link", p1.count('class="excerpt"') == 30 and "?page=2" in p1 and "Newer" not in p1)
+    check("page 2: the rest and a Newer link", p2.count('class="excerpt"') == 2 and "Newer" in p2 and "Older" not in p2, p2.count('class="excerpt"'))
+    check("tag pages paginate", "?page=2" in req("GET", "/t/many")[2] and req("GET", "/t/many?page=2")[2].count('class="excerpt"') == 2)
+    check("page numbers are clamped", req("GET", "/b/bob-two?page=99999")[0] == 200 and req("GET", "/b/bob-two?page=0")[0] == 200)
 
     # Security headers everywhere.
     _, _, _, head = req("GET", "/b/alice/first")

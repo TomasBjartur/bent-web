@@ -183,7 +183,7 @@ def main():
         settle([ea])
         ea.js("document.querySelector('form.editor').requestSubmit()")
         time.sleep(1.5)
-        md = sqlite3.connect(dbpath).execute("SELECT body_md FROM post WHERE id = ?", (opid,)).fetchone()[0]
+        md = sqlite3.connect(dbpath).execute("SELECT body_md FROM post_body WHERE post_id = ?", (opid,)).fetchone()[0]
         check("saved again from the editor: unchanged", md == text, repr(md))
 
         # An outsider can neither read nor write the document.
