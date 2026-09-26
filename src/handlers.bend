@@ -208,6 +208,18 @@ def is_some_permit(m: Maybe<&2, Authz.Permit>) -> Bool:
     case Some{p}:
       True{}
 
+def first_row(+rows: List<&2, List<&2, String>>) -> List<&2, String>:
+  match rows:
+    case Nil{}:
+      Nil{}
+    case Con{r, t}:
+      r
+
+def h_post5(s: Socket, +token: String, +pg: Pages.Page) -> IO(Unit):
+  do IO<Unit>:
+    x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, Pages.page_texts(pg), Pages.page_bodies(pg), token, "", "")
+    done(x)
+
 # The post page: the stored body is spliced in by C (with its own floor).
 # Members see an Edit link (only if they could open the editor).
 def h_post4(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +notice: Bool, +view: List<&2, List<&2, String>>) -> IO(Unit):
@@ -216,8 +228,9 @@ def h_post4(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +n
       fail(s, token, who, 404)
     case Con{+r, t}:
       do IO<Unit>:
-        x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, two(Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice)), Pages.post_after(r) ++ Pages.layout_bottom()), Con{pid, Nil{}}, token, "", "")
-        done(x)
+        +social : List<&2, List<&2, String>> <- Db.query(Db.q_post_social(), pid, 0, "", token)
+        comments : List<&2, List<&2, String>> <- Db.query(Db.q_comments(), pid, 0, "", token)
+        h_post5(s, token, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), comments), Con{Pages.T{Pages.layout_bottom()}, Nil{}})}}}, ""))
 
 def h_post3(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +notice: Bool, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
@@ -232,6 +245,154 @@ def h_post2(s: Socket, +token: String, +who: U32, +pid: U32, +notice: Bool) -> I
   do IO<Unit>:
     +f : Spec.Facts <- Db.facts(who, 0, pid)
     h_post3(s, token, who, pid, is_some_permit(Authz.authorize(f, Spec.EditPost{pid})), notice, Authz.authorize(f, Spec.ReadPost{pid}))
+
+# LIKES AND COMMENTS
+# ------------------
+# Each ends on the post's page (at an anchor); the post's address comes
+# from the database.
+def to_post2(s: Socket, +token: String, +anchor: String, +view: List<&2, List<&2, String>>) -> IO(Unit):
+  match view:
+    case Nil{}:
+      redirect(s, token, "/", "")
+    case Con{+r, t}:
+      redirect(s, token, "/b/" ++ (Pages.col(r, 3n) ++ ("/" ++ (Pages.col(r, 0n) ++ anchor))), "")
+
+def to_post(s: Socket, +token: String, +pid: U32, +anchor: String) -> IO(Unit):
+  do IO<Unit>:
+    view : List<&2, List<&2, String>> <- Db.query(Db.q_post_view(), pid, 0, "", token)
+    to_post2(s, token, anchor, view)
+
+def engage_done(s: Socket, +token: String, +who: U32, +pid: U32, +anchor: String, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+  match r:
+    case Done{id}:
+      to_post(s, token, pid, anchor)
+    case Fail{err}:
+      (code, msg) = err
+      fail(s, token, who, apply_status(code))
+
+def h_like2(s: Socket, +token: String, +who: U32, +pid: U32, +on: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match m:
+    case None{}:
+      fail(s, token, who, 403)
+    case Some{p}:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, on, Db.no_data())
+        engage_done(s, token, who, pid, "#social", r)
+
+def h_like.go(signed: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +on: U32) -> IO(Unit):
+  match signed:
+    case False{}:
+      redirect(s, token, "/login", "")
+    case True{}:
+      do IO<Unit>:
+        f : Spec.Facts <- Db.facts(who, 0, pid)
+        h_like2(s, token, who, pid, on, Authz.authorize(f, Spec.LikePost{pid}))
+
+# POST /like/<post>: on=1 likes, on=0 unlikes.
+def h_like(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO(Unit):
+  h_like.go(signed(who), s, token, who, pid, Bool.to_u32(String.eq(Maybe.default(&2, String, Text.form_raw(form(body), "on"), ""), "1")))
+
+def comment_fail(slow: Bool, s: Socket, +token: String, +who: U32, +code: U32) -> IO(Unit):
+  match slow:
+    case True{}:
+      fail(s, token, who, 429)
+    case False{}:
+      fail(s, token, who, apply_status(code))
+
+# A new comment ends at its own anchor; too many too fast is 429.
+def comment_done(s: Socket, +token: String, +who: U32, +pid: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+  match r:
+    case Done{+id}:
+      to_post(s, token, pid, "#c" ++ U32.show(id))
+    case Fail{err}:
+      (+code, msg) = err
+      comment_fail(U32.is_eq(code, 3), s, token, who, code)
+
+def h_comment3(s: Socket, +token: String, +who: U32, +pid: U32, +parent: U32, +b: Text.Body, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match m:
+    case None{}:
+      fail(s, token, who, 403)
+    case Some{p}:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, parent, Db.comment_data(b))
+        comment_done(s, token, who, pid, r)
+
+def h_comment2(s: Socket, +token: String, +who: U32, +pid: U32, +parent: U32, m: Maybe<&2, Text.Body>) -> IO(Unit):
+  match m:
+    case None{}:
+      fail(s, token, who, 400)
+    case Some{+b}:
+      do IO<Unit>:
+        f : Spec.Facts <- Db.facts(who, 0, pid)
+        h_comment3(s, token, who, pid, parent, b, Authz.authorize(f, Spec.CommentPost{pid}))
+
+# COLLABORATIVE EDITING
+# ---------------------
+def form_num(+xs: List<&2, Text.Field>, +key: String) -> U32:
+  Maybe.default(&2, U32, U32.read(Maybe.default(&2, String, Text.form_raw(xs, key), "")), 0)
+
+def h_comment.go(signed: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>) -> IO(Unit):
+  match signed:
+    case False{}:
+      redirect(s, token, "/login", "")
+    case True{}:
+      h_comment2(s, token, who, pid, form_num(xs, "parent"), Text.form_comment(xs, "body"))
+
+# POST /comment/<post>: body, and parent (a comment id) for a reply.
+def h_comment(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO(Unit):
+  h_comment.go(signed(who), s, token, who, pid, form(body))
+
+def h_delete_comment3(s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match m:
+    case None{}:
+      fail(s, token, who, 403)
+    case Some{p}:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, 0, Db.no_data())
+        engage_done(s, token, who, pid, "#comments", r)
+
+def h_delete_comment2(s: Socket, +token: String, +who: U32, +cid: U32, +info: List<&2, List<&2, String>>) -> IO(Unit):
+  match info:
+    case Nil{}:
+      fail(s, token, who, 404)
+    case Con{+r, t}:
+      do IO<Unit>:
+        f : Spec.Facts <- Db.facts(who, 0, num(Pages.col(r, 0n)))
+        h_delete_comment3(s, token, who, num(Pages.col(r, 0n)), Authz.authorize(f, Spec.DeleteComment{num(Pages.col(r, 0n)), cid, num(Pages.col(r, 1n))}))
+
+# POST /comment/<id>/delete: by its author, or a member of the blog. The
+# author is as loaded here; the write only matches a comment by them.
+def h_delete_comment(s: Socket, +token: String, +who: U32, +cid: U32) -> IO(Unit):
+  do IO<Unit>:
+    info : List<&2, List<&2, String>> <- Db.query(Db.q_comment_info(), cid, 0, "", token)
+    h_delete_comment2(s, token, who, cid, info)
+
+def h_reply3(s: Socket, +token: String, +who: U32, +cid: U32, +info: List<&2, String>, +view: List<&2, List<&2, String>>) -> IO(Unit):
+  do IO<Unit>:
+    x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, two(Pages.layout_top("Reply", True{}) ++ Pages.reply_before(info, "/b/" ++ (first_col(view, 3n) ++ ("/" ++ (first_col(view, 0n) ++ ("#c" ++ U32.show(cid)))))), Pages.reply_after(info, U32.show(cid), "/b/" ++ (first_col(view, 3n) ++ ("/" ++ (first_col(view, 0n) ++ ("#c" ++ U32.show(cid)))))) ++ Pages.layout_bottom()), Con{Db.comment_body(cid), Nil{}}, token, "", "")
+    done(x)
+
+def h_reply2(s: Socket, +token: String, +who: U32, +cid: U32, +info: List<&2, List<&2, String>>) -> IO(Unit):
+  match info:
+    case Nil{}:
+      fail(s, token, who, 404)
+    case Con{+r, t}:
+      do IO<Unit>:
+        view : List<&2, List<&2, String>> <- Db.query(Db.q_post_view(), num(Pages.col(r, 0n)), 0, "", token)
+        h_reply3(s, token, who, cid, r, view)
+
+def h_reply.go(signed: Bool, s: Socket, +token: String, +who: U32, +cid: U32) -> IO(Unit):
+  match signed:
+    case False{}:
+      redirect(s, token, "/login", "")
+    case True{}:
+      do IO<Unit>:
+        info : List<&2, List<&2, String>> <- Db.query(Db.q_comment_info(), cid, 0, "", token)
+        h_reply2(s, token, who, cid, info)
+
+# GET /reply/<comment>: the comment, and a form to answer it.
+def h_reply(s: Socket, +token: String, +who: U32, +cid: U32) -> IO(Unit):
+  h_reply.go(signed(who), s, token, who, cid)
 
 # ?published=1: the editor just published it (a notice, for members only).
 def just_published(+query: String) -> Bool:
@@ -628,11 +789,6 @@ def h_static(k: Nat, s: Socket, +token: String, +who: U32) -> IO(Unit):
         r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.asset(s, U32.from_nat(id))
         done(r)
 
-# COLLABORATIVE EDITING
-# ---------------------
-def form_num(+xs: List<&2, Text.Field>, +key: String) -> U32:
-  Maybe.default(&2, U32, U32.read(Maybe.default(&2, String, Text.form_raw(xs, key), "")), 0)
-
 def h_sync3(s: Socket, +token: String, +who: U32, +ops: String, +since: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
     case None{}:
@@ -675,6 +831,8 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
       h_feed(s, token, origin)
     case Route.RSearch{}:
       h_search(s, token, who, query)
+    case Route.RReply{+id}:
+      h_reply(s, token, who, id)
     case Route.RBlogFeed{+b}:
       h_blog_feed(s, token, origin, b)
     case Route.RHome{}:
@@ -726,6 +884,12 @@ def write_route(s: Socket, r: Route.Route, +c: Auth.Conf, +token: String, +who: 
       h_logout(s, token)
     case Route.RWrite{}:
       h_write(s, token, who)
+    case Route.RLike{+id}:
+      h_like(s, token, who, id, body)
+    case Route.RComment{+id}:
+      h_comment(s, token, who, id, body)
+    case Route.RDeleteComment{+id}:
+      h_delete_comment(s, token, who, id)
     case Route.RSync{+id}:
       h_sync(s, token, who, id, body)
     case Route.RSignup{}:

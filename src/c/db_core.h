@@ -20,7 +20,7 @@
 #define ROLE_OWNER 1u
 #define ROLE_AUTHOR 2u
 
-// Actions, matching spec/authz.bend's Action constructors in order.
+// Actions: the kinds src/db.bend's act_of gives spec/authz.bend's Actions.
 enum {
   A_CREATE_BLOG = 0,
   A_EDIT_BLOG,
@@ -32,6 +32,9 @@ enum {
   A_PUBLISH_POST,
   A_DELETE_POST,
   A_SYNC_OPS,  // not a policy action: EditPost's facts, used by db_sync
+  A_LIKE_POST,       // target = post, flag = 1 like, 0 unlike
+  A_COMMENT,         // target = post, flag = parent comment (0: none), body_md/html
+  A_DELETE_COMMENT,  // target = comment, user = its author (checked in SQL)
   A_KINDS
 };
 
@@ -95,10 +98,20 @@ enum {
   Q_AUTHOR_PUBLIC,      // a=user -> name  (only if they have a published post)
   Q_POSTS_BY_AUTHOR,    // a=user -> as Q_RECENT_PUBLIC  (published only)
   Q_SEARCH,             // text=FTS5 query -> as Q_RECENT_PUBLIC, excerpt = marked snippet, no rfc822
+  Q_POST_SOCIAL,        // a=post -> likes, liked by the session's user (0/1), comments  (published, or member)
+  Q_COMMENTS,           // a=post -> id, depth, author_id, author, date, deleted, mine (0/1), parent
+                        //    in thread order (published, or member)
+  Q_COMMENT_INFO,       // a=comment -> post_id, author_id, author, date, deleted  (published, or member)
   Q_COUNT
 };
 
-#define DB_ROWS_MAX 100u
+#define DB_ROWS_MAX 300u
+
+// COMMENTS: at most COMMENT_RATE_MAX per user per window (else DB_CONFLICT),
+// and POST_COMMENTS_MAX per post.
+#define COMMENT_RATE_MAX 5u
+#define COMMENT_RATE_WINDOW_MS 60000ull
+#define POST_COMMENTS_MAX 5000u
 #define DB_COLS_MAX 10u
 
 // Called once per row; cols[i] is UTF-8 text of length lens[i].
@@ -114,6 +127,7 @@ enum {
   ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
   ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
   ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT, ST_SLUG_TAKEN, ST_POST_RENAME,
+  ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
   ST_COUNT
 };
 
@@ -135,6 +149,11 @@ int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
 // Returns 1 if the body was passed, 0 if not allowed or absent, -1 on error.
 int32_t db_body(Db *db, uint32_t post, const uint8_t token_hash[32], uint64_t now_ms,
                 DbOutFn out, void *ctx);
+
+// The same for a comment's stored HTML (not deleted; its post published or
+// the session a member of the post's blog).
+int32_t db_comment_body(Db *db, uint32_t comment, const uint8_t token_hash[32], uint64_t now_ms,
+                        DbOutFn out, void *ctx);
 
 // Opens (creating if needed) the database at path and prepares every
 // statement. Returns 0 on success.

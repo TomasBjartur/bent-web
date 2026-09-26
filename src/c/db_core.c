@@ -66,6 +66,21 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_CRED_NEW] = "INSERT INTO credential(id, user_id, x, y, sign_count, created_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
   [ST_CRED_COUNT] = ("UPDATE credential SET sign_count = ?2 WHERE id = ?1 AND "
                      "(sign_count < ?2 OR (sign_count = 0 AND ?2 = 0))"),
+  [ST_LIKE_ADD] = "INSERT OR IGNORE INTO post_like(post_id, user_id, created_ms) VALUES (?1, ?2, ?3)",
+  [ST_LIKE_DEL] = "DELETE FROM post_like WHERE post_id = ?1 AND user_id = ?2",
+  [ST_COMMENT_RECENT] = "SELECT count(*) FROM comment WHERE author_id = ?1 AND created_ms > ?2",
+  [ST_COMMENT_COUNT] = "SELECT count(*) FROM comment WHERE post_id = ?1",
+  // A reply's parent must be a live comment on the same post.
+  [ST_COMMENT_NEW] = ("INSERT INTO comment(post_id, parent_id, author_id, body_md, body_html, created_ms) "
+                      "SELECT ?1, nullif(?2, 0), ?3, ?4, ?5, ?6 WHERE ?2 = 0 OR EXISTS "
+                      "(SELECT 1 FROM comment WHERE id = ?2 AND post_id = ?1 AND deleted = 0)"),
+  // Matches only that comment, on that post, by that author: the claimed
+  // author is checked here. Replies stay; the text goes.
+  [ST_COMMENT_DEL] = ("UPDATE comment SET deleted = 1, body_md = '', body_html = '' "
+                      "WHERE id = ?1 AND post_id = ?2 AND author_id = ?3 AND deleted = 0"),
+  [ST_COMMENT_BODY] = ("SELECT c.body_html FROM comment c JOIN post p ON p.id = c.post_id WHERE c.id = ?1 AND c.deleted = 0 "
+                       "AND (p.published = 1 OR EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id "
+                       "WHERE m.blog_id = p.blog_id AND s.token_hash = ?2 AND s.expires_ms > ?3))"),
   [ST_BODY] = ("SELECT p.body_html FROM post p WHERE p.id = ?1 AND (p.published = 1 OR EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id WHERE m.blog_id = p.blog_id AND s.token_hash = ?2 AND s.expires_ms > ?3))"),
 };
 
@@ -88,6 +103,7 @@ static const char *const DB_SQL[ST_COUNT] = {
   "substr('JanFebMarAprMayJunJulAugSepOctNovDec', 3 * strftime('%m', " t " / 1000, 'unixepoch') - 2, 3) || " \
   "strftime(' %Y %H:%M:%S +0000', " t " / 1000, 'unixepoch')"
 #define POST_RFC822 POST_RFC822_AT("coalesce(p.published_ms, p.updated_ms)")
+#define COMMENT_DATE "strftime('%Y-%m-%d', c.created_ms / 1000, 'unixepoch')"
 #define FEED_COLS "b.slug, p.slug, p.title, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES ", p.author_id, " POST_RFC822
 
 static const char *const DB_Q[Q_COUNT] = {
@@ -130,6 +146,25 @@ static const char *const DB_Q[Q_COUNT] = {
                 "snippet(post_fts, 1, char(1), char(2), '…', 24), " POST_MINUTES ", p.author_id "
                 "FROM post_fts JOIN post p ON p.id = post_fts.rowid JOIN blog b ON b.id = p.blog_id "
                 "WHERE post_fts MATCH ?3 AND p.published = 1 ORDER BY rank LIMIT 30"),
+  [Q_POST_SOCIAL] = ("SELECT (SELECT count(*) FROM post_like WHERE post_id = p.id), "
+                     "EXISTS (SELECT 1 FROM post_like l JOIN session s ON s.user_id = l.user_id "
+                     "WHERE l.post_id = p.id AND s.token_hash = ?8 AND s.expires_ms > ?9), "
+                     "(SELECT count(*) FROM comment WHERE post_id = p.id AND deleted = 0) "
+                     "FROM post p WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
+  // Threads in order (a path of zero-padded ids), at most 50 deep.
+  [Q_COMMENTS] = ("WITH RECURSIVE t(id, depth, path) AS ("
+                  "SELECT id, 0, printf('%010d', id) FROM comment WHERE post_id = ?1 AND parent_id IS NULL "
+                  "UNION ALL SELECT c.id, t.depth + 1, t.path || printf('%010d', c.id) FROM comment c JOIN t ON c.parent_id = t.id "
+                  "WHERE t.depth < 50) "
+                  "SELECT c.id, t.depth, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted, "
+                  "EXISTS (SELECT 1 FROM session s WHERE s.user_id = c.author_id AND s.token_hash = ?8 AND s.expires_ms > ?9), "
+                  "coalesce(c.parent_id, 0) "
+                  "FROM t JOIN comment c ON c.id = t.id LEFT JOIN user u ON u.id = c.author_id "
+                  "WHERE EXISTS (SELECT 1 FROM post p WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")) "
+                  "ORDER BY t.path LIMIT 300"),
+  [Q_COMMENT_INFO] = ("SELECT c.post_id, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted "
+                      "FROM comment c JOIN post p ON p.id = c.post_id LEFT JOIN user u ON u.id = c.author_id "
+                      "WHERE c.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
   [Q_POSTS_BY_AUTHOR] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id "
                          "WHERE p.author_id = ?1 AND p.published = 1 ORDER BY p.published_ms DESC LIMIT 100"),
 };
@@ -161,6 +196,18 @@ static const char *const DB_MIGRATIONS[] = {
   " INSERT INTO post_fts(post_fts, rowid, title, body_md) VALUES ('delete', old.id, old.title, old.body_md);"
   " INSERT INTO post_fts(rowid, title, body_md) VALUES (new.id, new.title, new.body_md); END;"
   "INSERT INTO post_fts(post_fts) VALUES ('rebuild');",
+  // v4: likes and comments. A deleted comment keeps its row (and replies)
+  // with its text removed.
+  "CREATE TABLE post_like (post_id INTEGER NOT NULL REFERENCES post(id) ON DELETE CASCADE,"
+  " user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE, created_ms INTEGER NOT NULL,"
+  " PRIMARY KEY (post_id, user_id)) WITHOUT ROWID;"
+  "CREATE TABLE comment (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL REFERENCES post(id) ON DELETE CASCADE,"
+  " parent_id INTEGER REFERENCES comment(id) ON DELETE CASCADE, author_id INTEGER NOT NULL REFERENCES user(id),"
+  " body_md TEXT NOT NULL CHECK (length(body_md) <= 10000), body_html TEXT NOT NULL,"
+  " created_ms INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)));"
+  "CREATE INDEX comment_post ON comment(post_id, parent_id);"
+  "CREATE INDEX comment_parent ON comment(parent_id);"
+  "CREATE INDEX comment_author_time ON comment(author_id, created_ms);",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 
@@ -376,6 +423,12 @@ static int32_t db_floor(const DbFacts *f, const DbWrite *w) {
     case A_DELETE_POST:
     case A_SYNC_OPS:
       return f->has_post && w->target == f->post && f->post_blog == f->blog && f->role != ROLE_NONE;
+    case A_LIKE_POST:
+    case A_COMMENT:
+      return f->who != 0u && f->has_post && w->target == f->post && f->post_pub == 1u;
+    case A_DELETE_COMMENT:
+      return f->who != 0u && f->has_post && f->post_blog == f->blog &&
+             ((w->user != 0u && w->user == f->who) || f->role != ROLE_NONE);
     default:
       return 0;
   }
@@ -488,6 +541,42 @@ static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *
       st = db->st[ST_POST_DELETE];
       sqlite3_bind_int64(st, 1, w->target);
       return db_rc(db_exec(st));
+    case A_LIKE_POST:
+      st = db->st[w->flag != 0u ? ST_LIKE_ADD : ST_LIKE_DEL];
+      sqlite3_bind_int64(st, 1, w->target);
+      sqlite3_bind_int64(st, 2, f->who);
+      if (w->flag != 0u) sqlite3_bind_int64(st, 3, (sqlite3_int64)now_ms);
+      return db_rc(db_exec(st));
+    case A_COMMENT: {
+      uint32_t n = 0;
+      st = db->st[ST_COMMENT_RECENT];
+      sqlite3_bind_int64(st, 1, f->who);
+      sqlite3_bind_int64(st, 2, (sqlite3_int64)(now_ms - COMMENT_RATE_WINDOW_MS));
+      if (db_one_u32(st, &n) != 1) return DB_ERROR;
+      if (n >= COMMENT_RATE_MAX) return DB_CONFLICT;
+      st = db->st[ST_COMMENT_COUNT];
+      sqlite3_bind_int64(st, 1, w->target);
+      if (db_one_u32(st, &n) != 1) return DB_ERROR;
+      if (n >= POST_COMMENTS_MAX) return DB_CONFLICT;
+      st = db->st[ST_COMMENT_NEW];
+      sqlite3_bind_int64(st, 1, w->target);
+      sqlite3_bind_int64(st, 2, w->flag);
+      sqlite3_bind_int64(st, 3, f->who);
+      bind_text(st, 4, w->body_md);
+      bind_text(st, 5, w->body_html);
+      sqlite3_bind_int64(st, 6, (sqlite3_int64)now_ms);
+      if ((r = db_rc(db_exec(st))) != DB_OK) return r;
+      if (sqlite3_changes(db->conn) != 1) return DB_STALE;  // no such parent on this post
+      *new_id = (uint32_t)sqlite3_last_insert_rowid(db->conn);
+      return DB_OK;
+    }
+    case A_DELETE_COMMENT:
+      st = db->st[ST_COMMENT_DEL];
+      sqlite3_bind_int64(st, 1, w->target);
+      sqlite3_bind_int64(st, 2, f->post);
+      sqlite3_bind_int64(st, 3, w->user);
+      if ((r = db_rc(db_exec(st))) != DB_OK) return r;
+      return sqlite3_changes(db->conn) == 1 ? DB_OK : DB_STALE;  // not that author's live comment
     default:
       return DB_DENIED;
   }
@@ -560,6 +649,26 @@ int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
   sqlite3_reset(st);
   sqlite3_clear_bindings(st);
   return rows;
+}
+
+int32_t db_comment_body(Db *db, uint32_t comment, const uint8_t token_hash[32], uint64_t now_ms,
+                        DbOutFn out, void *ctx) {
+  sqlite3_stmt *st = db->st[ST_COMMENT_BODY];
+  sqlite3_bind_int64(st, 1, comment);
+  sqlite3_bind_blob(st, 2, token_hash, 32, SQLITE_STATIC);
+  sqlite3_bind_int64(st, 3, (sqlite3_int64)now_ms);
+  int rc = sqlite3_step(st);
+  int32_t r = rc == SQLITE_DONE ? 0 : -1;
+  if (rc == SQLITE_ROW) {
+    const unsigned char *t = sqlite3_column_text(st, 0);
+    int n = sqlite3_column_bytes(st, 0);
+    ASSERT(n >= 0);
+    out(ctx, t != NULL ? (const char *)t : "", (uint32_t)n);
+    r = 1;
+  }
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+  return r;
 }
 
 int32_t db_body(Db *db, uint32_t post, const uint8_t token_hash[32], uint64_t now_ms,

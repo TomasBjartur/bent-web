@@ -44,6 +44,24 @@ def and_false_r(a: Bool) -> {Bool.and(a, False{}) == False{} : Bool}:
     case False{}:
       {==}
 
+# a || True is True.
+def or_true_r(a: Bool) -> {Bool.or(a, True{}) == True{} : Bool}:
+  match a:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+
+# If a || c holds, a implies a2 and c implies c2, then a2 || c2 holds.
+def or_mono(a: Bool, c: Bool, +a2: Bool, +c2: Bool, fa: {a == True{} : Bool} -> {a2 == True{} : Bool}, fc: {c == True{} : Bool} -> {c2 == True{} : Bool}, e: {Bool.or(a, c) == True{} : Bool}) -> {Bool.or(a2, c2) == True{} : Bool}:
+  match a:
+    case True{}:
+      %Equal.sym(Bool, a2, True{}, fa({==})) : {Bool.or(_, c2) == True{} : Bool}
+      {==}
+    case False{}:
+      %Equal.sym(Bool, c2, True{}, fc(e)) : {Bool.or(a2, _) == True{} : Bool}
+      or_true_r(a2)
+
 # U32
 # ---
 

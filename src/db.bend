@@ -119,6 +119,15 @@ def q_posts_by_author() -> U32:
 def q_search() -> U32:
   14
 
+def q_post_social() -> U32:
+  15
+
+def q_comments() -> U32:
+  16
+
+def q_comment_info() -> U32:
+  17
+
 def principal.go(anon: Bool, +who: U32) -> Spec.Principal:
   match anon:
     case True{}:
@@ -209,6 +218,15 @@ def title_data(t: Text.Title) -> WData:
 def slug_data(s: Text.Slug) -> WData:
   WData{Text.Slug.text(s), "", "", None{}}
 
+# A comment (its parent goes in apply's flag).
+def comment_data(+b: Text.Body) -> WData:
+  WData{"", "", Text.Body.text(b), Some{Md.render_body(b)}}
+
+# The body id Db.page splices a comment's stored HTML for (the top bit
+# set; src/effects/db.c PAGE_COMMENT_BIT).
+def comment_body(+id: U32) -> U32:
+  (id + 2147483648 : U32)
+
 def post_data(t: Text.Title, +b: Text.Body) -> WData:
   WData{"", Text.Title.text(t), Text.Body.text(b), Some{Md.render_body(b)}}
 
@@ -243,6 +261,12 @@ def act_of(a: Spec.Action, +flag: U32) -> Act:
       Act{99, p, 0, 0}
     case Spec.ReadBlogAdmin{b}:
       Act{99, b, 0, 0}
+    case Spec.LikePost{p}:
+      Act{10, p, 0, flag}
+    case Spec.CommentPost{p}:
+      Act{11, p, 0, flag}
+    case Spec.DeleteComment{p, c, a}:
+      Act{12, c, a, 0}
 
 def apply_post(+token: String, +who: U32, +blog: U32, +role: U32, post: Maybe<&2, Spec.PostInfo>, +kind: U32, +target: U32, +user: U32, +flag: U32, slug: String, title: String, md: String, html: String) -> IO(Result<&1, &1, U32 & String, U32>):
   match post:

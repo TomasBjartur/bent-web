@@ -252,6 +252,12 @@ def Laws.authz_anon_read_only(blog, role, post, a, e):
       {==}
     case AuthzSpec.ReadBlogAdmin{b}:
       e
+    case AuthzSpec.LikePost{p}:
+      e
+    case AuthzSpec.CommentPost{p}:
+      e
+    case AuthzSpec.DeleteComment{p, c, a2}:
+      e
 
 # can_write_post needs the post's blog to equal the facts' blog; it does not.
 def cwp_cross(+who: AuthzSpec.Principal, +blog: U32, +role: Maybe<&2, AuthzSpec.Role>, +p: U32, +pb: U32, +pub: Bool, +q: U32, ne: {U32.is_eq(pb, blog) == False{} : Bool}) -> {AuthzSpec.can_write_post(AuthzSpec.Facts{who, blog, role, Some{AuthzSpec.PostInfo{p, pb, pub}}}, q) == False{} : Bool}:
@@ -311,6 +317,23 @@ def Laws.authz_members_write(k, who, blog, role, post, b, q, e):
       cwp_member(who, blog, role, post, q, e)
     case 3n+r:
       cwp_member(who, blog, role, post, q, e)
+
+# post_public on an unpublished post is (p == q) && False.
+def engage_draft(+who: AuthzSpec.Principal, +blog: U32, +role: Maybe<&2, AuthzSpec.Role>, +p: U32, +pb: U32, +q: U32) -> {Bool.and(AuthzSpec.is_user(who), AuthzSpec.post_public(AuthzSpec.Facts{who, blog, role, Some{AuthzSpec.PostInfo{p, pb, False{}}}}, q)) == False{} : Bool}:
+  %Equal.sym(Bool, Bool.and(U32.is_eq(p, q), False{}), False{}, L.and_false_r(U32.is_eq(p, q))) : {Bool.and(AuthzSpec.is_user(who), _) == False{} : Bool}
+  L.and_false_r(AuthzSpec.is_user(who))
+
+def Laws.authz_engage_published(k, who, blog, role, p, pb, q):
+  match k:
+    case 0n:
+      engage_draft(who, blog, role, p, pb, q)
+    case 1n+r:
+      engage_draft(who, blog, role, p, pb, q)
+
+# Peel is_user and post_is, then: either (a != 0 && a == who), so a == who,
+# or can_write_post, so a member.
+def Laws.authz_comment_delete(who, blog, role, post, p, c, a, e):
+  L.or_mono(Bool.and(U32.is_ne(a, 0), U32.is_eq(a, AuthzSpec.user_id(who))), AuthzSpec.can_write_post(AuthzSpec.Facts{who, blog, role, post}, p), U32.is_eq(a, AuthzSpec.user_id(who)), AuthzSpec.is_member(role), h => L.and_right(U32.is_ne(a, 0), U32.is_eq(a, AuthzSpec.user_id(who)), h), h => cwp_member(who, blog, role, post, p, h), L.and_right(AuthzSpec.post_is(AuthzSpec.Facts{who, blog, role, post}, p), Bool.or(Bool.and(U32.is_ne(a, 0), U32.is_eq(a, AuthzSpec.user_id(who))), AuthzSpec.can_write_post(AuthzSpec.Facts{who, blog, role, post}, p)), L.and_right(AuthzSpec.is_user(who), Bool.and(AuthzSpec.post_is(AuthzSpec.Facts{who, blog, role, post}, p), Bool.or(Bool.and(U32.is_ne(a, 0), U32.is_eq(a, AuthzSpec.user_id(who))), AuthzSpec.can_write_post(AuthzSpec.Facts{who, blog, role, post}, p))), e)))
 
 # USER TEXT: each refinement carries its proof.
 

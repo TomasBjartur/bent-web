@@ -40,6 +40,10 @@ type Route is Data:
   RFeed{}
   RBlogFeed{blog: String}
   RSearch{}
+  RLike{post: U32}
+  RComment{post: U32}
+  RDeleteComment{comment: U32}
+  RReply{comment: U32}
   RNotFound{}
 
 type Plan is Data:
@@ -100,6 +104,8 @@ def get2(k: Nat, +b: String) -> Route:
       RStatic{b}
     case 5n:
       RAuthor{id_of(b)}
+    case 6n:
+      RReply{id_of(b)}
     case _:
       RNotFound{}
 
@@ -124,7 +130,7 @@ def route_get(xs: List<&2, String>) -> Route:
         case Con{+b, u}:
           match u:
             case Nil{}:
-              get2(Nat.add(eq(a, "b"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "edit"), 3n), Nat.add(Nat.mul(eq(a, "s"), 4n), Nat.mul(eq(a, "u"), 5n))))), b)
+              get2(Nat.add(eq(a, "b"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "edit"), 3n), Nat.add(Nat.mul(eq(a, "s"), 4n), Nat.add(Nat.mul(eq(a, "u"), 5n), Nat.mul(eq(a, "reply"), 6n)))))), b)
             case Con{+c, v}:
               match v:
                 case Nil{}:
@@ -156,6 +162,10 @@ def post2(k: Nat, +b: String) -> Route:
       RLogin{}
     case 3n:
       RRegister{}
+    case 4n:
+      RLike{id_of(b)}
+    case 5n:
+      RComment{id_of(b)}
     case _:
       RNotFound{}
 
@@ -179,6 +189,8 @@ def post3(k: Nat, +b: String) -> Route:
       RLoginOptions{}
     case 8n:
       RSync{id_of(b)}
+    case 9n:
+      RDeleteComment{id_of(b)}
     case _:
       RNotFound{}
 
@@ -186,7 +198,7 @@ def post3_old(+a: String, +c: String) -> Nat:
   Nat.add(Nat.mul(eq(a, "dash"), Nat.add(eq(c, "posts"), Nat.mul(eq(c, "authors"), 2n))), Nat.mul(eq(a, "edit"), Nat.add(Nat.mul(eq(c, "publish"), 3n), Nat.add(Nat.mul(eq(c, "unpublish"), 4n), Nat.add(Nat.mul(eq(c, "delete"), 5n), Nat.mul(eq(c, "sync"), 8n))))))
 
 def post3_id(+a: String, +b: String, +c: String) -> Nat:
-  Nat.add(Nat.mul(Nat.mul(eq(a, "passkey"), eq(c, "options")), Nat.add(Nat.mul(eq(b, "register"), 6n), Nat.mul(eq(b, "login"), 7n))), post3_old(a, c))
+  Nat.add(Nat.mul(Nat.mul(eq(a, "passkey"), eq(c, "options")), Nat.add(Nat.mul(eq(b, "register"), 6n), Nat.mul(eq(b, "login"), 7n))), Nat.add(Nat.mul(Nat.mul(eq(a, "comment"), eq(c, "delete")), 9n), post3_old(a, c)))
 
 # /dash/<slug>/authors/<id>/remove
 def post5(k: Nat, +b: String, +d: String) -> Route:
@@ -207,7 +219,7 @@ def route_post(xs: List<&2, String>) -> Route:
         case Con{+b, u}:
           match u:
             case Nil{}:
-              post2(Nat.add(eq(a, "edit"), Nat.mul(eq(a, "passkey"), Nat.add(Nat.mul(eq(b, "login"), 2n), Nat.mul(eq(b, "register"), 3n)))), b)
+              post2(Nat.add(eq(a, "edit"), Nat.add(Nat.mul(eq(a, "passkey"), Nat.add(Nat.mul(eq(b, "login"), 2n), Nat.mul(eq(b, "register"), 3n))), Nat.add(Nat.mul(eq(a, "like"), 4n), Nat.mul(eq(a, "comment"), 5n)))), b)
             case Con{+c, v}:
               match v:
                 case Nil{}:

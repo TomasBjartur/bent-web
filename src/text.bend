@@ -657,3 +657,24 @@ def fts.go(s: String, +w: String, +out: String, +n: U32) -> String:
 
 def fts_query(s: String) -> String:
   fts.go(s, SNil{}, "", 0)
+
+# COMMENTS
+# --------
+# A comment is a Body of at most 10000 characters with some non-space
+# text (the database checks the length too).
+def comment.keep(ok: Bool, +b: Body) -> Maybe<&2, Body>:
+  match ok:
+    case True{}:
+      Some{b}
+    case False{}:
+      None{}
+
+def comment_of(m: Maybe<&2, Body>) -> Maybe<&2, Body>:
+  match m:
+    case None{}:
+      None{}
+    case Some{+b}:
+      comment.keep(Bool.and(U32.is_le(U32.from_nat(String.length(Body.text(b))), 10000), Bool.not(String.is_empty(String.trim(Body.text(b))))), b)
+
+def form_comment(+xs: List<&2, Field>, +key: String) -> Maybe<&2, Body>:
+  comment_of(form_body(xs, key))

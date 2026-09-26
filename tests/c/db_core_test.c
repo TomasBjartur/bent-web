@@ -226,6 +226,46 @@ int main(void) {
     #undef SLUG_OF
   }
 
+  // Likes and comments: signed-in users on published posts; comments are
+  // rate limited; replies need a live parent on the same post; a delete
+  // matches only the claimed author's comment.
+  {
+    uint32_t pub = 0, sdraft = 0, c1 = 0, c2 = 0;
+    CHECK(apply(&a, facts(&a, blog, 0), (DbWrite){.kind = A_CREATE_POST, .target = blog, .slug = T("social"), .title = T("S")}, &pub) == DB_OK);
+    CHECK(apply(&a, facts(&a, blog, 0), (DbWrite){.kind = A_CREATE_POST, .target = blog, .slug = T("social-sdraft"), .title = T("D")}, &sdraft) == DB_OK);
+    CHECK(apply(&a, facts(&a, 0, pub), (DbWrite){.kind = A_PUBLISH_POST, .target = pub, .flag = 1}, NULL) == DB_OK);
+    Who r = user("reader@x.io");
+    CHECK(apply(&r, facts(&r, 0, pub), (DbWrite){.kind = A_LIKE_POST, .target = pub, .flag = 1}, NULL) == DB_OK);
+    CHECK(apply(&r, facts(&r, 0, pub), (DbWrite){.kind = A_LIKE_POST, .target = pub, .flag = 1}, NULL) == DB_OK);  // idempotent
+    CHECK(apply(&r, facts(&r, 0, sdraft), (DbWrite){.kind = A_LIKE_POST, .target = sdraft, .flag = 1}, NULL) == DB_DENIED);
+    DbFacts lie = facts(&r, 0, sdraft);
+    lie.post_pub = 1;  // claims the sdraft is published
+    CHECK(apply(&r, lie, (DbWrite){.kind = A_LIKE_POST, .target = sdraft, .flag = 1}, NULL) == DB_STALE);
+    CHECK(apply(&r, facts(&r, 0, pub), (DbWrite){.kind = A_COMMENT, .target = pub, .body_md = T("hi"), .body_html = T("<p>hi</p>")}, &c1) == DB_OK);
+    CHECK(apply(&r, facts(&r, 0, pub), (DbWrite){.kind = A_COMMENT, .target = pub, .flag = c1, .body_md = T("re"), .body_html = T("<p>re</p>")}, &c2) == DB_OK);
+    CHECK(apply(&r, facts(&r, 0, pub), (DbWrite){.kind = A_COMMENT, .target = pub, .flag = 999999, .body_md = T("x"), .body_html = T("x")}, NULL) == DB_STALE);
+    CHECK(BODY(pub, r.hash, NOW) == 1);
+    body_len = 0;
+    CHECK(db_comment_body(&db, c1, nobody, NOW, body_out, NULL) == 1 && body_len == 9);
+    // Rate limit: 5 a minute (2 used, 1 failed insert does not count).
+    uint32_t ok = 0;
+    for (int i = 0; i < 6; i++) ok += apply(&r, facts(&r, 0, pub), (DbWrite){.kind = A_COMMENT, .target = pub, .body_md = T("x"), .body_html = T("x")}, NULL) == DB_OK;
+    CHECK(ok == 3);
+    // Delete: another user claiming to be the author fails; the author works;
+    // a member of the blog may moderate.
+    Who m = user("mallory2@x.io");
+    DbFacts mf = facts(&m, 0, pub);
+    CHECK(apply(&m, mf, (DbWrite){.kind = A_DELETE_COMMENT, .target = c1, .user = m.id}, NULL) == DB_STALE);
+    CHECK(apply(&m, mf, (DbWrite){.kind = A_DELETE_COMMENT, .target = c1, .user = r.id}, NULL) == DB_DENIED);
+    CHECK(apply(&r, facts(&r, 0, pub), (DbWrite){.kind = A_DELETE_COMMENT, .target = c1, .user = r.id}, NULL) == DB_OK);
+    CHECK(db_comment_body(&db, c1, nobody, NOW, body_out, NULL) == 0);
+    CHECK(apply(&a, facts(&a, 0, pub), (DbWrite){.kind = A_DELETE_COMMENT, .target = c2, .user = r.id}, NULL) == DB_OK);
+    CHECK(apply(&a, facts(&a, 0, pub), (DbWrite){.kind = A_DELETE_COMMENT, .target = c2, .user = r.id}, NULL) == DB_STALE);
+    CHECK(q_rows(Q_COMMENTS, pub, nobody) == 5);
+    CHECK(q_rows(Q_COMMENTS, sdraft, nobody) == 0);
+    CHECK(q_rows(Q_POST_SOCIAL, pub, nobody) == 1);
+  }
+
   // Deleting the blog cascades (owner row included).
   CHECK(apply(&a, facts(&a, blog, 0), (DbWrite){.kind = A_DELETE_BLOG, .target = blog}, NULL) == DB_OK);
   CHECK(facts(&a, blog, 0).role == ROLE_NONE);

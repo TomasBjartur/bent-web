@@ -288,6 +288,38 @@ law authz_members_write:
   for e: {AuthzSpec.permitted(AuthzSpec.Facts{who, blog, role, post}, post_any_write(k, b, q)) == True{} : Bool}
   {AuthzSpec.is_member(role) == True{} : Bool}
 
+# Liking and commenting, selected by k.
+def engage(k: Nat, +q: U32) -> AuthzSpec.Action:
+  match k:
+    case 0n:
+      AuthzSpec.LikePost{q}
+    case _:
+      AuthzSpec.CommentPost{q}
+
+# LAW: nobody, not even a member, likes or comments on a draft.
+law authz_engage_published:
+  for k: Nat
+  for +who: AuthzSpec.Principal
+  for +blog: U32
+  for +role: Maybe<&2, AuthzSpec.Role>
+  for +p: U32
+  for +pb: U32
+  for +q: U32
+  {AuthzSpec.permitted(AuthzSpec.Facts{who, blog, role, Some{AuthzSpec.PostInfo{p, pb, False{}}}}, engage(k, q)) == False{} : Bool}
+
+# LAW: a comment can only be removed by the user who wrote it, or by a
+# member of the blog.
+law authz_comment_delete:
+  for +who: AuthzSpec.Principal
+  for +blog: U32
+  for +role: Maybe<&2, AuthzSpec.Role>
+  for +post: Maybe<&2, AuthzSpec.PostInfo>
+  for +p: U32
+  for +c: U32
+  for +a: U32
+  for e: {AuthzSpec.permitted(AuthzSpec.Facts{who, blog, role, post}, AuthzSpec.DeleteComment{p, c, a}) == True{} : Bool}
+  {Bool.or(U32.is_eq(a, AuthzSpec.user_id(who)), AuthzSpec.is_member(role)) == True{} : Bool}
+
 # USER TEXT
 # ---------
 # Type invariants: every Title, Body and Slug anywhere in the program was

@@ -44,6 +44,11 @@ type Action is Data:
   DeletePost{post: U32}
   ReadPost{post: U32}
   ReadBlogAdmin{blog: U32}
+  LikePost{post: U32}
+  CommentPost{post: U32}
+  # author: the comment's author as loaded; the write re-checks it (the
+  # delete only matches a comment by that author on that post).
+  DeleteComment{post: U32, comment: U32, author: U32}
 
 # PREDICATES
 # ----------
@@ -163,3 +168,13 @@ def permitted(+f: Facts, a: Action) -> Bool:
       Bool.or(post_public(f, p), can_write_post(f, p))
     case ReadBlogAdmin{+b}:
       member_of(f, b)
+    # Readers take part: any signed-in user likes or comments on a
+    # published post (never a draft).
+    case LikePost{+p}:
+      Bool.and(is_user(facts_who(f)), post_public(f, p))
+    case CommentPost{+p}:
+      Bool.and(is_user(facts_who(f)), post_public(f, p))
+    # A comment is removed by its author, or by a member of the post's blog
+    # (moderation).
+    case DeleteComment{+p, +c, +a}:
+      Bool.and(is_user(facts_who(f)), Bool.and(post_is(f, p), Bool.or(Bool.and(U32.is_ne(a, 0), U32.is_eq(a, user_id(facts_who(f)))), can_write_post(f, p))))

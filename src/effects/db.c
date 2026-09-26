@@ -161,7 +161,8 @@ Term apply_raw_run(Env e, Term *f, IoWork *w) {
                   {slug, (uint32_t)n1}, {title, (uint32_t)n2}, {md, (uint32_t)n3}, {html, (uint32_t)n4}};
     uint32_t id = 0;
     DbResult res = db_apply(&app_db, h, app_now_ms(), &x, &wr, &id);
-    if (res == DB_OK) app_write_gen++;
+    // Likes and comments appear only on (uncached) post pages.
+    if (res == DB_OK && wr.kind < A_LIKE_POST) app_write_gen++;
     r = res == DB_OK ? io_done(e, (Term)id) : io_fail(e, (uint32_t)res, NULL);
   }
   free(slug);
@@ -265,6 +266,7 @@ static const char *page_reason(uint32_t s) {
     case 405: return "Method Not Allowed";
     case 409: return "Conflict";
     case 413: return "Content Too Large";
+    case 429: return "Too Many Requests";
     case 500: return "Internal Server Error";
     default: return NULL;
   }
@@ -281,14 +283,14 @@ static const char *const page_ctypes[] = {
 };
 
 // A redirect target: starts with "/", not "//", only unreserved characters
-// and "/", "?", "=", "&", "%".
+// and "/", "?", "=", "&", "%", "#".
 static int page_path_ok(const char *p, u64 n) {
   if (n == 0u || n > 512u || p[0] != '/' || (n > 1u && p[1] == '/')) return 0;
   for (u64 i = 0; i < n; i++) {
     unsigned char c = (unsigned char)p[i];
     int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
              c == '-' || c == '.' || c == '_' || c == '~' || c == '/' || c == '?' || c == '=' ||
-             c == '&' || c == '%';
+             c == '&' || c == '%' || c == '#';
     if (!ok) return 0;
   }
   return 1;
@@ -314,6 +316,9 @@ static void page_put(PageOut *o, const char *p, u64 n) {
   memcpy(o->buf + o->len, p, n);
   o->len += n;
 }
+
+// A body id with this bit set is a comment's (src/db.bend: comment_body).
+#define PAGE_COMMENT_BIT 0x80000000u
 
 static void page_body_put(void *ctx, const char *p, uint32_t n) {
   page_put((PageOut *)ctx, p, n);
@@ -362,7 +367,11 @@ static Term page_run(Env e, Term *f, IoWork *w) {
     texts = rest;
     Term id;
     if (app_uncons(e, CID(Con), ids, &id, &rest)) {
-      db_body(&app_db, (uint32_t)id, h, now, page_body_put, &body);
+      if (((uint32_t)id & PAGE_COMMENT_BIT) != 0u) {
+        db_comment_body(&app_db, (uint32_t)id & ~PAGE_COMMENT_BIT, h, now, page_body_put, &body);
+      } else {
+        db_body(&app_db, (uint32_t)id, h, now, page_body_put, &body);
+      }
       ids = rest;
     }
   }

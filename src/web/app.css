@@ -164,6 +164,29 @@ h2 { font-size: 1.35rem; margin: 40px 0 12px; }
 .body pre code { background: none; padding: 0; font-size: 0.88em; }
 .article footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 
+/* LIKES AND COMMENTS */
+
+.social { display: flex; gap: 8px; align-items: center; margin: 40px 0 0; }
+.social form { display: inline; }
+button.like, .btn.like { font-size: 1rem; }
+button.like.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.comments { margin-top: 48px; padding-top: 8px; border-top: 1px solid var(--line); }
+.comments > h2 { margin-top: 24px; }
+.cform textarea { font: 1rem/1.5 var(--sans); resize: vertical; }
+.cform { margin-bottom: 28px; }
+.comment { padding: 14px 0 0; }
+.comment > .meta a:first-child { color: var(--fg); font-weight: 600; }
+.comment .cbody { font-size: 1rem; line-height: 1.6; margin: 4px 0; overflow-wrap: break-word; }
+.comment .cbody p { margin: 0 0 0.6em; }
+.comment .cbody pre { background: var(--code-bg); padding: 10px; border-radius: var(--radius); overflow-x: auto; }
+.cactions { display: flex; gap: 14px; align-items: baseline; font-size: 0.85rem; color: var(--muted); }
+.cactions a { color: var(--muted); }
+.cactions details.del summary { cursor: pointer; list-style: none; }
+.cactions details.del[open] { display: flex; gap: 8px; align-items: baseline; }
+.replies { margin-left: 18px; padding-left: 14px; border-left: 2px solid var(--line); }
+.replies .replies .replies .replies .replies .replies { margin-left: 0; padding-left: 0; border-left: 0; }
+.comment:target > .cbody { background: var(--accent-soft); border-radius: 4px; }
+
 /* FORMS */
 
 form { margin: 0; }

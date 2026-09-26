@@ -7,6 +7,16 @@ import Base
 import ./html.bend as Html
 import ./gen/version.bend as Ver
 
+# LIKES AND COMMENTS
+# ------------------
+# A page is a sequence of text and stored bodies (spliced by C): Seg.
+type Seg is Data:
+  T{text: String}
+  B{body: U32}
+
+type Page is Data:
+  Page{texts: List<&2, String>, bodies: List<&2, U32>}
+
 # A row from a query: its columns as strings.
 def col(r: List<&2, String>, n: Nat) -> String:
   match r:
@@ -119,7 +129,7 @@ def plural(+n: String, one: String, many: String) -> String:
 # ERRORS
 # ------
 def error_kind(+status: U32) -> Nat:
-  U32.to_nat((Bool.to_u32(U32.is_eq(status, 404)) + ((2 * Bool.to_u32(U32.is_eq(status, 403))) + ((3 * Bool.to_u32(U32.is_eq(status, 409))) + (4 * Bool.to_u32(U32.is_eq(status, 400))))) : U32))
+  U32.to_nat((Bool.to_u32(U32.is_eq(status, 404)) + ((2 * Bool.to_u32(U32.is_eq(status, 403))) + ((3 * Bool.to_u32(U32.is_eq(status, 409))) + ((4 * Bool.to_u32(U32.is_eq(status, 400))) + (5 * Bool.to_u32(U32.is_eq(status, 429)))))) : U32))
 
 def error_title.go(k: Nat) -> String:
   match k:
@@ -131,6 +141,8 @@ def error_title.go(k: Nat) -> String:
       "That did not work"
     case 4n:
       "Please check the form"
+    case 5n:
+      "Slow down a little"
     case _:
       "Something went wrong"
 
@@ -144,6 +156,8 @@ def error_pick(k: Nat) -> String:
       "That address may be taken, or something changed in the meantime. Go back and try again."
     case 4n:
       "Something in it was missing or not allowed. Go back and check it."
+    case 5n:
+      "That is a lot of comments in a minute. Wait a moment, then go back and send it again."
     case _:
       "Please try again in a moment."
 
@@ -236,8 +250,8 @@ def published_notice(b: Bool, +id: String) -> String:
 def post_before(+view: List<&2, String>, +id: String, can_edit: Bool, notice: Bool) -> String:
   published_notice(notice, id) ++ "<article class=\"article\"><header><a class=\"pub\" href=\"/b/" ++ (e(col(view, 3n)) ++ ("\">" ++ (e(col(view, 4n)) ++ ("</a><h1>" ++ (e(col(view, 1n)) ++ ("</h1><div class=\"byline\"><strong>" ++ (author_link(col(view, 8n), col(view, 5n)) ++ ("</strong><span class=\"dot\"></span>" ++ (date(col(view, 6n)) ++ ("<span class=\"dot\"></span>" ++ (minutes(col(view, 7n)) ++ (draft_badge(String.eq(col(view, 2n), "0")) ++ (edit_link(can_edit, id) ++ "</div></header><div class=\"body\">")))))))))))))
 
-def post_after(+view: List<&2, String>) -> String:
-  "</div><footer><a href=\"/b/" ++ (e(col(view, 3n)) ++ ("\">← More from " ++ (e(col(view, 4n)) ++ "</a><a href=\"/\">Recent posts</a></footer></article>")))
+def post_after(+view: List<&2, String>, +social: String) -> String:
+  "</div>" ++ social ++ "<footer><a href=\"/b/" ++ (e(col(view, 3n)) ++ ("\">← More from " ++ (e(col(view, 4n)) ++ "</a><a href=\"/\">Recent posts</a></footer></article>")))
 
 # DASHBOARD
 # ---------
@@ -437,3 +451,124 @@ def search_results(asked: Bool, rows: List<&2, List<&2, String>>) -> String:
 
 def search_page(+q: String, rows: List<&2, List<&2, String>>) -> String:
   "<form method=\"get\" action=\"/search\" class=\"searchbar\" role=\"search\"><input name=\"q\" type=\"search\" maxlength=\"200\" placeholder=\"Search posts\" aria-label=\"Search posts\" autofocus value=\"" ++ (e(q) ++ ("\"><button class=\"primary\">Search</button></form>" ++ search_results(Bool.not(String.is_empty(q)), rows)))
+
+def page_cons(+t: String, +b: U32, p: Page) -> Page:
+  match p:
+    case Page{ts, bs}:
+      Page{Con{t, ts}, Con{b, bs}}
+
+# Texts and bodies alternating, as Db.page takes them (texts[0] body[0]
+# texts[1] ... texts[n]); consecutive texts are joined.
+def page_of(segs: List<&2, Seg>, +acc: String) -> Page:
+  match segs:
+    case Nil{}:
+      Page{Con{acc, Nil{}}, Nil{}}
+    case Con{x, t}:
+      match x:
+        case T{+s}:
+          page_of(t, acc ++ s)
+        case B{+b}:
+          page_cons(acc, b, page_of(t, ""))
+
+def page_texts(p: Page) -> List<&2, String>:
+  match p:
+    case Page{ts, bs}:
+      ts
+
+def page_bodies(p: Page) -> List<&2, U32>:
+  match p:
+    case Page{ts, bs}:
+      bs
+
+def like_state(liked: Bool) -> String:
+  match liked:
+    case True{}:
+      "0\"><button class=\"like on\" aria-pressed=\"true\" title=\"Unlike\">♥ "
+    case False{}:
+      "1\"><button class=\"like\" aria-pressed=\"false\" title=\"Like\">♥ "
+
+def like_button(signed: Bool, +pid: String, +likes: String, liked: Bool) -> String:
+  match signed:
+    case True{}:
+      "<form method=\"post\" action=\"/like/" ++ (e(pid) ++ ("\"><input type=\"hidden\" name=\"on\" value=\"" ++ (like_state(liked) ++ (e(likes) ++ "</button></form>"))))
+    case False{}:
+      "<a class=\"btn like\" href=\"/login\" title=\"Log in to like\">♥ " ++ (e(likes) ++ "</a>")
+
+# social: [likes, liked (0/1), comments].
+def social_bar(signed: Bool, +pid: String, +social: List<&2, String>) -> String:
+  "<div class=\"social\" id=\"social\">" ++ (like_button(signed, pid, col(social, 0n), String.eq(col(social, 1n), "1")) ++ ("<a class=\"btn quiet\" href=\"#comments\">" ++ (plural(col(social, 2n), "comment", "comments") ++ "</a></div>")))
+
+def comment_form(signed: Bool, +pid: String) -> String:
+  match signed:
+    case True{}:
+      "<form method=\"post\" action=\"/comment/" ++ (e(pid) ++ "\" class=\"stack cform\"><textarea name=\"body\" required maxlength=\"10000\" rows=\"3\" placeholder=\"Write a comment…\" aria-label=\"Comment\"></textarea><div><button class=\"primary\">Comment</button></div></form>")
+    case False{}:
+      "<p class=\"muted\"><a href=\"/login\">Log in</a> or <a href=\"/signup\">sign up</a> to comment.</p>"
+
+def closes(n: Nat) -> String:
+  match n:
+    case 0n:
+      ""
+    case 1n+k:
+      "</div></div>" ++ closes(k)
+
+def depth_of(+s: String) -> Nat:
+  U32.to_nat(num(s))
+
+def reply_link(signed: Bool, +id: String) -> String:
+  match signed:
+    case True{}:
+      "<a href=\"/reply/" ++ (e(id) ++ "\">Reply</a>")
+    case False{}:
+      ""
+
+def delete_comment(b: Bool, +id: String) -> String:
+  match b:
+    case True{}:
+      "<details class=\"del\"><summary>Delete</summary><form method=\"post\" action=\"/comment/" ++ (e(id) ++ "/delete\"><button class=\"danger\">Delete this comment</button></form></details>")
+    case False{}:
+      ""
+
+# A comment's body: its stored HTML, or a note if it was deleted.
+def comment_body_seg(deleted: Bool, +id: String) -> Seg:
+  match deleted:
+    case True{}:
+      T{"<p class=\"muted\">[deleted]</p>"}
+    case False{}:
+      B{(num(id) + 2147483648 : U32)}
+
+def comment_open_count(+prev: Maybe<&2, Nat>) -> Nat:
+  match prev:
+    case None{}:
+      0n
+    case Some{d}:
+      1n+d
+
+def comment_close_before(+prev: Maybe<&2, Nat>, +d: Nat) -> Nat:
+  match prev:
+    case None{}:
+      0n
+    case Some{+p}:
+      Nat.sub(1n+p, d)
+
+# Comment rows (see Q_COMMENTS): [id, depth, author id, author, date,
+# deleted, mine, parent], in thread order. Before a comment at depth d,
+# the comments it does not reply to are closed: (previous depth - d + 1)
+# of them, none for a reply to the previous one.
+def comment_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool, +prev: Maybe<&2, Nat>) -> List<&2, Seg>:
+  match rows:
+    case Nil{}:
+      Con{T{closes(comment_open_count(prev))}, Nil{}}
+    case Con{+r, t}:
+      Con{T{closes(comment_close_before(prev, depth_of(col(r, 1n)))) ++ ("<div class=\"comment\" id=\"c" ++ (e(col(r, 0n)) ++ ("\"><div class=\"meta\">" ++ (author_link(col(r, 2n), col(r, 3n)) ++ ("<span class=\"dot\"></span><a href=\"#c" ++ (e(col(r, 0n)) ++ ("\">" ++ (date(col(r, 4n)) ++ "</a></div><div class=\"cbody\">"))))))))}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{"</div><div class=\"cactions\">" ++ (reply_link(signed, col(r, 0n)) ++ (delete_comment(Bool.and(Bool.not(String.eq(col(r, 5n), "1")), Bool.or(can_mod, String.eq(col(r, 6n), "1"))), col(r, 0n)) ++ "</div><div class=\"replies\">"))}, comment_segs(t, signed, can_mod, Some{depth_of(col(r, 1n))})}}}
+
+def comments_section(+signed: Bool, +can_mod: Bool, +pid: String, +count: String, rows: List<&2, List<&2, String>>) -> List<&2, Seg>:
+  Con{T{"<section class=\"comments\" id=\"comments\"><h2>Comments</h2>" ++ comment_form(signed, pid)}, List.append(&2, Seg, comment_segs(rows, signed, can_mod, None{}), Con{T{"</section>"}, Nil{}})}
+
+# The reply page: the comment replied to (its body spliced after the first
+# text), and a form. info: [post id, author id, author, date, deleted].
+def reply_before(+info: List<&2, String>, +back: String) -> String:
+  "<p class=\"meta crumb\"><a href=\"" ++ (e(back) ++ ("\">← Back to the post</a></p><h1>Reply</h1><div class=\"comment\"><div class=\"meta\">" ++ (author_link(col(info, 1n), col(info, 2n)) ++ ("<span class=\"dot\"></span>" ++ (date(col(info, 3n)) ++ "</div><div class=\"cbody\">")))))
+
+def reply_after(+info: List<&2, String>, +cid: String, +back: String) -> String:
+  "</div></div><form method=\"post\" action=\"/comment/" ++ (e(col(info, 0n)) ++ ("\" class=\"stack cform\"><input type=\"hidden\" name=\"parent\" value=\"" ++ (e(cid) ++ ("\"><textarea name=\"body\" required maxlength=\"10000\" rows=\"4\" placeholder=\"Write a reply…\" aria-label=\"Reply\" autofocus></textarea><div class=\"row\"><button class=\"primary\">Reply</button><a class=\"btn quiet\" href=\"" ++ (e(back) ++ "\">Cancel</a></div></form>")))))
