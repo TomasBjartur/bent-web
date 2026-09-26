@@ -31,6 +31,7 @@ enum {
   A_EDIT_POST,
   A_PUBLISH_POST,
   A_DELETE_POST,
+  A_SYNC_OPS,  // not a policy action: EditPost's facts, used by db_sync
   A_KINDS
 };
 
@@ -85,6 +86,8 @@ enum {
   Q_POST_MD,            // a=post -> body_md, title  (member only)
   Q_USER_BY_EMAIL,      // text=email -> id
   Q_AUTHORS,            // a=blog -> user_id, name, email, role  (member only)
+  Q_OPS,                // a=post -> ops as one wire text  (member only)
+  Q_OP_COUNT,           // a=post -> number of ops  (member only)
   Q_COUNT
 };
 
@@ -102,6 +105,7 @@ enum {
   ST_POST_NEW, ST_POST_EDIT, ST_POST_PUBLISH, ST_POST_DELETE, ST_BODY, ST_SESSION_DELETE,
   ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
   ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
+  ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT,
   ST_COUNT
 };
 
@@ -149,6 +153,24 @@ DbResult db_apply(Db *db, const uint8_t token_hash[32], uint64_t now_ms,
 
 // Creates a user (sign-up); returns the id or 0 on failure.
 uint32_t db_user_new(Db *db, DbText email, DbText name, uint64_t now_ms);
+
+// COLLABORATIVE EDITING
+// ---------------------
+
+#define SYNC_OPS_MAX 20000u         // operations per request
+#define POST_OPS_MAX 4000000u       // operations per post
+#define SYNC_OUT_MAX (8u * 1024u * 1024u)
+
+typedef void (*DbOutFn)(void *ctx, const char *p, uint32_t n);
+
+// Syncs a post's operations in one IMMEDIATE transaction: re-checks the
+// facts as for an edit (the session's user is a member of the post's
+// blog), inserts `ops` (wire format "c.r.k.pc.pr.s.ch;" repeated; checked
+// for syntax and ranges here, for meaning in Bend), then writes
+// "<max seq>\n" and every operation with seq > since, in seq order, to out.
+DbResult db_sync(Db *db, const uint8_t token_hash[32], uint64_t now_ms, const DbFacts *facts,
+                 uint32_t post, const char *ops, uint32_t ops_len, uint64_t since, DbOutFn out, void *ctx);
+
 
 // AUTHENTICATION
 // --------------

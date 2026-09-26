@@ -110,8 +110,9 @@ def run(dbpath):
        "document.querySelector('form[action=\"/dash/eve/posts\"]').submit()")
     time.sleep(0.8)
     check("post created, editor open", (js("location.pathname") or "").startswith("/edit/"), js("location.href"))
-    js("document.querySelector('textarea').value = 'First line\\n<img src=x onerror=alert(1)>';"
-       "document.querySelector('form.editor').submit()")
+    js("const t = document.querySelector('textarea'); t.value = 'First line\\n<img src=x onerror=alert(1)>';"
+       "t.dispatchEvent(new Event('input', {bubbles: true}));"
+       "document.querySelector('form.editor').requestSubmit()")
     time.sleep(0.8)
     js("document.querySelector('form[action$=\"/publish\"]').submit()")
     time.sleep(0.8)

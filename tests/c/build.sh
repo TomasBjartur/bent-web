@@ -39,7 +39,8 @@ mkdir -p "$OUT/corpus_net_core"
 echo "== cbmc"
 $CC -E -P net_core_cbmc.c -o "$OUT/net_core_cbmc.i"
 $CC -E -P token_core_cbmc.c -o "$OUT/token_core_cbmc.i"
-for pair in net_core:check_head_end net_core:check_pool token_core:check_roundtrip token_core:check_decode; do
+$CC -E -P ops_core_cbmc.c -o "$OUT/ops_core_cbmc.i"
+for pair in net_core:check_head_end net_core:check_pool token_core:check_roundtrip token_core:check_decode ops_core:check_ops_parse; do
   file=${pair%%:*}; fn=${pair##*:}
   printf "%-16s " "$fn"
   $CBMC "$OUT/${file}_cbmc.i" --function "$fn" --bounds-check --pointer-check \

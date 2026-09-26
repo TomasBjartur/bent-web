@@ -34,6 +34,7 @@ type Route is Data:
   RRegister{}
   RLoginOptions{}
   RLogin{}
+  RSync{post: U32}
   RNotFound{}
 
 type Plan is Data:
@@ -160,11 +161,13 @@ def post3(k: Nat, +b: String) -> Route:
       RRegOptions{}
     case 7n:
       RLoginOptions{}
+    case 8n:
+      RSync{id_of(b)}
     case _:
       RNotFound{}
 
 def post3_old(+a: String, +c: String) -> Nat:
-  Nat.add(Nat.mul(eq(a, "dash"), Nat.add(eq(c, "posts"), Nat.mul(eq(c, "authors"), 2n))), Nat.mul(eq(a, "edit"), Nat.add(Nat.mul(eq(c, "publish"), 3n), Nat.add(Nat.mul(eq(c, "unpublish"), 4n), Nat.mul(eq(c, "delete"), 5n)))))
+  Nat.add(Nat.mul(eq(a, "dash"), Nat.add(eq(c, "posts"), Nat.mul(eq(c, "authors"), 2n))), Nat.mul(eq(a, "edit"), Nat.add(Nat.mul(eq(c, "publish"), 3n), Nat.add(Nat.mul(eq(c, "unpublish"), 4n), Nat.add(Nat.mul(eq(c, "delete"), 5n), Nat.mul(eq(c, "sync"), 8n))))))
 
 def post3_id(+a: String, +b: String, +c: String) -> Nat:
   Nat.add(Nat.mul(Nat.mul(eq(a, "passkey"), eq(c, "options")), Nat.add(Nat.mul(eq(b, "register"), 6n), Nat.mul(eq(b, "login"), 7n))), post3_old(a, c))

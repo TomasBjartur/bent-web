@@ -13,6 +13,8 @@ import ./route.bend as Route
 import ./text.bend as Text
 import ./static.bend as Static
 import ./auth.bend as Auth
+import ./crdt.bend as Crdt
+import ./bytes.bend as B
 
 # RESPONSES
 # ---------
@@ -171,12 +173,18 @@ def h_dash_blog(s: Socket, +token: String, +who: U32, +slug: String) -> IO(Unit)
     blog : List<&2, List<&2, String>> <- blog_rows(token, slug)
     h_dash_blog2(s, token, who, slug, blog)
 
+# A replica id for this editor: random, >= 2 (1 is the seed replica).
+def rep_of(+rh: String) -> U32:
+  ((B.be32(Maybe.default(&2, String, B.unhex(rh), "")) % 268435456) + 2 : U32)
+
 def h_edit3(s: Socket, +token: String, +who: U32, +pid: U32, +rows: List<&2, List<&2, String>>) -> IO(Unit):
   match rows:
     case Nil{}:
       fail(s, token, who, 404)
     case Con{+r, t}:
-      send(s, token, 200, Pages.layout("Edit: " ++ Pages.col(r, 1n), True{}, Pages.edit_page(U32.show(pid), Pages.col(r, 1n), Pages.col(r, 0n))))
+      do IO<Unit>:
+        +rh : String <- Auth.random_hex(4)
+        send(s, token, 200, Pages.layout("Edit: " ++ Pages.col(r, 1n), True{}, Pages.edit_page(U32.show(pid), U32.show(rep_of(rh)), Pages.col(r, 1n), Pages.col(r, 0n))))
 
 def h_edit2(s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
@@ -273,9 +281,30 @@ def h_save2(s: Socket, +token: String, +who: U32, +pid: U32, title: Maybe<&2, Te
     case _ _:
       fail(s, token, who, 400)
 
+def ops_text(m: Maybe<&2, List<&2, Crdt.Op>>) -> String:
+  match m:
+    case None{}:
+      ""
+    case Some{+xs}:
+      Crdt.text(xs)
+
+def h_save.pick(none: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>, +wire: String) -> IO(Unit):
+  match none:
+    case True{}:
+      h_save2(s, token, who, pid, Text.form_title(xs, "title"), Text.form_body(xs, "body"))
+    case False{}:
+      h_save2(s, token, who, pid, Text.form_title(xs, "title"), Text.body_of(Some{ops_text(Crdt.decode(wire))}))
+
+def h_save.go(s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>) -> IO(Unit):
+  do IO<Unit>:
+    +rows : List<&2, List<&2, String>> <- Db.query(Db.q_ops(), pid, 0, "", token)
+    h_save.pick(String.is_empty(first_col(rows, 0n)), s, token, who, pid, xs, first_col(rows, 0n))
+
+# Saving renders the post. If the post has collaborative operations, its
+# text comes from them (never from what the client posts); otherwise from
+# the form (editing without JavaScript).
 def h_save(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO(Unit):
-  +xs = form(body)
-  h_save2(s, token, who, pid, Text.form_title(xs, "title"), Text.form_body(xs, "body"))
+  h_save.go(s, token, who, pid, form(body))
 
 def h_publish(s: Socket, +token: String, +who: U32, +pid: U32, +flag: U32) -> IO(Unit):
   do IO<Unit>:
@@ -340,8 +369,51 @@ def h_static(k: Nat, s: Socket, +token: String, +who: U32) -> IO(Unit):
       do IO<Unit>:
         r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 5, one(Auth.passkey_js()), Nil{}, token, "", "")
         done(r)
+    case 3n:
+      do IO<Unit>:
+        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.asset(s, 0)
+        done(r)
     case _:
       fail(s, token, who, 404)
+
+# COLLABORATIVE EDITING
+# ---------------------
+def form_num(+xs: List<&2, Text.Field>, +key: String) -> U32:
+  Maybe.default(&2, U32, U32.read(Maybe.default(&2, String, Text.form_raw(xs, key), "")), 0)
+
+def h_sync3(s: Socket, +token: String, +who: U32, +ops: String, +since: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match m:
+    case None{}:
+      send_text(s, token, 403, "not allowed\n")
+    case Some{p}:
+      do IO<Unit>:
+        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.sync(s, token, p, ops, since)
+        done(r)
+
+def h_sync2(ok: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +ops: String, +since: U32) -> IO(Unit):
+  match ok:
+    case True{}:
+      do IO<Unit>:
+        f : Spec.Facts <- Db.facts(who, 0, pid)
+        h_sync3(s, token, who, ops, since, Authz.authorize(f, Spec.EditPost{pid}))
+    case False{}:
+      send_text(s, token, 400, "bad operations\n")
+
+def is_some_ops(m: Maybe<&2, List<&2, Crdt.Op>>) -> Bool:
+  match m:
+    case None{}:
+      False{}
+    case Some{x}:
+      True{}
+
+def h_sync.go(s: Socket, +token: String, +who: U32, +pid: U32, +ops: String, +since: U32) -> IO(Unit):
+  h_sync2(is_some_ops(Crdt.decode(ops)), s, token, who, pid, ops, since)
+
+# POST /edit/<id>/sync: since=<seq>&ops=<wire>. The operations are checked
+# for meaning here (Crdt.decode) and for syntax and ranges in C.
+def h_sync(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO(Unit):
+  +xs = form(body)
+  h_sync.go(s, token, who, pid, Maybe.default(&2, String, Text.form_raw(xs, "ops"), ""), form_num(xs, "since"))
 
 # DISPATCH
 # --------
@@ -362,7 +434,7 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String) -
     case Route.REdit{+id}:
       h_edit(s, token, who, id)
     case Route.RStatic{+name}:
-      h_static(Nat.add(U32.to_nat(Bool.to_u32(String.eq(name, "app.css"))), Nat.mul(U32.to_nat(Bool.to_u32(String.eq(name, "passkey.js"))), 2n)), s, token, who)
+      h_static(Nat.add(U32.to_nat(Bool.to_u32(String.eq(name, "app.css"))), Nat.add(Nat.mul(U32.to_nat(Bool.to_u32(String.eq(name, "passkey.js"))), 2n), Nat.mul(U32.to_nat(Bool.to_u32(String.eq(name, "editor.js"))), 3n))), s, token, who)
     case Route.RSignupPage{}:
       Auth.h_signup_page(s, token, who)
     case Route.RLoginPage{}:
@@ -392,6 +464,8 @@ def write_route(s: Socket, r: Route.Route, +c: Auth.Conf, +token: String, +who: 
       h_remove_author(s, token, who, b, u)
     case Route.RLogout{}:
       h_logout(s, token)
+    case Route.RSync{+id}:
+      h_sync(s, token, who, id, body)
     case Route.RSignup{}:
       Auth.h_signup(s, c, token, body)
     case Route.RRecover{}:

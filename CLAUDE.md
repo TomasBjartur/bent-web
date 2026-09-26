@@ -147,6 +147,9 @@ result.
 ## Building
 
 - Bend 2.0.29 (pinned). `bend PROOF.bend` must print "All terms check."
+- The browser editor (`src/web/editor.js` + `src/crdt.bend` compiled to JS)
+  is bundled by `tools/bundle.py` and embedded by C (`#embed`): large text
+  never goes into a Bend string literal (the compiler overflows on ~34 KB).
 - Native builds: `bend x.bend -o x.c`, then clang with our own flags and
   objects (e.g. `vendor/sqlite`). `bend -o bin` can't add link flags.
 - This container has no root: LLVM 19 is in `~/opt`, use `CC=spike/cc.sh`.
@@ -160,7 +163,11 @@ result.
   See `docs/FINDINGS.md` for guarantees, numbers and gaps.
 - Phase 2 (login): done. Passkeys with email sign-up and recovery; tested
   with a software authenticator and in real Chrome.
-- Next: Markdown with a safety law; the local-first editor (CRDT).
+- Phase 3 (content): done. Markdown with a structural safety law; the
+  local-first collaborative editor (Fugue CRDT, proved merge laws, same
+  code compiled to C and JS, offline-capable), tested in two real browsers.
+- Next: novel-length documents (blocks), the performance comparison
+  against a React/Next baseline, deterministic simulation, red team.
 
 ## Checks (run all before committing)
 
@@ -172,5 +179,7 @@ result.
 - `python3 tests/passkey_test.py` (software authenticator, 64 attack/flow tests)
 - `python3 tests/browser_test.py` (real headless Chrome with a virtual
   authenticator; set up once with `tools/setup_chrome.sh`)
+- `python3 tests/collab_test.py` (two browsers, two users, one document)
+- `bend tests/crdt_test.bend` (also compiled natively: `-o build/crdt_test`)
 - with a server running: `tests/server_test.py`, `tests/fuzz_server.py`
 - `spike/` holds throwaway measurement code (not C_STYLE-compliant).

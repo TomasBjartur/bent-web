@@ -127,3 +127,22 @@ CREATE TABLE IF NOT EXISTS outbox (
   created_ms  INTEGER NOT NULL,
   sent_ms     INTEGER
 ) STRICT;
+
+-- COLLABORATIVE EDITING
+-- A post's document as a set of CRDT operations (src/crdt.bend). seq orders
+-- them by arrival for incremental sync; the UNIQUE constraint makes the
+-- table a set (inserting an operation twice changes nothing).
+CREATE TABLE IF NOT EXISTS op (
+  seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id INTEGER NOT NULL REFERENCES post(id) ON DELETE CASCADE,
+  ctr     INTEGER NOT NULL CHECK (ctr >= 1),
+  rep     INTEGER NOT NULL CHECK (rep >= 1),
+  kind    INTEGER NOT NULL CHECK (kind IN (0, 1)),
+  pctr    INTEGER NOT NULL CHECK (pctr >= 0),
+  prep    INTEGER NOT NULL CHECK (prep >= 0),
+  side    INTEGER NOT NULL CHECK (side IN (0, 1)),
+  ch      INTEGER NOT NULL CHECK (ch >= 0 AND ch <= 1114111 AND NOT (ch BETWEEN 55296 AND 57343)),
+  UNIQUE (post_id, ctr, rep, kind, pctr, prep, side, ch)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS op_post_seq ON op(post_id, seq);

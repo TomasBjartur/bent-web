@@ -15,6 +15,9 @@ mkdir -p build
 echo "== laws"
 bend PROOF.bend
 
+echo "== editor bundle"
+python3 tools/bundle.py
+
 echo "== bend -> C"
 bend src/main.bend -o build/server.c > build/bend.log 2>&1 || { cat build/bend.log; exit 1; }
 

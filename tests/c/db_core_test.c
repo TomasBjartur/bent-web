@@ -12,6 +12,17 @@ static int fails = 0;
 
 static Db db;
 
+static char sync_buf[65536];
+static size_t sync_len;
+static void sync_out(void *ctx, const char *p, uint32_t n) {
+  (void)ctx;
+  if (sync_len + n < sizeof sync_buf) {
+    memcpy(sync_buf + sync_len, p, n);
+    sync_len += n;
+    sync_buf[sync_len] = 0;
+  }
+}
+
 static uint32_t rows_seen;
 static void count_row(void *ctx, uint32_t n, const char *const *c, const uint32_t *l) {
   (void)ctx; (void)n; (void)c; (void)l;
@@ -85,6 +96,30 @@ int main(void) {
   CHECK(q_rows(Q_MY_BLOGS, 0, b.hash) == 1);
   CHECK(q_rows(Q_MY_BLOGS, 0, nobody) == 0);
   CHECK(q_rows(99, 0, a.hash) == -1);
+
+  // Collaborative editing: sync.
+  {
+    static char got[65536];
+    static uint32_t got_n;
+    got_n = 0;
+    #define SYNC(who_, f_, ops_, since_) (sync_len = 0, sync_buf[0] = 0, db_sync(&db, (who_).hash, NOW, &(f_), post, (ops_), (uint32_t)strlen(ops_), (since_), sync_out, NULL))
+    DbFacts bf = facts(&b, 0, post);
+    CHECK(SYNC(b, bf, "1.5.0.0.0.1.104;2.5.0.1.5.1.105;", 0) == DB_OK);
+    CHECK(strcmp(sync_buf, "1.5.0.0.0.1.104;2.5.0.1.5.1.105;\n2") == 0);
+    // Idempotent: the same ops again add nothing; since=2 returns nothing new.
+    CHECK(SYNC(b, bf, "1.5.0.0.0.1.104;", 2) == DB_OK && strcmp(sync_buf, "\n2") == 0);
+    // Outsider: honest facts denied by the floor; forged facts caught.
+    DbFacts cf = facts(&c, 0, post);
+    CHECK(SYNC(c, cf, "3.9.0.2.5.1.120;", 0) == DB_DENIED);
+    cf.role = ROLE_AUTHOR;
+    CHECK(SYNC(c, cf, "3.9.0.2.5.1.120;", 0) == DB_STALE);
+    // Malformed wire text.
+    const char *bad[] = {"1.5.0.0.0.1;", "1.5.2.0.0.1.97;", "0.5.0.0.0.1.97;", "1.0.0.0.0.1.97;", "1.5.0.0.0.2.97;",
+                         "1.5.0.0.0.1.55296;", "1.5.0.0.0.1.1114112;", "1.5.0.0.0.1.97", "1.5.0.0.0.1.97;x", "1.5.0.0.0.1.12345678901;",
+                         "1.5.0.0.0.1.97;;", ".5.0.0.0.1.97;", "1.5.0.0.0.1.-9;"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) CHECK(SYNC(b, bf, bad[i], 0) == DB_DENIED);
+    (void)got; (void)got_n;
+  }
 
   // Outsider with honest facts: the floor denies.
   CHECK(apply(&c, facts(&c, 0, post), (DbWrite){.kind = A_EDIT_POST, .target = post, .title = T("x")}, NULL) == DB_DENIED);

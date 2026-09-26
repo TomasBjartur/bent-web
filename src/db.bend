@@ -53,6 +53,14 @@ def query(q: U32, a: U32, b: U32, text: String, token: String) -> IO(List<&2, Li
 def page(sock: Socket, status: U32, ctype: U32, texts: List<&2, String>, bodies: List<&2, U32>, token: String, cookie: String, location: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
   import "./effects/db.c"
 
+# Syncs a post's operations and sends the response (see src/effects/db.c).
+def sync_page(sock: Socket, token: String, who: U32, blog: U32, role: U32, has_post: U32, post: U32, post_blog: U32, post_pub: U32, target: U32, ops: String, since: U32) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+  import "./effects/db.c"
+
+# Sends an embedded static file (0: the editor bundle).
+def asset(sock: Socket, id: U32) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+  import "./effects/db.c"
+
 # QUERY IDS (src/c/db_core.h)
 # ---------
 def q_blog_by_slug() -> U32:
@@ -84,6 +92,12 @@ def q_user_by_email() -> U32:
 
 def q_authors() -> U32:
   9
+
+def q_ops() -> U32:
+  10
+
+def q_op_count() -> U32:
+  11
 
 def principal.go(anon: Bool, +who: U32) -> Spec.Principal:
   match anon:
@@ -230,3 +244,30 @@ def apply(+token: String, p: Authz.Permit, +flag: U32, d: WData) -> IO(Result<&1
   match p:
     case Authz.Permit{f, a, pf}:
       apply_go(token, f, act_of(a, flag), d)
+
+# SYNC
+# ----
+def sync_go(s: Socket, +token: String, f: Spec.Facts, +post: U32, +ops: String, +since: U32) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+  match f:
+    case Spec.Facts{who, blog, role, p}:
+      match p:
+        case None{}:
+          sync_page(s, token, who_code(who), blog, role_code(role), 0, 0, 0, 0, post, ops, since)
+        case Some{x}:
+          match x:
+            case Spec.PostInfo{id, pb, pub}:
+              sync_page(s, token, who_code(who), blog, role_code(role), 1, id, pb, Bool.to_u32(pub), post, ops, since)
+
+def sync_target(a: Spec.Action) -> U32:
+  match a:
+    case Spec.EditPost{p}:
+      p
+    case _:
+      0
+
+# Syncs post's operations. Only with a Permit to edit that post (the C side
+# re-checks its facts in the same transaction).
+def sync(s: Socket, +token: String, p: Authz.Permit, +ops: String, +since: U32) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+  match p:
+    case Authz.Permit{f, a, pf}:
+      sync_go(s, token, f, sync_target(a), ops, since)

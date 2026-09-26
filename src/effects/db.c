@@ -244,8 +244,6 @@ static void __attribute__((constructor)) query_use(void) {
 // nothing is spliced. cookie: "" (none), "-" (clear) or a 64-hex token to
 // set. location: "" or a path for a 303 redirect.
 
-#ifdef CID(page)
-
 static const char *page_reason(uint32_t s) {
   switch (s) {
     case 200: return "OK";
@@ -328,7 +326,7 @@ static Term page_more(Env e, IoWork *w) {
   return io_tup(e, io_hand(w->hand), done ? io_done(e, term_pak(CID(Unit), 0)) : io_fail(e, 1, NULL));
 }
 
-Term page_run(Env e, Term *f, IoWork *w) {
+static Term page_run(Env e, Term *f, IoWork *w) {
   ASSERT(app_db_ready);
   w->hand = (intptr_t)io_hand_v(f[0]);
   uint32_t status = (uint32_t)f[1], ctype = (uint32_t)f[2];
@@ -397,8 +395,99 @@ Term page_run(Env e, Term *f, IoWork *w) {
   return page_more(e, w);
 }
 
+#ifdef CID(page)
 static void __attribute__((constructor)) page_use(void) {
   io_eff(CID(page), page_run, 0);
+}
+#endif
+
+// SYNC
+// ----
+// sync_page(sock, token, facts (7), post, ops, since): runs db_sync and
+// sends its output as the response (200 text/plain), so a document's
+// operations go from SQLite to the socket without becoming a Bend String.
+// Fails: 403 (denied/stale), 409 (conflict/limit), 400 (malformed).
+
+#ifdef CID(sync_page)
+
+static void sync_out_put(void *ctx, const char *p, uint32_t n) {
+  page_put((PageOut *)ctx, p, n);
+}
+
+Term sync_page_run(Env e, Term *f, IoWork *w) {
+  ASSERT(app_db_ready);
+  w->hand = (intptr_t)io_hand_v(f[0]);
+  uint8_t h[32];
+  app_token_hash(e, f[1], h);
+  DbFacts x = {(uint32_t)f[2], (uint32_t)f[3], (uint32_t)f[4], (uint32_t)f[5],
+               (uint32_t)f[6], (uint32_t)f[7], (uint32_t)f[8]};
+  uint32_t post = (uint32_t)f[9];
+  u64 on = 0;
+  char *ops = io_cstr(e, f[10], &on);
+  uint64_t since = (uint64_t)(uint32_t)f[11];
+  PageOut body = {io_mem(malloc(16384)), 0, 16384, 0};
+  DbResult r = on > UINT32_MAX ? DB_DENIED
+    : db_sync(&app_db, h, app_now_ms(), &x, post, ops, (uint32_t)on, since, sync_out_put, &body);
+  free(ops);
+  uint32_t status = r == DB_OK && !body.overflow ? 200u : r == DB_CONFLICT ? 409u : r == DB_DENIED || r == DB_STALE ? 403u : 500u;
+  if (status != 200u) body.len = 0;
+  char head[1024];
+  int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %llu\r\nConnection: close\r\n%s\r\n",
+                    status, page_reason(status), (unsigned long long)body.len, NET_SECURITY_HEADERS);
+  ASSERT(hn > 0 && (size_t)hn < sizeof head);
+  u64 total = (u64)hn + body.len;
+  char *out = io_mem(malloc(total));
+  memcpy(out, head, (size_t)hn);
+  memcpy(out + hn, body.buf, body.len);
+  free(body.buf);
+  w->data = out;
+  w->size = total;
+  w->made = 0;
+  w->code = 0;
+  w->text = (char *)(uintptr_t)(io_tick() + 10000ull * 1000000ull);
+  return page_more(e, w);
+}
+
+static void __attribute__((constructor)) sync_page_use(void) {
+  io_eff(CID(sync_page), sync_page_run, 0);
+}
+
+#endif
+
+// ASSETS
+// ------
+// asset(sock, id): static files embedded at compile time, served as bytes.
+// 0: the editor bundle (build/web/editor.bundle.js, from tools/bundle.py).
+
+#ifdef CID(asset)
+
+static const char ASSET_EDITOR[] = {
+#embed "web/editor.bundle.js"
+};
+
+Term asset_run(Env e, Term *f, IoWork *w) {
+  w->hand = (intptr_t)io_hand_v(f[0]);
+  uint32_t id = (uint32_t)f[1];
+  const char *data = id == 0u ? ASSET_EDITOR : "";
+  u64 len = id == 0u ? sizeof ASSET_EDITOR : 0u;
+  uint32_t status = id == 0u ? 200u : 404u;
+  char head[1024];
+  int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: text/javascript; charset=utf-8\r\nContent-Length: %llu\r\nConnection: close\r\n%s\r\n",
+                    status, page_reason(status), (unsigned long long)len, NET_SECURITY_HEADERS);
+  ASSERT(hn > 0 && (size_t)hn < sizeof head);
+  char *out = io_mem(malloc((u64)hn + len));
+  memcpy(out, head, (size_t)hn);
+  memcpy(out + hn, data, len);
+  w->data = out;
+  w->size = (u64)hn + len;
+  w->made = 0;
+  w->code = 0;
+  w->text = (char *)(uintptr_t)(io_tick() + 10000ull * 1000000ull);
+  return page_more(e, w);
+}
+
+static void __attribute__((constructor)) asset_use(void) {
+  io_eff(CID(asset), asset_run, 0);
 }
 
 #endif

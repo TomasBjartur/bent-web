@@ -13,6 +13,7 @@
 #include "../../vendor/bearssl/inc/bearssl_hash.h"
 #include "assert.h"
 #include "token_core.h"
+#include "ops_core.h"
 
 // The schema, embedded at build time from src/db/schema.sql.
 static const char DB_SCHEMA[] = {
@@ -41,6 +42,11 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_POST_PUBLISH] = "UPDATE post SET published = ?2, updated_ms = ?3 WHERE id = ?1",
   [ST_POST_DELETE] = "DELETE FROM post WHERE id = ?1",
   [ST_SESSION_DELETE] = "DELETE FROM session WHERE token_hash = ?1",
+  [ST_OP_NEW] = ("INSERT OR IGNORE INTO op(post_id, ctr, rep, kind, pctr, prep, side, ch) "
+                 "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"),
+  [ST_OP_SINCE] = ("SELECT seq, ctr, rep, kind, pctr, prep, side, ch FROM op WHERE post_id = ?1 AND seq > ?2 "
+                   "ORDER BY seq"),
+  [ST_OP_COUNT] = "SELECT count(*) FROM op WHERE post_id = ?1",
   [ST_TOKEN_RECENT] = "SELECT count(*) FROM email_token WHERE email = ?1 AND created_ms > ?2",
   [ST_TOKEN_NEW] = ("INSERT INTO email_token(hash, purpose, email, name, user_id, created_ms, expires_ms) "
                     "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"),
@@ -79,6 +85,9 @@ static const char *const DB_Q[Q_COUNT] = {
                       MEMBER_OF("?1") " ORDER BY updated_ms DESC LIMIT 100"),
   [Q_POST_MD] = ("SELECT p.body_md, p.title FROM post p WHERE p.id = ?1 AND " MEMBER_OF("p.blog_id")),
   [Q_USER_BY_EMAIL] = "SELECT id FROM user WHERE email = ?3",
+  [Q_OPS] = ("SELECT coalesce(group_concat(ctr || '.' || rep || '.' || kind || '.' || pctr || '.' || prep || '.' || side || '.' || ch || ';', ''), '') "
+              "FROM (SELECT * FROM op o WHERE o.post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)") " ORDER BY o.seq)"),
+  [Q_OP_COUNT] = ("SELECT count(*) FROM op WHERE post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)")),
   [Q_AUTHORS] = ("SELECT u.id, u.name, u.email, m.role FROM member m JOIN user u ON u.id = m.user_id "
                  "WHERE m.blog_id = ?1 AND " MEMBER_OF("?1") " ORDER BY m.role, u.name LIMIT 100"),
 };
@@ -269,6 +278,7 @@ static int32_t db_floor(const DbFacts *f, const DbWrite *w) {
     case A_EDIT_POST:
     case A_PUBLISH_POST:
     case A_DELETE_POST:
+    case A_SYNC_OPS:
       return f->has_post && w->target == f->post && f->post_blog == f->blog && f->role != ROLE_NONE;
     default:
       return 0;
@@ -716,4 +726,69 @@ AuthResult auth_login(Db *db, const uint8_t challenge_hash[32], const uint8_t *i
   r = auth_commit(db);
   if (r == AUTH_OK) *user = uid;
   return r;
+}
+
+// COLLABORATIVE EDITING
+// ---------------------
+
+static uint32_t db_sync_rows[SYNC_OPS_MAX][7];
+
+DbResult db_sync(Db *db, const uint8_t token_hash[32], uint64_t now_ms, const DbFacts *f,
+                 uint32_t post, const char *ops, uint32_t ops_len, uint64_t since, DbOutFn out, void *ctx) {
+  int32_t n = ops_parse(ops, ops_len, db_sync_rows, SYNC_OPS_MAX);
+  if (n < 0) return DB_DENIED;
+  DbWrite w = {.kind = A_SYNC_OPS, .target = post};
+  if (!db_floor(f, &w)) return DB_DENIED;
+  if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return DB_ERROR;
+  DbResult r = db_facts_hold(db, token_hash, now_ms, f);
+  if (r != DB_OK) {
+    auth_rollback(db, AUTH_OK);
+    return r;
+  }
+  sqlite3_stmt *st = db->st[ST_OP_COUNT];
+  sqlite3_bind_int64(st, 1, post);
+  uint32_t have = 0;
+  if (db_one_u32(st, &have) != 1 || have + (uint32_t)n > POST_OPS_MAX) {
+    auth_rollback(db, AUTH_OK);
+    return DB_CONFLICT;
+  }
+  for (int32_t i = 0; i < n; i++) {
+    st = db->st[ST_OP_NEW];
+    sqlite3_bind_int64(st, 1, post);
+    for (int j = 0; j < 7; j++) sqlite3_bind_int64(st, j + 2, db_sync_rows[i][j]);
+    if (db_exec(st) != SQLITE_DONE) {
+      auth_rollback(db, AUTH_OK);
+      return DB_CONFLICT;
+    }
+  }
+  st = db->st[ST_OP_SINCE];
+  sqlite3_bind_int64(st, 1, post);
+  sqlite3_bind_int64(st, 2, (sqlite3_int64)since);
+  // First pass: the rows, buffered by the caller; the max seq comes last.
+  char line[128];
+  uint64_t max = since, bytes = 0;
+  int rc;
+  while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+    uint64_t seq = (uint64_t)sqlite3_column_int64(st, 0);
+    if (seq > max) max = seq;
+    int ln = snprintf(line, sizeof line, "%lld.%lld.%lld.%lld.%lld.%lld.%lld;",
+                      (long long)sqlite3_column_int64(st, 1), (long long)sqlite3_column_int64(st, 2),
+                      (long long)sqlite3_column_int64(st, 3), (long long)sqlite3_column_int64(st, 4),
+                      (long long)sqlite3_column_int64(st, 5), (long long)sqlite3_column_int64(st, 6),
+                      (long long)sqlite3_column_int64(st, 7));
+    ASSERT(ln > 0 && (size_t)ln < sizeof line);
+    bytes += (uint64_t)ln;
+    if (bytes > SYNC_OUT_MAX) break;
+    out(ctx, line, (uint32_t)ln);
+  }
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+  if (db_exec(db->st[ST_COMMIT]) != SQLITE_DONE) {
+    auth_rollback(db, AUTH_OK);
+    return DB_ERROR;
+  }
+  int ln = snprintf(line, sizeof line, "\n%llu", (unsigned long long)max);
+  ASSERT(ln > 0);
+  out(ctx, line, (uint32_t)ln);
+  return DB_OK;
 }
