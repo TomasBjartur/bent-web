@@ -422,8 +422,37 @@ def slug_of(m: Maybe<&2, String>) -> Maybe<&2, Slug>:
 def form_title(+xs: List<&2, Field>, +key: String) -> Maybe<&2, Title>:
   title_of(decode_of(form_get(xs, key)))
 
+def strip_cr.go(b: Bool, +line: String) -> String:
+  match b:
+    case True{}:
+      String.take(line, Nat.sub(String.length(line), 1n))
+    case False{}:
+      line
+
+# Browsers submit textarea line breaks as CRLF (HTML spec); stored bodies
+# use LF. A CR not followed by LF stays, and is then rejected by the spec.
+def strip_cr(+line: String) -> String:
+  strip_cr.go(String.ends_with(line, "\r"), line)
+
+def strip_crs(xs: List<&2, String>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, t}:
+      strip_cr(x) <> strip_crs(t)
+
+def crlf_to_lf(+s: String) -> String:
+  String.join(strip_crs(String.split(s, '\n')), "\n")
+
+def lf_of(m: Maybe<&2, String>) -> Maybe<&2, String>:
+  match m:
+    case None{}:
+      None{}
+    case Some{+s}:
+      Some{crlf_to_lf(s)}
+
 def form_body(+xs: List<&2, Field>, +key: String) -> Maybe<&2, Body>:
-  body_of(decode_of(form_get(xs, key)))
+  body_of(lf_of(decode_of(form_get(xs, key))))
 
 def form_slug(+xs: List<&2, Field>, +key: String) -> Maybe<&2, Slug>:
   slug_of(form_get(xs, key))

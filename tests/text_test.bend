@@ -8,56 +8,85 @@ def bytes(xs: List<&2, U32>) -> String:
       ""
     case Con{x, t}:
       SCon{Chr{x}, bytes(t)}
+
 def codes(s: String) -> String:
   match s:
     case SNil{}:
       ""
     case SCon{c, t}:
       U32.show(Char.to_u32(c)) ++ ("," ++ codes(t))
+
 def show_m(m: Maybe<&2, String>) -> String:
   match m:
     case None{}:
       "none"
     case Some{s}:
       codes(s)
+
 def msg(ok: Bool, name: String, got: String, want: String) -> String:
   match ok:
     case True{}:
       "PASS " ++ name
     case False{}:
       "FAIL " ++ (name ++ ("  got " ++ (got ++ ("  want " ++ want))))
+
 def check(name: String, +got: String, +want: String) -> IO(Unit):
   IO.print(msg(String.eq(got, want), name, got, want))
+
 def dec(xs: List<&2, U32>) -> String:
   show_m(T.utf8_decode(bytes(xs)))
+
 def show_title(m: Maybe<&2, T.Title>) -> String:
   match m:
     case None{}:
       "none"
     case Some{t}:
       T.Title.text(t)
+
 def show_slug(m: Maybe<&2, T.Slug>) -> String:
   match m:
     case None{}:
       "none"
     case Some{t}:
       T.Slug.text(t)
+
 def form_or(m: Maybe<&2, List<&2, T.Field>>, +key: String) -> Maybe<&2, T.Title>:
   match m:
     case None{}:
       None{}
     case Some{+xs}:
       T.form_title(xs, key)
+
+def show_body(m: Maybe<&2, T.Body>) -> String:
+  match m:
+    case None{}:
+      "none"
+    case Some{b}:
+      T.Body.text(b)
+
+def body_or(m: Maybe<&2, List<&2, T.Field>>, +key: String) -> Maybe<&2, T.Body>:
+  match m:
+    case None{}:
+      None{}
+    case Some{+xs}:
+      T.form_body(xs, key)
+
+def body(b: String) -> String:
+  show_body(body_or(T.form_parse(b), "body"))
+
 def title(body: String) -> String:
   show_title(form_or(T.form_parse(body), "title"))
+
 def slug_or(m: Maybe<&2, List<&2, T.Field>>, +key: String) -> Maybe<&2, T.Slug>:
   match m:
     case None{}:
       None{}
     case Some{+xs}:
       T.form_slug(xs, key)
+
 def slug(body: String) -> String:
   show_slug(slug_or(T.form_parse(body), "slug"))
+
 def main() -> IO(Unit):
   do IO<Unit>:
     check("ascii", dec([104, 105]), "104,105,")
@@ -90,6 +119,9 @@ def main() -> IO(Unit):
     check("form title repeated", title("title=a&title=b"), "none")
     check("form title among others", title("a=1&title=T&b=2"), "T")
     check("form two equals", title("title=a=b"), "none")
+    check("body CRLF becomes LF", body("body=a%0D%0Ab%0D%0A%0D%0Ac"), "a\nb\n\nc")
+    check("body lone CR rejected", body("body=a%0Db"), "none")
+    check("body tab kept", body("body=a%09b"), "a\tb")
     check("slug ok", slug("slug=my-blog-2"), "my-blog-2")
     check("slug upper", slug("slug=My"), "none")
     check("slug dotdot", slug("slug=.."), "none")

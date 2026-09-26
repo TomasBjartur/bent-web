@@ -142,13 +142,17 @@ result.
 - Native builds: `bend x.bend -o x.c`, then clang with our own flags and
   objects (e.g. `vendor/sqlite`). `bend -o bin` can't add link flags.
 - This container has no root: LLVM 19 is in `~/opt`, use `CC=spike/cc.sh`.
+  CBMC is in `~/opt/cbmc/usr/bin/cbmc`. Chrome: `tools/setup_chrome.sh`.
+- Emails are written to the `outbox` table; nothing sends them yet.
 
 ## Status
 
 - Phase 0 spike: done, GO.
 - Phase 1 (secure core): done. Parser, authz, DB, sessions, CSRF, pages.
   See `docs/FINDINGS.md` for guarantees, numbers and gaps.
-- Next: passkey login + email recovery; Markdown; the local-first editor.
+- Phase 2 (login): done. Passkeys with email sign-up and recovery; tested
+  with a software authenticator and in real Chrome.
+- Next: Markdown with a safety law; the local-first editor (CRDT).
 
 ## Checks (run all before committing)
 
@@ -157,5 +161,8 @@ result.
 - `bend tests/http_test.bend`, `bend tests/text_test.bend`
 - `tests/c/build.sh` (unit + sanitizers, fuzz, CBMC; needs `CBMC=`)
 - `./build.sh && python3 tests/app_test.py`
+- `python3 tests/passkey_test.py` (software authenticator, 64 attack/flow tests)
+- `python3 tests/browser_test.py` (real headless Chrome with a virtual
+  authenticator; set up once with `tools/setup_chrome.sh`)
 - with a server running: `tests/server_test.py`, `tests/fuzz_server.py`
 - `spike/` holds throwaway measurement code (not C_STYLE-compliant).
