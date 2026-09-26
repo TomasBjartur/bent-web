@@ -123,6 +123,13 @@ static const char *const DB_Q[Q_COUNT] = {
   // ids are sequential, so otherwise anyone could list every account.
   [Q_AUTHOR_PUBLIC] = ("SELECT u.name FROM user u WHERE u.id = ?1 AND EXISTS "
                        "(SELECT 1 FROM post p WHERE p.author_id = u.id AND p.published = 1)"),
+  // ?3 is an FTS5 expression built by Text.fts_query (quoted terms only).
+  // The snippet marks matches with bytes 1 and 2, which stored text never
+  // contains (bodies have no control characters but newline and tab).
+  [Q_SEARCH] = ("SELECT b.slug, p.slug, p.title, b.title, " POST_AUTHOR ", " POST_DATE ", "
+                "snippet(post_fts, 1, char(1), char(2), '…', 24), " POST_MINUTES ", p.author_id "
+                "FROM post_fts JOIN post p ON p.id = post_fts.rowid JOIN blog b ON b.id = p.blog_id "
+                "WHERE post_fts MATCH ?3 AND p.published = 1 ORDER BY rank LIMIT 30"),
   [Q_POSTS_BY_AUTHOR] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id "
                          "WHERE p.author_id = ?1 AND p.published = 1 ORDER BY p.published_ms DESC LIMIT 100"),
 };
@@ -141,6 +148,19 @@ static const char *const DB_MIGRATIONS[] = {
   // author pages.
   "UPDATE post SET author_id = (SELECT owner_id FROM blog WHERE blog.id = post.blog_id) WHERE author_id IS NULL;"
   "CREATE INDEX IF NOT EXISTS post_author_feed ON post(author_id, published, published_ms DESC);",
+  // v3: full-text search (FTS5, built into SQLite). Indexes every post;
+  // searches return published posts only (drafts' words do slightly
+  // affect ranking statistics, never results or snippets).
+  "CREATE VIRTUAL TABLE post_fts USING fts5(title, body_md, content='post', content_rowid='id',"
+  " tokenize='unicode61 remove_diacritics 2');"
+  "CREATE TRIGGER post_fts_ai AFTER INSERT ON post BEGIN"
+  " INSERT INTO post_fts(rowid, title, body_md) VALUES (new.id, new.title, new.body_md); END;"
+  "CREATE TRIGGER post_fts_ad AFTER DELETE ON post BEGIN"
+  " INSERT INTO post_fts(post_fts, rowid, title, body_md) VALUES ('delete', old.id, old.title, old.body_md); END;"
+  "CREATE TRIGGER post_fts_au AFTER UPDATE OF title, body_md ON post BEGIN"
+  " INSERT INTO post_fts(post_fts, rowid, title, body_md) VALUES ('delete', old.id, old.title, old.body_md);"
+  " INSERT INTO post_fts(rowid, title, body_md) VALUES (new.id, new.title, new.body_md); END;"
+  "INSERT INTO post_fts(post_fts) VALUES ('rebuild');",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 

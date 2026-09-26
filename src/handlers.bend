@@ -105,6 +105,27 @@ def cached_or(r: Socket & Result<&1, &1, U32 & String, Unit>, render: Socket -> 
     case Fail{err}:
       render(s)
 
+# SEARCH: /search?q=... (not cached: queries vary). An empty or wordless
+# query shows the box only.
+def h_search2(empty: Bool, s: Socket, +token: String, +who: U32, +q: String, +fq: String) -> IO(Unit):
+  match empty:
+    case True{}:
+      send(s, token, 200, Pages.layout("Search", signed(who), Pages.search_page(q, Nil{})))
+    case False{}:
+      do IO<Unit>:
+        rows : List<&2, List<&2, String>> <- Db.query(Db.q_search(), 0, 0, fq, token)
+        send(s, token, 200, Pages.layout("Search: " ++ q, signed(who), Pages.search_page(q, rows)))
+
+def h_search.go(s: Socket, +token: String, +who: U32, +q: String) -> IO(Unit):
+  +fq = Text.fts_query(q)
+  h_search2(String.is_empty(fq), s, token, who, q, fq)
+
+def form(+body: String) -> List<&2, Text.Field>:
+  Maybe.default(&2, List<&2, Text.Field>, Text.form_parse(body), Nil{})
+
+def h_search(s: Socket, +token: String, +who: U32, +query: String) -> IO(Unit):
+  h_search.go(s, token, who, String.take(Maybe.default(&2, String, Text.decode_of(Text.form_get(form(query), "q")), ""), 200n))
+
 # RSS: the site's recent posts, and a blog's posts (content type 6).
 def h_feed2(s: Socket, +token: String, +origin: String) -> IO(Unit):
   do IO<Unit>:
@@ -211,9 +232,6 @@ def h_post2(s: Socket, +token: String, +who: U32, +pid: U32, +notice: Bool) -> I
   do IO<Unit>:
     +f : Spec.Facts <- Db.facts(who, 0, pid)
     h_post3(s, token, who, pid, is_some_permit(Authz.authorize(f, Spec.EditPost{pid})), notice, Authz.authorize(f, Spec.ReadPost{pid}))
-
-def form(+body: String) -> List<&2, Text.Field>:
-  Maybe.default(&2, List<&2, Text.Field>, Text.form_parse(body), Nil{})
 
 # ?published=1: the editor just published it (a notice, for members only).
 def just_published(+query: String) -> Bool:
@@ -655,6 +673,8 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
   match r:
     case Route.RFeed{}:
       h_feed(s, token, origin)
+    case Route.RSearch{}:
+      h_search(s, token, who, query)
     case Route.RBlogFeed{+b}:
       h_blog_feed(s, token, origin, b)
     case Route.RHome{}:

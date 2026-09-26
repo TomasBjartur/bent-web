@@ -582,3 +582,78 @@ def form_slug_or.go(empty: Bool, +raw: String, +title: String) -> Maybe<&2, Slug
 def form_slug_or(+xs: List<&2, Field>, +key: String, +title_key: String) -> Maybe<&2, Slug>:
   +raw = Maybe.default(&2, String, form_get(xs, key), "")
   form_slug_or.go(String.is_empty(raw), raw, Maybe.default(&2, String, decode_of(form_get(xs, title_key)), ""))
+
+# SEARCH QUERIES
+# --------------
+# A search box's text as an FTS5 expression that can only mean "all these
+# words": each word is quoted ("..." with " doubled, so nothing inside is
+# syntax), at most 8 words of at most ~126 characters, the last one a prefix
+# ("word"*). Separators: space, tab, newline. "" if there are no words.
+def fts.is_sep(+c: Char) -> Bool:
+  +x = Char.to_u32(c)
+  Bool.or(U32.is_eq(x, 32), Bool.or(U32.is_eq(x, 9), Bool.or(U32.is_eq(x, 10), U32.is_eq(x, 13))))
+
+# A word is kept reversed; a quote goes in twice.
+def fts.push(q: Bool, +h: Char, w: String) -> String:
+  match q:
+    case True{}:
+      SCon{h, SCon{h, w}}
+    case False{}:
+      SCon{h, w}
+
+# A full word (126 characters, a doubled quote counting 2) takes no more:
+# the cap applies before quoting, so a doubled quote is never split.
+def fts.full(full: Bool, +h: Char, w: String) -> String:
+  match full:
+    case True{}:
+      w
+    case False{}:
+      fts.push(U32.is_eq(Char.to_u32(h), 34), h, w)
+
+def fts.word(sep: Bool, +h: Char, +w: String) -> String:
+  match sep:
+    case True{}:
+      SNil{}
+    case False{}:
+      fts.full(Nat.is_le(126n, String.length(w)), h, w)
+
+def fts.term(+w: String) -> String:
+  "\"" ++ (String.reverse(w) ++ "\"")
+
+def fts.join(+out: String, +t: String) -> String:
+  or_else.go(String.is_empty(out), out ++ (" " ++ t), t)
+
+def fts.add(ok: Bool, +w: String, +out: String) -> String:
+  match ok:
+    case True{}:
+      fts.join(out, fts.term(w))
+    case False{}:
+      out
+
+def fts.count(ok: Bool, +n: U32) -> U32:
+  match ok:
+    case True{}:
+      (n + 1 : U32)
+    case False{}:
+      n
+
+def fts.room(+w: String, +n: U32) -> Bool:
+  Bool.and(Bool.not(String.is_empty(w)), U32.is_lt(n, 8))
+
+def fts.last(ok: Bool, +w: String, +out: String) -> String:
+  match ok:
+    case True{}:
+      fts.join(out, fts.term(w) ++ "*")
+    case False{}:
+      out
+
+# At a separator the word so far is added (if any, and if there is room).
+def fts.go(s: String, +w: String, +out: String, +n: U32) -> String:
+  match s:
+    case SNil{}:
+      fts.last(fts.room(w, n), w, out)
+    case SCon{+h, t}:
+      fts.go(t, fts.word(fts.is_sep(h), h, w), fts.add(Bool.and(fts.is_sep(h), fts.room(w, n)), w, out), fts.count(Bool.and(fts.is_sep(h), fts.room(w, n)), n))
+
+def fts_query(s: String) -> String:
+  fts.go(s, SNil{}, "", 0)

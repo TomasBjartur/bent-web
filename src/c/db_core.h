@@ -94,6 +94,7 @@ enum {
   Q_OP_COUNT,           // a=post -> number of ops  (member only)
   Q_AUTHOR_PUBLIC,      // a=user -> name  (only if they have a published post)
   Q_POSTS_BY_AUTHOR,    // a=user -> as Q_RECENT_PUBLIC  (published only)
+  Q_SEARCH,             // text=FTS5 query -> as Q_RECENT_PUBLIC, excerpt = marked snippet, no rfc822
   Q_COUNT
 };
 

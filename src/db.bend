@@ -116,6 +116,9 @@ def q_author_public() -> U32:
 def q_posts_by_author() -> U32:
   13
 
+def q_search() -> U32:
+  14
+
 def principal.go(anon: Bool, +who: U32) -> Spec.Principal:
   match anon:
     case True{}:

@@ -39,6 +39,7 @@ type Route is Data:
   RWrite{}
   RFeed{}
   RBlogFeed{blog: String}
+  RSearch{}
   RNotFound{}
 
 type Plan is Data:
@@ -82,6 +83,8 @@ def get1(k: Nat, +a: String) -> Route:
       RVerify{}
     case 6n:
       RFeed{}
+    case 7n:
+      RSearch{}
     case _:
       RNotFound{}
 
@@ -117,7 +120,7 @@ def route_get(xs: List<&2, String>) -> Route:
     case Con{+a, t}:
       match t:
         case Nil{}:
-          get1(Nat.add(eq(a, "healthz"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.add(Nat.mul(eq(a, "login"), 4n), Nat.add(Nat.mul(eq(a, "verify"), 5n), Nat.mul(eq(a, "feed.xml"), 6n)))))), a)
+          get1(Nat.add(eq(a, "healthz"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.add(Nat.mul(eq(a, "login"), 4n), Nat.add(Nat.mul(eq(a, "verify"), 5n), Nat.add(Nat.mul(eq(a, "feed.xml"), 6n), Nat.mul(eq(a, "search"), 7n))))))), a)
         case Con{+b, u}:
           match u:
             case Nil{}:

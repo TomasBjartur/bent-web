@@ -21,10 +21,10 @@ python3 tools/bundle.py
 echo "== bend -> C"
 bend src/main.bend -o build/server.c > build/bend.log 2>&1 || { cat build/bend.log; exit 1; }
 
-if [ ! -f build/sqlite3.o ] || [ vendor/sqlite/sqlite3.c -nt build/sqlite3.o ]; then
+if [ ! -f build/sqlite3.o ] || [ vendor/sqlite/sqlite3.c -nt build/sqlite3.o ] || [ build.sh -nt build/sqlite3.o ]; then
   echo "== sqlite"
   $CC -O2 -c -DSQLITE_THREADSAFE=2 -DSQLITE_DQS=0 -DSQLITE_OMIT_LOAD_EXTENSION \
-    -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_DEFAULT_FOREIGN_KEYS=1 \
+    -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_DEFAULT_FOREIGN_KEYS=1 -DSQLITE_ENABLE_FTS5 \
     -fstack-protector-strong -D_FORTIFY_SOURCE=3 -fPIE \
     vendor/sqlite/sqlite3.c -o build/sqlite3.o 2>/dev/null
 fi

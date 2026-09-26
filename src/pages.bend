@@ -30,9 +30,9 @@ def asset(+name: String) -> String:
 def nav(b: Bool) -> String:
   match b:
     case True{}:
-      "<a href=\"/\" class=\"hide-sm\">Home</a><a href=\"/dash\">Your blogs</a><form method=\"post\" action=\"/logout\"><button class=\"link\">Log out</button></form><form method=\"post\" action=\"/write\"><button class=\"primary\">Write</button></form>"
+      "<a href=\"/\" class=\"hide-sm\">Home</a><a href=\"/search\" class=\"hide-sm\">Search</a><a href=\"/dash\">Your blogs</a><form method=\"post\" action=\"/logout\"><button class=\"link\">Log out</button></form><form method=\"post\" action=\"/write\"><button class=\"primary\">Write</button></form>"
     case False{}:
-      "<a href=\"/login\">Log in</a><a class=\"btn primary\" href=\"/signup\">Start writing</a>"
+      "<a href=\"/search\" class=\"hide-sm\">Search</a><a href=\"/login\">Log in</a><a class=\"btn primary\" href=\"/signup\">Start writing</a>"
 
 def head(+title: String) -> String:
   "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>" ++ (e(title) ++ (" · slopstack</title><link rel=\"stylesheet\" href=\"" ++ (asset("app.css") ++ "\"><link rel=\"alternate\" type=\"application/rss+xml\" title=\"slopstack\" href=\"/feed.xml\"></head><body><a class=\"skip\" href=\"#main\">Skip to content</a>")))
@@ -188,7 +188,7 @@ def feed_or_empty(rows: List<&2, List<&2, String>>, msg: String) -> String:
       "<ul class=\"feed\">" ++ (recent_items(Con{r, t}) ++ "</ul>")
 
 def home_page(rows: List<&2, List<&2, String>>, signed: Bool) -> String:
-  intro(signed) ++ ("<h2>Recent posts</h2>" ++ feed_or_empty(rows, "Nothing published yet. Be the first!"))
+  intro(signed) ++ ("<div class=\"feed-head\"><h2>Recent posts</h2><a href=\"/search\">Search</a></div>" ++ feed_or_empty(rows, "Nothing published yet. Be the first!"))
 
 # A blog's posts: [post slug, title, author, date, excerpt, minutes].
 def post_items(+bslug: String, rows: List<&2, List<&2, String>>) -> String:
@@ -393,3 +393,47 @@ def rss_blog(+origin: String, +bslug: String, rows: List<&2, List<&2, String>>) 
       ""
     case Con{+r, t}:
       rss_item(origin, bslug, col(r, 0n), col(r, 1n), col(r, 2n), col(r, 4n), col(r, 7n)) ++ rss_blog(origin, bslug, t)
+
+# SEARCH
+# ------
+# A snippet from SQLite: text with matches between bytes 1 and 2. Each
+# character is escaped on its own (Html.esc), and only the two marker bytes
+# (which the escaper would drop, and stored text never contains) become
+# <mark> tags.
+def hl.pick(k: Nat, +h: Char) -> String:
+  match k:
+    case 1n:
+      "<mark>"
+    case 2n:
+      "</mark>"
+    case _:
+      Html.esc(SCon{h, SNil{}}, "")
+
+def hl(s: String) -> String:
+  match s:
+    case SNil{}:
+      ""
+    case SCon{+h, t}:
+      hl.pick(U32.to_nat((Bool.to_u32(U32.is_eq(Char.to_u32(h), 1)) + (2 * Bool.to_u32(U32.is_eq(Char.to_u32(h), 2))) : U32)), h) ++ hl(t)
+
+# Results: as recent_items, but col 6 is a marked snippet.
+def search_items(rows: List<&2, List<&2, String>>) -> String:
+  match rows:
+    case Nil{}:
+      ""
+    case Con{+r, t}:
+      "<li><a class=\"pub\" href=\"/b/" ++ (e(col(r, 0n)) ++ ("\">" ++ (e(col(r, 3n)) ++ ("</a><h3><a href=\"/b/" ++ (e(col(r, 0n)) ++ ("/" ++ (e(col(r, 1n)) ++ ("\">" ++ (e(col(r, 2n)) ++ ("</a></h3><p class=\"excerpt snippet\">" ++ (hl(col(r, 6n)) ++ ("</p>" ++ (meta3(col(r, 8n), col(r, 4n), col(r, 5n), col(r, 7n)) ++ ("</li>" ++ search_items(t)))))))))))))))
+
+def search_results(asked: Bool, rows: List<&2, List<&2, String>>) -> String:
+  match asked:
+    case False{}:
+      ""
+    case True{}:
+      match rows:
+        case Nil{}:
+          "<div class=\"empty\"><p>No posts match. Try fewer or different words.</p></div>"
+        case Con{r, t}:
+          "<ul class=\"feed\">" ++ (search_items(Con{r, t}) ++ "</ul>")
+
+def search_page(+q: String, rows: List<&2, List<&2, String>>) -> String:
+  "<form method=\"get\" action=\"/search\" class=\"searchbar\" role=\"search\"><input name=\"q\" type=\"search\" maxlength=\"200\" placeholder=\"Search posts\" aria-label=\"Search posts\" autofocus value=\"" ++ (e(q) ++ ("\"><button class=\"primary\">Search</button></form>" ++ search_results(Bool.not(String.is_empty(q)), rows)))

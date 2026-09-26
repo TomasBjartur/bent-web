@@ -332,6 +332,29 @@ def run(dbpath):
     _, _, body, _ = req("GET", "/")
     check("pages advertise the feed", 'type="application/rss+xml"' in body)
 
+    # Search: published posts only, snippets escaped with marked matches,
+    # hostile queries are just words.
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b, {"title": "Searchable"})
+    req("POST", loc, b, {"title": "Searchable", "body": "The zebracorn <b>galloped</b> & sang.", "action": "publish"})
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b, {"title": "Secret draft"})
+    req("POST", loc, b, {"title": "Secret draft", "body": "zebracorn plans nobody may read"})
+    st, _, body, _ = req("GET", "/search?q=zebracorn")
+    check("search finds the published post", st == 200 and "Searchable" in body, st)
+    check("search never shows drafts", "Secret draft" not in body and "nobody may read" not in body)
+    check("snippet marks the match", "<mark>zebracorn</mark>" in body, body[body.find("snippet"):][:300])
+    check("snippet is escaped", "&lt;b&gt;galloped&lt;/b&gt; &amp; sang" in body and "<b>galloped" not in body)
+    check("prefix search", "Searchable" in req("GET", "/search?q=zebrac")[2])
+    check("case and accents folded", "Searchable" in req("GET", "/search?q=" + urllib.parse.quote("ZEBRACÓRN"))[2])
+    for q in ['"', '""', 'zebracorn"', 'NEAR(', 'a OR', '*', '^', ')(', "'", '%00', 'x' * 600, ' ' * 50, '\x01zebracorn']:
+        st, _, body, _ = req("GET", "/search?q=" + urllib.parse.quote(q, safe=''))
+        check(f"hostile query {q[:12]!r}: fine", st == 200, st)
+    st, _, body, _ = req("GET", "/search?q=" + urllib.parse.quote('zebracorn" OR "secret'))
+    check("quote injection is literal", "Secret draft" not in body, body[-300:])
+    st, _, body, _ = req("GET", "/search")
+    check("empty search: just the box", st == 200 and 'name="q"' in body and "No posts match" not in body)
+    st, _, body, _ = req("GET", "/search?q=" + urllib.parse.quote('"><script>alert(1)</script>', safe=''))
+    check("query echoed escaped", "<script>alert" not in body and "&lt;script&gt;" in body, (st, body[body.find('name="q"'):][:300]))
+
     # Security headers everywhere.
     _, _, _, head = req("GET", "/b/alice/first")
     check("CSP present", "Content-Security-Policy: default-src 'none'" in head)
