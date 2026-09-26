@@ -208,3 +208,25 @@ def merge_idem(+xs: List<&2, Crdt.Op>) -> {Crdt.merge(xs, xs, Crdt.cmp(Crdt.hd(x
     case Con{+x, +xt}:
       %Equal.sym(Cmp, Crdt.cmp(x, x), EQ{}, op_cmp_refl(x)) : {Crdt.merge(Con{x, xt}, Con{x, xt}, _) == Con{x, xt} : List<&2, Crdt.Op>}
       cons_cong(x, Crdt.merge(xt, xt, Crdt.cmp(Crdt.hd(xt), Crdt.hd(xt))), xt, merge_idem(xt))
+
+# THE FAST MERGE EQUALS THE SPECIFIED ONE
+
+def merge_acc_eq(+xs: List<&2, Crdt.Op>, +ys: List<&2, Crdt.Op>, c: Cmp, +acc: List<&2, Crdt.Op>) -> {Crdt.merge_acc(xs, ys, c, acc) == Crdt.rev_app(acc, Crdt.merge(xs, ys, c)) : List<&2, Crdt.Op>}:
+  match xs:
+    case Nil{}:
+      {==}
+    case Con{+x, +xt}:
+      match ys:
+        case Nil{}:
+          {==}
+        case Con{+y, +yt}:
+          match c:
+            case LT{}:
+              merge_acc_eq(xt, Con{y, yt}, Crdt.cmp(Crdt.hd(xt), y), Con{x, acc})
+            case GT{}:
+              merge_acc_eq(Con{x, xt}, yt, Crdt.cmp(x, Crdt.hd(yt)), Con{y, acc})
+            case EQ{}:
+              merge_acc_eq(xt, yt, Crdt.cmp(Crdt.hd(xt), Crdt.hd(yt)), Con{x, acc})
+
+def union_fast(+xs: List<&2, Crdt.Op>, +ys: List<&2, Crdt.Op>) -> {Crdt.union(xs, ys) == Crdt.union_spec(xs, ys) : List<&2, Crdt.Op>}:
+  merge_acc_eq(xs, ys, Crdt.cmp(Crdt.hd(xs), Crdt.hd(ys)), Nil{})

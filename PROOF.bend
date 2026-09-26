@@ -389,8 +389,12 @@ def Laws.markup_rendered(r):
 
 # COLLABORATIVE EDITING
 
+def Laws.crdt_union_fast(xs, ys):
+  CL.union_fast(xs, ys)
+
+# Through union == union_spec, then the laws about merge.
 def Laws.crdt_merge_comm(xs, ys):
-  CL.merge_comm(xs, ys, Crdt.cmp(Crdt.hd(xs), Crdt.hd(ys)), {==})
+  Equal.trans(List<&2, Crdt.Op>, Crdt.union(xs, ys), Crdt.union_spec(xs, ys), Crdt.union(ys, xs), CL.union_fast(xs, ys), Equal.trans(List<&2, Crdt.Op>, Crdt.union_spec(xs, ys), Crdt.union_spec(ys, xs), Crdt.union(ys, xs), CL.merge_comm(xs, ys, Crdt.cmp(Crdt.hd(xs), Crdt.hd(ys)), {==}), Equal.sym(List<&2, Crdt.Op>, Crdt.union(ys, xs), Crdt.union_spec(ys, xs), CL.union_fast(ys, xs))))
 
 def Laws.crdt_merge_idem(xs):
-  CL.merge_idem(xs)
+  Equal.trans(List<&2, Crdt.Op>, Crdt.union(xs, xs), Crdt.union_spec(xs, xs), xs, CL.union_fast(xs, xs), CL.merge_idem(xs))

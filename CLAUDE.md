@@ -114,7 +114,9 @@ rendered and cached per block, and spliced from C when served. Until then,
 one save is capped at 1 MiB.
 
 
-Multi-user, local-first. Text CRDT: **Fugue**. Content is Markdown, not rich
+Multi-user, local-first. Text CRDT: **Fugue**. The browser runs
+`src/web/fugue.js` (fast, incremental); the proved reference is
+`src/crdt.bend`; they must agree (`tests/fugue_diff.mjs`). Content is Markdown, not rich
 text (rich-text CRDTs roughly double the proof work). The merge is written and
 proved in Bend. If Bend's JS output is too slow for typing, a hand-written JS
 replica is kept and checked against it with differential fuzzing.
@@ -181,5 +183,7 @@ result.
   authenticator; set up once with `tools/setup_chrome.sh`)
 - `python3 tests/collab_test.py` (two browsers, two users, one document)
 - `bend tests/crdt_test.bend` (also compiled natively: `-o build/crdt_test`)
+- `node tests/fugue_diff.mjs 300 <seed>` (browser CRDT vs the Bend
+  reference `build/crdt_ref`, built with `bend tests/crdt_ref.bend -o build/crdt_ref`)
 - with a server running: `tests/server_test.py`, `tests/fuzz_server.py`
 - `spike/` holds throwaway measurement code (not C_STYLE-compliant).

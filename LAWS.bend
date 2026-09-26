@@ -455,6 +455,13 @@ law markup_rendered:
 # repetition of syncs irrelevant: replicas that have received the same
 # operations hold identical states (and so show identical text).
 
+# LAW: the union the code runs (tail-recursive, for the browser's small
+# stack) is exactly the specified merge.
+law crdt_union_fast:
+  for +xs: List<&2, Crdt.Op>
+  for +ys: List<&2, Crdt.Op>
+  {Crdt.union(xs, ys) == Crdt.union_spec(xs, ys) : List<&2, Crdt.Op>}
+
 # LAW: merging is commutative.
 law crdt_merge_comm:
   for +xs: List<&2, Crdt.Op>

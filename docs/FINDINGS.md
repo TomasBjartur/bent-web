@@ -4,6 +4,68 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-26: Phases 2–4: login, content, collaboration, the benchmark
+
+### Passkeys (Phase 2)
+- Sign-up by emailed link, passkey-only login, recovery by email; WebAuthn
+  parsed strictly in Bend (JSON subset, canonical CBOR "none" attestation,
+  canonical COSE ES256 key); sessions only from RegOk/LoginOk (laws + lint);
+  C re-verifies login signatures with the stored key in the transaction.
+- Tested with a pure-Python software authenticator (64 flow/attack tests)
+  and in real headless Chrome with a virtual authenticator.
+- **Found by the real browser:** textareas submit CRLF; every real save
+  failed with 400 until bodies normalized CRLF to LF.
+- **BearSSL v0.6 was the wrong pin** (later P-256 carry fixes); pinned
+  upstream master and use the portable m31 curve code.
+
+### Markdown (Phase 3)
+- Safety is structural: `spec/markup.bend` defines a Node type that can
+  only express escaped text, allowlisted tags and url_ok links; stored HTML
+  is provably `html(node)` (law markup_rendered). The parser's bugs can only
+  mis-format.
+- **DoS found and fixed:** strict evaluation made marker searches pay the
+  whole window even after a match; unclosed links rescanned. 1 MB of `*`
+  would have blocked the event loop for ~12 s. Now linear (~0.4 ms/KB).
+
+### Collaboration (Phase 4)
+- Fugue CRDT in Bend with merge commutative and idempotent (proved), and
+  the tail-recursive merge the code runs proved equal to the specified one.
+- **Bend's JS output overflowed browser stacks** at ~1,000 operations
+  (non-tail recursion becomes host recursion; Chrome holds ~10k frames).
+  Fixed by tail recursion everywhere, but then:
+- **Bend's JS output was too slow per keystroke** (177 ms at 10k characters,
+  2.5 s at 100k): each edit rebuilds the tree and walks the document. As
+  planned in CLAUDE.md, the browser now runs `src/web/fugue.js`, an
+  incremental implementation (0.3 ms per keystroke at 100k, 5 ms at 1M),
+  **differentially fuzzed against the Bend reference**: ~32,000 checks over
+  1,800 random multi-replica histories with reordered and partial delivery.
+- **The fuzzer found a real bug** in the fast implementation: a delete that
+  arrived while its target waited for its parent was lost when the target
+  attached (replicas diverged). Fixed.
+- Loading was O(n²) (2.2 s at 100k); batch application with one O(n)
+  rebuild fixed it (377 ms).
+- Tested in two real browsers as two users: concurrent edits, same-position
+  typing without interleaving, offline editing and reconnect.
+
+### The thesis (docs/PERF.md)
+Against Next.js 16 / React 19, same pages and data: 9–25× server
+throughput, 0 vs 168 KB (gzip) of JavaScript, 0 vs ~100 ms of main-thread
+script per load on a throttled phone, `load` 4× sooner, first paint 15–25%
+sooner. Found on the way: two SQLite indexing mistakes, and that
+Cross-Origin-Opener-Policy costs 60–90 ms of first paint from about:blank.
+
+### Open problems
+- **Novel-length documents on the server:** materializing in native Bend
+  takes 1.7 s / 80 MB at 100k characters and 6.2 s / 249 MB at 300k, on the
+  single event loop; Markdown rendering of the whole document adds more.
+  Needs a fast materializer (C, differentially tested like fugue.js) and
+  per-block rendering and storage.
+- Associativity of merge is tested, not proved.
+- Deterministic simulation, multi-core serving, response buffer pools.
+
+
+---
+
 ## 2026-09-26 — Phase 1: the secure core works end to end
 
 What exists: a strict HTTP parser, authorization, database, sessions, CSRF

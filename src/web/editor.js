@@ -1,14 +1,16 @@
-// The collaborative editor: a textarea bound to the CRDT (src/crdt.bend,
-// compiled to JS). Local edits become operations immediately; a sync loop
-// exchanges operations with the server; state and unsent operations are
-// kept in localStorage, so edits made offline are sent when back online.
+// The collaborative editor: a textarea bound to the CRDT. Local edits
+// become operations immediately; a sync loop exchanges operations with the
+// server; unsent operations are kept in localStorage, so edits made offline
+// are sent when back online.
+//
+// The CRDT here is src/web/fugue.js, differentially fuzzed against the
+// proved reference src/crdt.bend (tests/fugue_diff.mjs). Bend's own JS
+// output was too slow per keystroke on long documents (see docs/FINDINGS.md).
 //
 // Positions: the CRDT counts code points; textarea positions are UTF-16
 // units. Everything here works on code point arrays and converts at the
 // edges.
-import C from "../crdt.bend";
-
-const NIL = { $: "Nil" };
+import { Doc } from "./fugue.js";
 const SYNC_MS = 1500;
 const DEBOUNCE_MS = 250;
 
@@ -23,8 +25,8 @@ function start(ta) {
   const status = document.getElementById("sync-status");
   const initial = ta.value;
 
-  let state = NIL;        // every operation known here
-  let text = "";          // C.text(state), as shown
+  let doc = new Doc();    // every operation known here
+  let text = "";          // doc.text(), as shown
   let since = 0;          // server sequence number seen
   let batches = [];       // local operations not yet acknowledged
   let inflight = 0;       // how many batches the current request carries
@@ -88,9 +90,7 @@ function start(ta) {
   function local() {
     const d = diff(cps(text), cps(ta.value));
     if (d.del === 0 && d.ins === "") return;
-    const ops = C.edit(state, rep, d.p, d.del, d.ins);
-    state = C.union(state, ops);
-    batches.push(ops);
+    batches.push(doc.edit(rep, d.p, d.del, d.ins));
     text = ta.value;
     save();
   }
@@ -98,8 +98,8 @@ function start(ta) {
   // Merge remote operations and show the new text, keeping the caret in
   // place relative to the text around it.
   function remote(ops) {
-    state = C.union(state, ops);
-    const next = C.text(state);
+    if (!doc.applyAll(ops)) return;
+    const next = doc.text();
     if (next === ta.value) {
       text = next;
       return;
@@ -119,9 +119,7 @@ function start(ta) {
   }
 
   function pending() {
-    let all = NIL;
-    for (const b of batches) all = C.union(all, b);
-    return all;
+    return batches.flat();
   }
 
   function schedule(ms) {
@@ -133,7 +131,7 @@ function start(ta) {
     if (busy) return;
     busy = true;
     inflight = batches.length;
-    const body = new URLSearchParams({ since: String(since), ops: C.encode(pending()) });
+    const body = new URLSearchParams({ since: String(since), ops: Doc.encode(pending()) });
     show("Syncing…");
     try {
       const res = await fetch(url, {
@@ -148,10 +146,10 @@ function start(ta) {
       }
       const reply = await res.text();
       const nl = reply.lastIndexOf("\n");
-      const got = C.decode(reply.slice(0, nl));
+      const got = Doc.decode(reply.slice(0, nl));
       since = Math.max(since, Number(reply.slice(nl + 1)) || 0);
       batches = batches.slice(inflight);
-      if (got.$ === "Some") remote(got.value);
+      if (got) remote(inflight ? got : got.concat(pending()));
       seed();
       save();
       show(batches.length ? "Unsaved changes" : "Saved");
@@ -169,19 +167,19 @@ function start(ta) {
   function seed() {
     if (seeded) return;
     seeded = true;
-    if (C.text(state) === "" && initial !== "" && since >= 0 && state.$ === "Nil") {
-      const ops = C.edit(NIL, 1, 0, 0, initial);
-      state = C.union(state, ops);
-      batches.push(ops);
-      text = C.text(state);
+    if (doc.order.length === 0 && initial !== "") {
+      batches.push(doc.edit(1, 0, 0, initial));
+      text = doc.text();
       ta.value = text;
       schedule(0);
     }
   }
 
+  // Only unsent operations are stored: the server has everything else, and
+  // a long document would not fit in localStorage anyway.
   function save() {
     try {
-      localStorage.setItem(key, JSON.stringify({ since, state: C.encode(state), pending: C.encode(pending()) }));
+      localStorage.setItem(key, JSON.stringify({ pending: Doc.encode(pending()) }));
     } catch (e) {
       // Storage full or disabled: the server still has everything sent.
     }
@@ -195,14 +193,11 @@ function start(ta) {
       saved = null;
     }
     if (!saved) return;
-    const st = C.decode(saved.state || "");
-    const pe = C.decode(saved.pending || "");
-    if (st.$ === "Some") state = st.value;
-    if (pe.$ === "Some" && pe.value.$ !== "Nil") batches.push(pe.value);
-    since = Number(saved.since) || 0;
-    text = C.text(state);
-    if (state.$ !== "Nil") {
-      ta.value = text;
+    const pe = Doc.decode(saved.pending || "");
+    // Unsent edits from last time: sent with the first sync; the document
+    // they belong to arrives with it (since = 0), so the text is shown then.
+    if (pe && pe.length) {
+      batches.push(pe);
       seeded = true;
     }
   }

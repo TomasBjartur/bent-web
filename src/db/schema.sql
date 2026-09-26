@@ -148,7 +148,9 @@ CREATE TABLE IF NOT EXISTS op (
   prep    INTEGER NOT NULL CHECK (prep >= 0),
   side    INTEGER NOT NULL CHECK (side IN (0, 1)),
   ch      INTEGER NOT NULL CHECK (ch >= 0 AND ch <= 1114111 AND NOT (ch BETWEEN 55296 AND 57343)),
-  UNIQUE (post_id, ctr, rep, kind, pctr, prep, side, ch)
+  -- One operation per id: a client reusing an id with different content is
+  -- ignored (first writer wins), so every replica can key nodes by id.
+  UNIQUE (post_id, ctr, rep)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS op_post_seq ON op(post_id, seq);
