@@ -76,3 +76,54 @@ WHEN NEW.role = 1 AND NEW.user_id <> (SELECT owner_id FROM blog WHERE id = NEW.b
 BEGIN
   SELECT RAISE(ABORT, 'only the blog owner_id can hold the owner role');
 END;
+
+-- PASSKEYS AND EMAIL
+-- A passkey (WebAuthn credential): its id, and its P-256 public key.
+CREATE TABLE IF NOT EXISTS credential (
+  id          BLOB PRIMARY KEY CHECK (length(id) BETWEEN 16 AND 1023),
+  user_id     INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+  x           BLOB NOT NULL CHECK (length(x) = 32),
+  y           BLOB NOT NULL CHECK (length(y) = 32),
+  sign_count  INTEGER NOT NULL CHECK (sign_count >= 0),
+  created_ms  INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS credential_user ON credential(user_id);
+
+-- A single-use WebAuthn challenge, stored as the SHA-256 of its bytes.
+-- purpose: 1 = register (bound to an email token), 2 = log in.
+CREATE TABLE IF NOT EXISTS challenge (
+  hash        BLOB PRIMARY KEY CHECK (length(hash) = 32),
+  purpose     INTEGER NOT NULL CHECK (purpose IN (1, 2)),
+  token_hash  BLOB CHECK (token_hash IS NULL OR length(token_hash) = 32),
+  expires_ms  INTEGER NOT NULL,
+  used        INTEGER NOT NULL DEFAULT 0 CHECK (used IN (0, 1)),
+  CHECK ((purpose = 1) = (token_hash IS NOT NULL))
+) STRICT, WITHOUT ROWID;
+
+-- A single-use emailed link, stored as the SHA-256 of its token.
+-- purpose: 1 = sign up (email and name to create), 2 = recover (user_id).
+CREATE TABLE IF NOT EXISTS email_token (
+  hash        BLOB PRIMARY KEY CHECK (length(hash) = 32),
+  purpose     INTEGER NOT NULL CHECK (purpose IN (1, 2)),
+  email       TEXT NOT NULL COLLATE NOCASE,
+  name        TEXT NOT NULL,
+  user_id     INTEGER REFERENCES user(id) ON DELETE CASCADE,
+  created_ms  INTEGER NOT NULL,
+  expires_ms  INTEGER NOT NULL,
+  used        INTEGER NOT NULL DEFAULT 0 CHECK (used IN (0, 1)),
+  CHECK ((purpose = 2) = (user_id IS NOT NULL))
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS email_token_email ON email_token(email, created_ms);
+
+-- Mail to send. A separate sender drains it (transactional outbox): the
+-- web server never talks SMTP.
+CREATE TABLE IF NOT EXISTS outbox (
+  id          INTEGER PRIMARY KEY,
+  to_email    TEXT NOT NULL,
+  subject     TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  created_ms  INTEGER NOT NULL,
+  sent_ms     INTEGER
+) STRICT;

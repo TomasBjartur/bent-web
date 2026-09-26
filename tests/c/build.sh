@@ -21,7 +21,15 @@ $CC $STRICT -fsanitize=address,undefined -fno-sanitize-recover=all token_core_te
 "$OUT/token_core_test"
 $CC $STRICT -fsanitize=address,undefined -fno-sanitize-recover=all db_core_test.c ../../src/c/db_core.c \
   ../../build/sqlite3.o ../../build/libbearssl.a -lpthread -lm -o "$OUT/db_core_test"
+$CC $STRICT -Wno-sign-conversion -Wno-conversion -fsanitize=address,undefined -fno-sanitize-recover=all \
+  auth_core_test.c ../../src/c/db_core.c ../../build/sqlite3.o ../../build/libbearssl.a -lpthread -lm \
+  -o "$OUT/auth_core_test"
+"$OUT/auth_core_test"
 "$OUT/db_core_test"
+$CC $STRICT -Wno-sign-conversion -Wno-conversion -fsanitize=address,undefined -fno-sanitize-recover=all \
+  auth_core_test.c ../../src/c/db_core.c ../../build/sqlite3.o ../../build/libbearssl.a -lpthread -lm \
+  -o "$OUT/auth_core_test"
+"$OUT/auth_core_test"
 
 echo "== fuzz (${FUZZ_SECONDS}s)"
 $CC $STRICT -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all net_core_fuzz.c -o "$OUT/net_core_fuzz"

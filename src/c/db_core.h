@@ -100,6 +100,8 @@ enum {
   ST_USER_NEW, ST_USER_BY_EMAIL,
   ST_BLOG_NEW, ST_MEMBER_NEW, ST_BLOG_TITLE, ST_BLOG_DELETE, ST_MEMBER_DELETE,
   ST_POST_NEW, ST_POST_EDIT, ST_POST_PUBLISH, ST_POST_DELETE, ST_BODY, ST_SESSION_DELETE,
+  ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
+  ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
   ST_COUNT
 };
 
@@ -147,6 +149,68 @@ DbResult db_apply(Db *db, const uint8_t token_hash[32], uint64_t now_ms,
 
 // Creates a user (sign-up); returns the id or 0 on failure.
 uint32_t db_user_new(Db *db, DbText email, DbText name, uint64_t now_ms);
+
+// AUTHENTICATION
+// --------------
+
+typedef enum {
+  AUTH_OK = 0,
+  AUTH_INVALID = 1,      // token/challenge unknown, used or expired
+  AUTH_RATE_LIMITED = 2,
+  AUTH_EMAIL_TAKEN = 3,
+  AUTH_COUNTER = 4,      // signature counter did not advance (cloned key?)
+  AUTH_ERROR = 5,
+} AuthResult;
+
+#define AUTH_SIGNUP 1u
+#define AUTH_RECOVER 2u
+#define CHAL_REGISTER 1u
+#define CHAL_LOGIN 2u
+#define EMAIL_TOKEN_TTL_MS (30ull * 60ull * 1000ull)
+#define CHALLENGE_TTL_MS (5ull * 60ull * 1000ull)
+#define EMAIL_TOKENS_PER_HOUR 3u
+#define CRED_ID_MAX 1023u
+
+// Issues an emailed link: for AUTH_SIGNUP, email and name of the account to
+// create (fails AUTH_EMAIL_TAKEN if registered); for AUTH_RECOVER, the
+// account with that email, if any. Writes the token and an outbox row with
+// the link `origin`/verify?t=<token> in one transaction. For AUTH_RECOVER
+// with no such account nothing is written and AUTH_OK is returned (no
+// account enumeration). At most EMAIL_TOKENS_PER_HOUR per email.
+AuthResult auth_email_token(Db *db, uint32_t purpose, DbText email, DbText name, DbText origin, uint64_t now_ms);
+
+// Whether an email token is valid (unused, unexpired); fills purpose.
+AuthResult auth_token_check(Db *db, const uint8_t token_hash[32], uint64_t now_ms, uint32_t *purpose);
+
+// A new challenge. For CHAL_REGISTER it is bound to an email token, which
+// must be valid. Writes the raw challenge to out.
+AuthResult auth_challenge(Db *db, uint32_t purpose, const uint8_t *token_hash, uint64_t now_ms, uint8_t out[32]);
+
+// Looks up a credential by id: its owner, public key and counter.
+AuthResult auth_credential(Db *db, const uint8_t *id, uint32_t id_len, uint32_t *user,
+                           uint8_t x[32], uint8_t y[32], uint32_t *count);
+
+// Completes a registration in one transaction: consumes the email token and
+// its bound challenge, creates the user (sign-up) or uses the account
+// (recovery), stores the credential, and creates a session.
+AuthResult auth_register(Db *db, const uint8_t token_hash[32], const uint8_t challenge_hash[32],
+                         const uint8_t *id, uint32_t id_len, const uint8_t x[32], const uint8_t y[32],
+                         uint32_t count, uint64_t now_ms, uint32_t *user, uint8_t session[32]);
+
+// Completes a login in one transaction: consumes the login challenge,
+// advances the credential's counter (it must increase, or stay 0 for
+// authenticators without counters), and creates a session.
+AuthResult auth_login(Db *db, const uint8_t challenge_hash[32], const uint8_t *id, uint32_t id_len,
+                      uint32_t count, uint64_t now_ms, uint32_t *user, uint8_t session[32]);
+
+// SHA-256 (BearSSL).
+void auth_sha256(const uint8_t *p, uint32_t n, uint8_t out[32]);
+
+// ECDSA P-256 / SHA-256 verification of an ASN.1 (DER) signature over msg,
+// with public key (x, y). Returns 1 if valid. Uses BearSSL's portable m31
+// curve implementation.
+int32_t auth_p256_verify(const uint8_t x[32], const uint8_t y[32], const uint8_t *msg, uint32_t msg_len,
+                         const uint8_t *sig, uint32_t sig_len);
 
 // SHA-256 of a raw session token (BearSSL).
 void db_token_hash(const uint8_t token[32], uint8_t out[32]);

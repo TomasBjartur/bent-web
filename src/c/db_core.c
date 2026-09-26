@@ -1,4 +1,7 @@
 // CORE: the database. See db_core.h for the contract.
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE  // explicit_bzero
+#endif
 #include "db_core.h"
 
 #include <errno.h>
@@ -6,8 +9,10 @@
 #include <string.h>
 #include <sys/random.h>
 
+#include "../../vendor/bearssl/inc/bearssl_ec.h"
 #include "../../vendor/bearssl/inc/bearssl_hash.h"
 #include "assert.h"
+#include "token_core.h"
 
 // The schema, embedded at build time from src/db/schema.sql.
 static const char DB_SCHEMA[] = {
@@ -36,6 +41,20 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_POST_PUBLISH] = "UPDATE post SET published = ?2, updated_ms = ?3 WHERE id = ?1",
   [ST_POST_DELETE] = "DELETE FROM post WHERE id = ?1",
   [ST_SESSION_DELETE] = "DELETE FROM session WHERE token_hash = ?1",
+  [ST_TOKEN_RECENT] = "SELECT count(*) FROM email_token WHERE email = ?1 AND created_ms > ?2",
+  [ST_TOKEN_NEW] = ("INSERT INTO email_token(hash, purpose, email, name, user_id, created_ms, expires_ms) "
+                    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"),
+  [ST_TOKEN_GET] = "SELECT purpose, email, name, user_id FROM email_token WHERE hash = ?1 AND used = 0 AND expires_ms > ?2",
+  [ST_TOKEN_USE] = "UPDATE email_token SET used = 1 WHERE hash = ?1 AND used = 0 AND expires_ms > ?2",
+  [ST_OUTBOX_NEW] = "INSERT INTO outbox(to_email, subject, body, created_ms) VALUES (?1, ?2, ?3, ?4)",
+  [ST_USER_ID_BY_EMAIL] = "SELECT id FROM user WHERE email = ?1",
+  [ST_CHAL_NEW] = "INSERT INTO challenge(hash, purpose, token_hash, expires_ms) VALUES (?1, ?2, ?3, ?4)",
+  [ST_CHAL_USE] = ("UPDATE challenge SET used = 1 WHERE hash = ?1 AND purpose = ?2 AND used = 0 AND expires_ms > ?3 "
+                   "AND (token_hash IS ?4)"),
+  [ST_CRED_GET] = "SELECT user_id, x, y, sign_count FROM credential WHERE id = ?1",
+  [ST_CRED_NEW] = "INSERT INTO credential(id, user_id, x, y, sign_count, created_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+  [ST_CRED_COUNT] = ("UPDATE credential SET sign_count = ?2 WHERE id = ?1 AND "
+                     "(sign_count < ?2 OR (sign_count = 0 AND ?2 = 0))"),
   [ST_BODY] = ("SELECT p.body_html FROM post p WHERE p.id = ?1 AND (p.published = 1 OR EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id WHERE m.blog_id = p.blog_id AND s.token_hash = ?2 AND s.expires_ms > ?3))"),
 };
 
@@ -419,4 +438,254 @@ int32_t db_body(Db *db, uint32_t post, const uint8_t token_hash[32], uint64_t no
   }
   sqlite3_reset(st);
   return rc == SQLITE_DONE ? 0 : -1;
+}
+
+// AUTHENTICATION
+// --------------
+
+void auth_sha256(const uint8_t *p, uint32_t n, uint8_t out[32]) {
+  br_sha256_context c;
+  br_sha256_init(&c);
+  br_sha256_update(&c, p, n);
+  br_sha256_out(&c, out);
+}
+
+int32_t auth_p256_verify(const uint8_t x[32], const uint8_t y[32], const uint8_t *msg, uint32_t msg_len,
+                         const uint8_t *sig, uint32_t sig_len) {
+  if (sig_len == 0u || sig_len > 72u) return 0;
+  uint8_t point[65];
+  point[0] = 0x04;
+  memcpy(point + 1, x, 32);
+  memcpy(point + 33, y, 32);
+  br_ec_public_key pk = {BR_EC_secp256r1, point, sizeof point};
+  uint8_t h[32];
+  auth_sha256(msg, msg_len, h);
+  uint32_t ok = br_ecdsa_i31_vrfy_asn1(&br_ec_p256_m31, h, sizeof h, &pk, sig, sig_len);
+  return ok == 1u ? 1 : 0;
+}
+
+// Runs a change statement; returns the number of rows changed, or -1.
+static int32_t db_changes(Db *db, sqlite3_stmt *st) {
+  int rc = db_exec(st);
+  if (rc != SQLITE_DONE) return -1;
+  return (int32_t)sqlite3_changes(db->conn);
+}
+
+static AuthResult auth_rollback(Db *db, AuthResult r) {
+  int rb = db_exec(db->st[ST_ROLLBACK]);
+  ASSERT(rb == SQLITE_DONE);
+  return r;
+}
+
+static AuthResult auth_commit(Db *db) {
+  if (db_exec(db->st[ST_COMMIT]) == SQLITE_DONE) return AUTH_OK;
+  return auth_rollback(db, AUTH_ERROR);
+}
+
+// The link and email text. origin is checked to be plain printable ASCII.
+static int32_t auth_mail_text(char *out, size_t cap, uint32_t purpose, DbText origin, const uint8_t hex[64]) {
+  for (uint32_t i = 0; i < origin.len; i++) {
+    unsigned char ch = (unsigned char)origin.ptr[i];
+    if (ch <= 32u || ch >= 127u || ch == '"' || ch == '<' || ch == '>') return -1;
+  }
+  const char *what = purpose == AUTH_SIGNUP ? "finish creating your account" : "sign in and add a new passkey";
+  int n = snprintf(out, cap, "Open this link within 30 minutes to %s:\n\n%.*s/verify?t=%.64s\n\n"
+                   "If you did not ask for this, ignore this email.\n",
+                   what, (int)origin.len, origin.ptr, (const char *)hex);
+  return n > 0 && (size_t)n < cap ? n : -1;
+}
+
+AuthResult auth_email_token(Db *db, uint32_t purpose, DbText email, DbText name, DbText origin, uint64_t now_ms) {
+  ASSERT(purpose == AUTH_SIGNUP || purpose == AUTH_RECOVER);
+  if (email.len == 0u || email.len > 254u || name.len > 64u || origin.len == 0u || origin.len > 200u) {
+    return AUTH_INVALID;
+  }
+  if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return AUTH_ERROR;
+  sqlite3_stmt *st = db->st[ST_TOKEN_RECENT];
+  bind_text(st, 1, email);
+  sqlite3_bind_int64(st, 2, (sqlite3_int64)(now_ms - 3600000ull));
+  uint32_t recent = 0;
+  if (db_one_u32(st, &recent) != 1) return auth_rollback(db, AUTH_ERROR);
+  if (recent >= EMAIL_TOKENS_PER_HOUR) return auth_rollback(db, AUTH_RATE_LIMITED);
+  st = db->st[ST_USER_ID_BY_EMAIL];
+  bind_text(st, 1, email);
+  uint32_t user = 0;
+  int32_t found = db_one_u32(st, &user);
+  if (found < 0) return auth_rollback(db, AUTH_ERROR);
+  if (purpose == AUTH_SIGNUP && found == 1) return auth_rollback(db, AUTH_EMAIL_TAKEN);
+  if (purpose == AUTH_RECOVER && found == 0) return auth_rollback(db, AUTH_OK);  // silent
+  uint8_t raw[32], hash[32], hex[64];
+  if (getrandom(raw, sizeof raw, 0) != (ssize_t)sizeof raw) return auth_rollback(db, AUTH_ERROR);
+  auth_sha256(raw, 32, hash);
+  token_encode(raw, hex);
+  explicit_bzero(raw, sizeof raw);
+  st = db->st[ST_TOKEN_NEW];
+  sqlite3_bind_blob(st, 1, hash, 32, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(st, 2, purpose);
+  bind_text(st, 3, email);
+  bind_text(st, 4, name);
+  if (purpose == AUTH_RECOVER) sqlite3_bind_int64(st, 5, user);
+  else sqlite3_bind_null(st, 5);
+  sqlite3_bind_int64(st, 6, (sqlite3_int64)now_ms);
+  sqlite3_bind_int64(st, 7, (sqlite3_int64)(now_ms + EMAIL_TOKEN_TTL_MS));
+  if (db_exec(st) != SQLITE_DONE) return auth_rollback(db, AUTH_ERROR);
+  char text[1024];
+  int32_t tn = auth_mail_text(text, sizeof text, purpose, origin, hex);
+  explicit_bzero(hex, sizeof hex);
+  if (tn < 0) return auth_rollback(db, AUTH_INVALID);
+  st = db->st[ST_OUTBOX_NEW];
+  bind_text(st, 1, email);
+  sqlite3_bind_text(st, 2, purpose == AUTH_SIGNUP ? "Finish creating your account" : "Your sign-in link", -1, SQLITE_STATIC);
+  sqlite3_bind_text(st, 3, text, tn, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(st, 4, (sqlite3_int64)now_ms);
+  int rc = db_exec(st);
+  explicit_bzero(text, sizeof text);
+  if (rc != SQLITE_DONE) return auth_rollback(db, AUTH_ERROR);
+  return auth_commit(db);
+}
+
+AuthResult auth_token_check(Db *db, const uint8_t token_hash[32], uint64_t now_ms, uint32_t *purpose) {
+  sqlite3_stmt *st = db->st[ST_TOKEN_GET];
+  sqlite3_bind_blob(st, 1, token_hash, 32, SQLITE_STATIC);
+  sqlite3_bind_int64(st, 2, (sqlite3_int64)now_ms);
+  int32_t r = db_one_u32(st, purpose);
+  if (r < 0) return AUTH_ERROR;
+  return r == 1 ? AUTH_OK : AUTH_INVALID;
+}
+
+AuthResult auth_challenge(Db *db, uint32_t purpose, const uint8_t *token_hash, uint64_t now_ms, uint8_t out[32]) {
+  ASSERT(purpose == CHAL_REGISTER || purpose == CHAL_LOGIN);
+  ASSERT((purpose == CHAL_REGISTER) == (token_hash != NULL));
+  if (token_hash != NULL) {
+    uint32_t tp = 0;
+    AuthResult r = auth_token_check(db, token_hash, now_ms, &tp);
+    if (r != AUTH_OK) return r;
+  }
+  if (getrandom(out, 32, 0) != 32) return AUTH_ERROR;
+  uint8_t hash[32];
+  auth_sha256(out, 32, hash);
+  sqlite3_stmt *st = db->st[ST_CHAL_NEW];
+  sqlite3_bind_blob(st, 1, hash, 32, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(st, 2, purpose);
+  if (token_hash != NULL) sqlite3_bind_blob(st, 3, token_hash, 32, SQLITE_STATIC);
+  else sqlite3_bind_null(st, 3);
+  sqlite3_bind_int64(st, 4, (sqlite3_int64)(now_ms + CHALLENGE_TTL_MS));
+  return db_exec(st) == SQLITE_DONE ? AUTH_OK : AUTH_ERROR;
+}
+
+AuthResult auth_credential(Db *db, const uint8_t *id, uint32_t id_len, uint32_t *user,
+                           uint8_t x[32], uint8_t y[32], uint32_t *count) {
+  if (id_len == 0u || id_len > CRED_ID_MAX) return AUTH_INVALID;
+  sqlite3_stmt *st = db->st[ST_CRED_GET];
+  sqlite3_bind_blob(st, 1, id, (int)id_len, SQLITE_STATIC);
+  int rc = sqlite3_step(st);
+  AuthResult r = AUTH_ERROR;
+  if (rc == SQLITE_ROW && sqlite3_column_bytes(st, 1) == 32 && sqlite3_column_bytes(st, 2) == 32) {
+    *user = (uint32_t)sqlite3_column_int64(st, 0);
+    memcpy(x, sqlite3_column_blob(st, 1), 32);
+    memcpy(y, sqlite3_column_blob(st, 2), 32);
+    sqlite3_int64 cnt = sqlite3_column_int64(st, 3);
+    ASSERT(cnt >= 0 && cnt <= (sqlite3_int64)UINT32_MAX);
+    *count = (uint32_t)cnt;
+    r = AUTH_OK;
+  } else if (rc == SQLITE_DONE) {
+    r = AUTH_INVALID;
+  }
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+  return r;
+}
+
+// Consumes a challenge. token_hash is NULL for login challenges.
+static int32_t auth_use_challenge(Db *db, const uint8_t hash[32], uint32_t purpose, const uint8_t *token_hash,
+                                  uint64_t now_ms) {
+  sqlite3_stmt *st = db->st[ST_CHAL_USE];
+  sqlite3_bind_blob(st, 1, hash, 32, SQLITE_STATIC);
+  sqlite3_bind_int64(st, 2, purpose);
+  sqlite3_bind_int64(st, 3, (sqlite3_int64)now_ms);
+  if (token_hash != NULL) sqlite3_bind_blob(st, 4, token_hash, 32, SQLITE_STATIC);
+  else sqlite3_bind_null(st, 4);
+  return db_changes(db, st);
+}
+
+// A session inside the current transaction.
+static AuthResult auth_session(Db *db, uint32_t user, uint64_t now_ms, uint8_t session[32]) {
+  return db_session_new(db, user, now_ms, 30ull * 24ull * 3600ull * 1000ull, session) == 0 ? AUTH_OK : AUTH_ERROR;
+}
+
+AuthResult auth_register(Db *db, const uint8_t token_hash[32], const uint8_t challenge_hash[32],
+                         const uint8_t *id, uint32_t id_len, const uint8_t x[32], const uint8_t y[32],
+                         uint32_t count, uint64_t now_ms, uint32_t *user, uint8_t session[32]) {
+  *user = 0;
+  if (id_len < 16u || id_len > CRED_ID_MAX) return AUTH_INVALID;
+  if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return AUTH_ERROR;
+  // Read the token (purpose, email, name, user) before using it.
+  sqlite3_stmt *st = db->st[ST_TOKEN_GET];
+  sqlite3_bind_blob(st, 1, token_hash, 32, SQLITE_STATIC);
+  sqlite3_bind_int64(st, 2, (sqlite3_int64)now_ms);
+  int rc = sqlite3_step(st);
+  if (rc != SQLITE_ROW) {
+    sqlite3_reset(st);
+    sqlite3_clear_bindings(st);
+    return auth_rollback(db, rc == SQLITE_DONE ? AUTH_INVALID : AUTH_ERROR);
+  }
+  uint32_t purpose = (uint32_t)sqlite3_column_int64(st, 0);
+  char email[256], name[128];
+  int el = sqlite3_column_bytes(st, 1), nl = sqlite3_column_bytes(st, 2);
+  ASSERT(el >= 0 && nl >= 0);
+  if ((size_t)el >= sizeof email || (size_t)nl >= sizeof name) {
+    sqlite3_reset(st);
+    sqlite3_clear_bindings(st);
+    return auth_rollback(db, AUTH_ERROR);
+  }
+  memcpy(email, sqlite3_column_text(st, 1), (size_t)el);
+  memcpy(name, sqlite3_column_text(st, 2), (size_t)nl);
+  uint32_t existing = (uint32_t)sqlite3_column_int64(st, 3);
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+  if (auth_use_challenge(db, challenge_hash, CHAL_REGISTER, token_hash, now_ms) != 1) {
+    return auth_rollback(db, AUTH_INVALID);
+  }
+  st = db->st[ST_TOKEN_USE];
+  sqlite3_bind_blob(st, 1, token_hash, 32, SQLITE_STATIC);
+  sqlite3_bind_int64(st, 2, (sqlite3_int64)now_ms);
+  if (db_changes(db, st) != 1) return auth_rollback(db, AUTH_INVALID);
+  uint32_t uid = existing;
+  if (purpose == AUTH_SIGNUP) {
+    uid = db_user_new(db, (DbText){email, (uint32_t)el}, (DbText){name, (uint32_t)nl}, now_ms);
+    if (uid == 0u) return auth_rollback(db, AUTH_EMAIL_TAKEN);
+  }
+  if (uid == 0u) return auth_rollback(db, AUTH_INVALID);
+  st = db->st[ST_CRED_NEW];
+  sqlite3_bind_blob(st, 1, id, (int)id_len, SQLITE_STATIC);
+  sqlite3_bind_int64(st, 2, uid);
+  sqlite3_bind_blob(st, 3, x, 32, SQLITE_STATIC);
+  sqlite3_bind_blob(st, 4, y, 32, SQLITE_STATIC);
+  sqlite3_bind_int64(st, 5, count);
+  sqlite3_bind_int64(st, 6, (sqlite3_int64)now_ms);
+  if (db_exec(st) != SQLITE_DONE) return auth_rollback(db, AUTH_INVALID);
+  if (auth_session(db, uid, now_ms, session) != AUTH_OK) return auth_rollback(db, AUTH_ERROR);
+  AuthResult r = auth_commit(db);
+  if (r == AUTH_OK) *user = uid;
+  return r;
+}
+
+AuthResult auth_login(Db *db, const uint8_t challenge_hash[32], const uint8_t *id, uint32_t id_len,
+                      uint32_t count, uint64_t now_ms, uint32_t *user, uint8_t session[32]) {
+  *user = 0;
+  if (id_len == 0u || id_len > CRED_ID_MAX) return AUTH_INVALID;
+  if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return AUTH_ERROR;
+  if (auth_use_challenge(db, challenge_hash, CHAL_LOGIN, NULL, now_ms) != 1) return auth_rollback(db, AUTH_INVALID);
+  uint8_t x[32], y[32];
+  uint32_t uid = 0, old = 0;
+  AuthResult r = auth_credential(db, id, id_len, &uid, x, y, &old);
+  if (r != AUTH_OK) return auth_rollback(db, r);
+  sqlite3_stmt *st = db->st[ST_CRED_COUNT];
+  sqlite3_bind_blob(st, 1, id, (int)id_len, SQLITE_STATIC);
+  sqlite3_bind_int64(st, 2, count);
+  if (db_changes(db, st) != 1) return auth_rollback(db, AUTH_COUNTER);
+  if (auth_session(db, uid, now_ms, session) != AUTH_OK) return auth_rollback(db, AUTH_ERROR);
+  r = auth_commit(db);
+  if (r == AUTH_OK) *user = uid;
+  return r;
 }
