@@ -12,6 +12,8 @@ import ./src/route.bend as Route
 import ./spec/webauthn.bend as WSpec
 import ./src/webauthn.bend as WA
 import ./src/markdown.bend as Md
+import ./src/crdt.bend as Crdt
+import ./proof/crdt_lemmas.bend as CL
 import ./LAWS.bend as Laws
 
 # Each encoding branch emits a fixed entity (whose characters compute to
@@ -384,3 +386,11 @@ def Laws.markup_rendered(r):
   match r:
     case Md.Rendered{n, h, pf}:
       pf
+
+# COLLABORATIVE EDITING
+
+def Laws.crdt_merge_comm(xs, ys):
+  CL.merge_comm(xs, ys, Crdt.cmp(Crdt.hd(xs), Crdt.hd(ys)), {==})
+
+def Laws.crdt_merge_idem(xs):
+  CL.merge_idem(xs)

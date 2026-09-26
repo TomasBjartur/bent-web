@@ -24,6 +24,7 @@ import ./spec/webauthn.bend as WSpec
 import ./src/webauthn.bend as WA
 import ./spec/markup.bend as Markup
 import ./src/markdown.bend as Md
+import ./src/crdt.bend as Crdt
 
 # HTML ESCAPING
 # -------------
@@ -446,3 +447,22 @@ def rendered_node(r: Md.Rendered) -> Markup.Node:
 law markup_rendered:
   for r: Md.Rendered
   {rendered_html(r) == Markup.html(rendered_node(r), "") : String}
+
+# COLLABORATIVE EDITING
+# ---------------------
+# A document's state is a sorted, duplicate-free list of operations;
+# replicas combine states with union. These laws make the order and
+# repetition of syncs irrelevant: replicas that have received the same
+# operations hold identical states (and so show identical text).
+
+# LAW: merging is commutative.
+law crdt_merge_comm:
+  for +xs: List<&2, Crdt.Op>
+  for +ys: List<&2, Crdt.Op>
+  {Crdt.union(xs, ys) == Crdt.union(ys, xs) : List<&2, Crdt.Op>}
+
+# LAW: merging is idempotent (receiving the same operations twice changes
+# nothing).
+law crdt_merge_idem:
+  for +xs: List<&2, Crdt.Op>
+  {Crdt.union(xs, xs) == xs : List<&2, Crdt.Op>}
