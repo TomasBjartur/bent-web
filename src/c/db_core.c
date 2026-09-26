@@ -106,7 +106,8 @@ int32_t db_open(Db *db, const char *path) {
     "PRAGMA journal_mode = WAL;"
     "PRAGMA synchronous = NORMAL;"
     "PRAGMA foreign_keys = ON;"
-    "PRAGMA cell_size_check = ON;";
+    "PRAGMA cell_size_check = ON;"
+    "PRAGMA optimize = 0x10002;";
   if (sqlite3_exec(db->conn, pragmas, NULL, NULL, NULL) != SQLITE_OK) return -1;
   if (sqlite3_exec(db->conn, DB_SCHEMA, NULL, NULL, NULL) != SQLITE_OK) return -1;
   for (uint32_t i = 0; i < ST_COUNT; i++) {

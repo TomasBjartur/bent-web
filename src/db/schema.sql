@@ -50,7 +50,13 @@ CREATE TABLE IF NOT EXISTS post (
   UNIQUE (blog_id, slug)
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS post_blog_updated ON post(blog_id, updated_ms DESC);
+-- A blog's published posts, newest first (blog pages). Two equality columns
+-- then the sort, so the planner never prefers post_published_updated here
+-- (it did, and blog pages fell from 2,100 to 240 req/s).
+CREATE INDEX IF NOT EXISTS post_blog_pub_updated ON post(blog_id, published, updated_ms DESC);
+-- "Recent posts" on the home page: without this SQLite scans every (wide)
+-- post row on each request (found by tests/bench_vs_next.py).
+CREATE INDEX IF NOT EXISTS post_published_updated ON post(published, updated_ms DESC);
 
 -- A blog's owner membership row exists exactly as long as the blog: it can
 -- be neither removed nor demoted while the blog exists (mirrors the

@@ -19,3 +19,5 @@ spike/**/*.html
 *.db-wal
 *.db-shm
 build/
+baseline/next/node_modules/
+baseline/next/.next/
