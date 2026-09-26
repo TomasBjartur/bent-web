@@ -7,6 +7,8 @@ import ./proof/lemmas.bend as L
 import ./spec/authz.bend as AuthzSpec
 import ./src/authz.bend as Authz
 import ./src/text.bend as Text
+import ./spec/csrf.bend as CsrfSpec
+import ./src/route.bend as Route
 import ./LAWS.bend as Laws
 
 # Each encoding branch emits a fixed entity (whose characters compute to
@@ -307,3 +309,38 @@ def Laws.text_slug_ok(t):
   match t:
     case Text.Slug{s, p}:
       p
+
+# CSRF AND PLANNING
+
+def csrf_some(+t: String, -path: Http.Path, e: {CsrfSpec.csrf_ok(Some{t}) == False{} : Bool}) -> {Route.plan_post(CsrfSpec.csrf_ok(Some{t}), path) == Route.Deny{403} : Route.Plan}:
+  %Equal.sym(Bool, CsrfSpec.csrf_ok(Some{t}), False{}, e) : {Route.plan_post(_, path) == Route.Deny{403} : Route.Plan}
+  {==}
+
+def Laws.route_csrf(path, q, host, cookie, clen, ctype, origin, site, ds, e):
+  match site:
+    case None{}:
+      {==}
+    case Some{v}:
+      match v:
+        case Http.Hval{+t, p}:
+          csrf_some(t, path, e)
+
+# Every non-POST method plans a Read or a Deny, so the hypothesis is
+# {False == True}; refute it.
+def plan_absurd(z: Empty, -m: Http.Method) -> {m == Http.POST{} : Http.Method}:
+  match z:
+
+def Laws.route_only_post_writes(m, path, q, h, e):
+  match m:
+    case Http.GET{}:
+      plan_absurd(L.false_ne_true(e), Http.GET{})
+    case Http.HEAD{}:
+      plan_absurd(L.false_ne_true(e), Http.HEAD{})
+    case Http.POST{}:
+      {==}
+    case Http.PUT{}:
+      plan_absurd(L.false_ne_true(e), Http.PUT{})
+    case Http.PATCH{}:
+      plan_absurd(L.false_ne_true(e), Http.PATCH{})
+    case Http.DELETE{}:
+      plan_absurd(L.false_ne_true(e), Http.DELETE{})

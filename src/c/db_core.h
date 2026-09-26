@@ -70,19 +70,55 @@ typedef struct {
   DbText body_html;  // A_EDIT_POST
 } DbWrite;
 
+// Read queries. Each has fixed SQL. Any query that can return private data
+// (drafts, membership) includes a floor in SQL: the session token hash must
+// belong to a member of the blog. Parameters: a, b (integers), text, and
+// the caller's session token hash.
+enum {
+  Q_BLOG_BY_SLUG = 0,   // text=slug -> id, title, slug
+  Q_POST_ID,            // a=blog, text=slug -> id  (any state; callers answer 404 unless allowed)
+  Q_POSTS_PUBLIC,       // a=blog -> id, slug, title, updated_ms  (published only)
+  Q_RECENT_PUBLIC,      // -> blog_slug, post_slug, post_title, blog_title  (published only)
+  Q_POST_VIEW,          // a=post -> slug, title, published, blog_slug, blog_title  (published, or member)
+  Q_MY_BLOGS,           // -> id, slug, title, role  (the session's user)
+  Q_POSTS_MEMBER,       // a=blog -> id, slug, title, published, updated_ms  (member only)
+  Q_POST_MD,            // a=post -> body_md, title  (member only)
+  Q_USER_BY_EMAIL,      // text=email -> id
+  Q_AUTHORS,            // a=blog -> user_id, name, email, role  (member only)
+  Q_COUNT
+};
+
+#define DB_ROWS_MAX 100u
+#define DB_COLS_MAX 8u
+
+// Called once per row; cols[i] is UTF-8 text of length lens[i].
+typedef void (*DbRowFn)(void *ctx, uint32_t ncols, const char *const *cols, const uint32_t *lens);
+
 enum {
   ST_BEGIN = 0, ST_COMMIT, ST_ROLLBACK,
   ST_SESSION_USER, ST_SESSION_NEW, ST_ROLE, ST_POST_FACTS,
   ST_USER_NEW, ST_USER_BY_EMAIL,
   ST_BLOG_NEW, ST_MEMBER_NEW, ST_BLOG_TITLE, ST_BLOG_DELETE, ST_MEMBER_DELETE,
-  ST_POST_NEW, ST_POST_EDIT, ST_POST_PUBLISH, ST_POST_DELETE,
+  ST_POST_NEW, ST_POST_EDIT, ST_POST_PUBLISH, ST_POST_DELETE, ST_BODY,
   ST_COUNT
 };
 
 typedef struct {
   sqlite3 *conn;
   sqlite3_stmt *st[ST_COUNT];
+  sqlite3_stmt *q[Q_COUNT];
 } Db;
+
+// Runs read query q. Returns the number of rows (at most DB_ROWS_MAX), or
+// -1 on error.
+int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
+                 const uint8_t token_hash[32], uint64_t now_ms, DbRowFn fn, void *ctx);
+
+// The stored HTML body of post, if published or if the session's user is a
+// member of its blog (the floor). Returns 1 and sets *html/*len (valid until
+// the next call), 0 if not allowed or absent, -1 on error.
+int32_t db_body(Db *db, uint32_t post, const uint8_t token_hash[32], uint64_t now_ms,
+                const char **html, uint32_t *len);
 
 // Opens (creating if needed) the database at path and prepares every
 // statement. Returns 0 on success.

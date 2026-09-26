@@ -11,6 +11,17 @@ static int fails = 0;
 #define T(s) ((DbText){(s), (uint32_t)strlen(s)})
 
 static Db db;
+
+static uint32_t rows_seen;
+static void count_row(void *ctx, uint32_t n, const char *const *c, const uint32_t *l) {
+  (void)ctx; (void)n; (void)c; (void)l;
+  rows_seen++;
+}
+static int32_t q_rows(uint32_t q, uint32_t a, const uint8_t hash[32]) {
+  rows_seen = 0;
+  int32_t r = db_query(&db, q, a, 0, (DbText){"", 0}, hash, 1000000, count_row, NULL);
+  return r < 0 ? -1 : (int32_t)rows_seen;
+}
 static const uint64_t NOW = 1000000;
 
 typedef struct { uint32_t id; uint8_t token[32]; uint8_t hash[32]; } Who;
@@ -39,7 +50,10 @@ static DbResult apply(Who *w, DbFacts f, DbWrite x, uint32_t *id) {
 int main(void) {
   const char *path = "/tmp/claude-db-core-test.db";
   unlink(path);
-  CHECK(db_open(&db, path) == 0);
+  if (db_open(&db, path) != 0) {
+    fprintf(stderr, "FAIL: db_open\n");
+    return 1;
+  }
   Who a = user("a@x.io"), b = user("b@x.io"), c = user("c@x.io");
 
   // Honest flow: A creates a blog, adds B, B writes a post.
@@ -50,6 +64,27 @@ int main(void) {
   CHECK(apply(&a, facts(&a, blog, 0), (DbWrite){.kind = A_ADD_AUTHOR, .target = blog, .user = b.id}, NULL) == DB_OK);
   CHECK(apply(&b, facts(&b, blog, 0), (DbWrite){.kind = A_CREATE_POST, .target = blog, .slug = T("p1"), .title = T("P")}, &post) == DB_OK);
   CHECK(apply(&b, facts(&b, 0, post), (DbWrite){.kind = A_EDIT_POST, .target = post, .title = T("P2"), .body_md = T("m"), .body_html = T("<p>m</p>")}, NULL) == DB_OK);
+
+  // Read floors: a draft is invisible to an outsider and to anonymous.
+  uint8_t nobody[32] = {0};
+  const char *html; uint32_t hlen;
+  CHECK(q_rows(Q_POST_VIEW, post, b.hash) == 1);
+  CHECK(q_rows(Q_POST_VIEW, post, c.hash) == 0);
+  CHECK(q_rows(Q_POST_VIEW, post, nobody) == 0);
+  CHECK(q_rows(Q_POSTS_MEMBER, blog, a.hash) == 1);
+  CHECK(q_rows(Q_POSTS_MEMBER, blog, c.hash) == 0);
+  CHECK(q_rows(Q_POST_MD, post, c.hash) == 0);
+  CHECK(q_rows(Q_POST_MD, post, b.hash) == 1);
+  CHECK(q_rows(Q_AUTHORS, blog, c.hash) == 0);
+  CHECK(q_rows(Q_AUTHORS, blog, a.hash) == 2);
+  CHECK(q_rows(Q_POSTS_PUBLIC, blog, a.hash) == 0);
+  CHECK(q_rows(Q_RECENT_PUBLIC, 0, nobody) == 0);
+  CHECK(db_body(&db, post, c.hash, NOW, &html, &hlen) == 0);
+  CHECK(db_body(&db, post, b.hash, NOW, &html, &hlen) == 1 && hlen == 8 && memcmp(html, "<p>m</p>", 8) == 0);
+  CHECK(db_body(&db, post, b.hash, NOW + 3600001, &html, &hlen) == 0);
+  CHECK(q_rows(Q_MY_BLOGS, 0, b.hash) == 1);
+  CHECK(q_rows(Q_MY_BLOGS, 0, nobody) == 0);
+  CHECK(q_rows(99, 0, a.hash) == -1);
 
   // Outsider with honest facts: the floor denies.
   CHECK(apply(&c, facts(&c, 0, post), (DbWrite){.kind = A_EDIT_POST, .target = post, .title = T("x")}, NULL) == DB_DENIED);
@@ -78,6 +113,11 @@ int main(void) {
   // Stale published flag: facts say draft, post is now published.
   DbFacts draft = facts(&a, 0, post);
   CHECK(apply(&a, facts(&a, 0, post), (DbWrite){.kind = A_PUBLISH_POST, .target = post, .flag = 1}, NULL) == DB_OK);
+  // Once published, everyone sees it.
+  CHECK(q_rows(Q_POST_VIEW, post, nobody) == 1);
+  CHECK(q_rows(Q_POSTS_PUBLIC, blog, nobody) == 1);
+  CHECK(q_rows(Q_RECENT_PUBLIC, 0, nobody) == 1);
+  CHECK(db_body(&db, post, nobody, NOW, &html, &hlen) == 1);
   CHECK(apply(&a, draft, (DbWrite){.kind = A_EDIT_POST, .target = post, .title = T("t")}, NULL) == DB_STALE);
 
   // The owner cannot remove themself: the floor denies; forging past the

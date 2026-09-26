@@ -18,6 +18,8 @@ import ./spec/authz.bend as AuthzSpec
 import ./src/authz.bend as Authz
 import ./spec/text.bend as TextSpec
 import ./src/text.bend as Text
+import ./spec/csrf.bend as CsrfSpec
+import ./src/route.bend as Route
 
 # HTML ESCAPING
 # -------------
@@ -317,3 +319,47 @@ law text_body_ok:
 law text_slug_ok:
   for t: Text.Slug
   {TextSpec.slug_ok(slug_text(t)) == True{} : Bool}
+
+# CSRF AND PLANNING
+# -----------------
+
+def site_str(m: Maybe<&2, Http.Hval>) -> Maybe<&2, String>:
+  match m:
+    case None{}:
+      None{}
+    case Some{v}:
+      match v:
+        case Http.Hval{t, p}:
+          Some{t}
+
+def is_write(p: Route.Plan) -> Bool:
+  match p:
+    case Route.Write{r}:
+      True{}
+    case _:
+      False{}
+
+# LAW: a POST without Sec-Fetch-Site: same-origin is denied with 403 before
+# routing: a cross-site request can never reach a write.
+law route_csrf:
+  for path: Http.Path
+  for q: Http.Query
+  for host: Maybe<&2, Http.Hval>
+  for cookie: Maybe<&2, Http.Hval>
+  for clen: Maybe<&2, Http.Clen>
+  for ctype: Maybe<&2, Http.Hval>
+  for origin: Maybe<&2, Http.Hval>
+  for site: Maybe<&2, Http.Hval>
+  for ds: Maybe<&2, Http.Hval>
+  for e: {CsrfSpec.csrf_ok(site_str(site)) == False{} : Bool}
+  {Route.plan(Http.Head{Http.POST{}, path, q, Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}}) == Route.Deny{403} : Route.Plan}
+
+# LAW: only POST can ever plan a write; GET, HEAD and every other method
+# never do.
+law route_only_post_writes:
+  for m: Http.Method
+  for path: Http.Path
+  for q: Http.Query
+  for h: Http.Hdrs
+  for e: {is_write(Route.plan(Http.Head{m, path, q, h})) == True{} : Bool}
+  {m == Http.POST{} : Http.Method}

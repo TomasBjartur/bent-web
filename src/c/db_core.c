@@ -2,6 +2,7 @@
 #include "db_core.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/random.h>
 
@@ -34,6 +35,32 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_POST_EDIT] = "UPDATE post SET title = ?2, body_md = ?3, body_html = ?4, updated_ms = ?5 WHERE id = ?1",
   [ST_POST_PUBLISH] = "UPDATE post SET published = ?2, updated_ms = ?3 WHERE id = ?1",
   [ST_POST_DELETE] = "DELETE FROM post WHERE id = ?1",
+  [ST_BODY] = ("SELECT p.body_html FROM post p WHERE p.id = ?1 AND (p.published = 1 OR EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id WHERE m.blog_id = p.blog_id AND s.token_hash = ?2 AND s.expires_ms > ?3))"),
+};
+
+// Query parameters: ?1 = a, ?2 = b, ?3 = text, ?8 = token hash, ?9 = now.
+#define MEMBER_OF(blog) \
+  "EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id " \
+  "WHERE m.blog_id = " blog " AND s.token_hash = ?8 AND s.expires_ms > ?9)"
+
+static const char *const DB_Q[Q_COUNT] = {
+  [Q_BLOG_BY_SLUG] = "SELECT id, title, slug FROM blog WHERE slug = ?3",
+  [Q_POST_ID] = "SELECT id FROM post WHERE blog_id = ?1 AND slug = ?3",
+  [Q_POSTS_PUBLIC] = ("SELECT id, slug, title, updated_ms FROM post WHERE blog_id = ?1 AND published = 1 "
+                      "ORDER BY updated_ms DESC LIMIT 100"),
+  [Q_RECENT_PUBLIC] = ("SELECT b.slug, p.slug, p.title, b.title FROM post p JOIN blog b ON b.id = p.blog_id "
+                       "WHERE p.published = 1 ORDER BY p.updated_ms DESC LIMIT 30"),
+  [Q_POST_VIEW] = ("SELECT p.slug, p.title, p.published, b.slug, b.title FROM post p JOIN blog b ON b.id = p.blog_id "
+                   "WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
+  [Q_MY_BLOGS] = ("SELECT b.id, b.slug, b.title, m.role FROM blog b JOIN member m ON m.blog_id = b.id "
+                  "JOIN session s ON s.user_id = m.user_id WHERE s.token_hash = ?8 AND s.expires_ms > ?9 "
+                  "ORDER BY b.title LIMIT 100"),
+  [Q_POSTS_MEMBER] = ("SELECT id, slug, title, published, updated_ms FROM post WHERE blog_id = ?1 AND "
+                      MEMBER_OF("?1") " ORDER BY updated_ms DESC LIMIT 100"),
+  [Q_POST_MD] = ("SELECT p.body_md, p.title FROM post p WHERE p.id = ?1 AND " MEMBER_OF("p.blog_id")),
+  [Q_USER_BY_EMAIL] = "SELECT id FROM user WHERE email = ?3",
+  [Q_AUTHORS] = ("SELECT u.id, u.name, u.email, m.role FROM member m JOIN user u ON u.id = m.user_id "
+                 "WHERE m.blog_id = ?1 AND " MEMBER_OF("?1") " ORDER BY m.role, u.name LIMIT 100"),
 };
 
 int32_t db_open(Db *db, const char *path) {
@@ -56,6 +83,14 @@ int32_t db_open(Db *db, const char *path) {
   for (uint32_t i = 0; i < ST_COUNT; i++) {
     ASSERT(DB_SQL[i] != NULL);
     if (sqlite3_prepare_v3(db->conn, DB_SQL[i], -1, SQLITE_PREPARE_PERSISTENT, &db->st[i], NULL) != SQLITE_OK) {
+      fprintf(stderr, "db_open: statement %u: %s\n", i, sqlite3_errmsg(db->conn));
+      return -1;
+    }
+  }
+  for (uint32_t i = 0; i < Q_COUNT; i++) {
+    ASSERT(DB_Q[i] != NULL);
+    if (sqlite3_prepare_v3(db->conn, DB_Q[i], -1, SQLITE_PREPARE_PERSISTENT, &db->q[i], NULL) != SQLITE_OK) {
+      fprintf(stderr, "db_open: query %u: %s\n", i, sqlite3_errmsg(db->conn));
       return -1;
     }
   }
@@ -64,6 +99,7 @@ int32_t db_open(Db *db, const char *path) {
 
 void db_close(Db *db) {
   for (uint32_t i = 0; i < ST_COUNT; i++) sqlite3_finalize(db->st[i]);
+  for (uint32_t i = 0; i < Q_COUNT; i++) sqlite3_finalize(db->q[i]);
   sqlite3_close(db->conn);
   memset(db, 0, sizeof *db);
 }
@@ -315,4 +351,65 @@ uint32_t db_user_new(Db *db, DbText email, DbText name, uint64_t now_ms) {
   sqlite3_bind_int64(st, 3, (sqlite3_int64)now_ms);
   if (db_exec(st) != SQLITE_DONE) return 0;
   return (uint32_t)sqlite3_last_insert_rowid(db->conn);
+}
+
+int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
+                 const uint8_t token_hash[32], uint64_t now_ms, DbRowFn fn, void *ctx) {
+  if (q >= Q_COUNT) return -1;
+  sqlite3_stmt *st = db->q[q];
+  int n = sqlite3_bind_parameter_count(st);
+  // Bind only the parameters this statement uses (by name position).
+  for (int i = 1; i <= n; i++) {
+    const char *name = sqlite3_bind_parameter_name(st, i);
+    if (name == NULL) continue;  // an index below the highest that the SQL does not use
+    ASSERT(name[0] == '?' && name[1] != 0 && name[2] == 0);
+    switch (name[1]) {
+      case '1': sqlite3_bind_int64(st, i, a); break;
+      case '2': sqlite3_bind_int64(st, i, b); break;
+      case '3': bind_text(st, i, text); break;
+      case '8': sqlite3_bind_blob(st, i, token_hash, 32, SQLITE_STATIC); break;
+      case '9': sqlite3_bind_int64(st, i, (sqlite3_int64)now_ms); break;
+      default: ASSERT(0);
+    }
+  }
+  int32_t rows = 0;
+  int rc;
+  while (rows < (int32_t)DB_ROWS_MAX && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+    int nc = sqlite3_column_count(st);
+    ASSERT(nc > 0 && (uint32_t)nc <= DB_COLS_MAX);
+    const char *cols[DB_COLS_MAX];
+    uint32_t lens[DB_COLS_MAX];
+    for (int i = 0; i < nc; i++) {
+      const unsigned char *t = sqlite3_column_text(st, i);
+      int len = sqlite3_column_bytes(st, i);
+      ASSERT(len >= 0);
+      cols[i] = t != NULL ? (const char *)t : "";
+      lens[i] = (uint32_t)len;
+    }
+    fn(ctx, (uint32_t)nc, cols, lens);
+    rows++;
+  }
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+  return rows;
+}
+
+int32_t db_body(Db *db, uint32_t post, const uint8_t token_hash[32], uint64_t now_ms,
+                const char **html, uint32_t *len) {
+  sqlite3_stmt *st = db->st[ST_BODY];
+  sqlite3_reset(st);
+  sqlite3_bind_int64(st, 1, post);
+  sqlite3_bind_blob(st, 2, token_hash, 32, SQLITE_STATIC);
+  sqlite3_bind_int64(st, 3, (sqlite3_int64)now_ms);
+  int rc = sqlite3_step(st);
+  if (rc == SQLITE_ROW) {
+    const unsigned char *t = sqlite3_column_text(st, 0);
+    int n = sqlite3_column_bytes(st, 0);
+    ASSERT(n >= 0);
+    *html = t != NULL ? (const char *)t : "";
+    *len = (uint32_t)n;
+    return 1;  // valid until the next db_body call (statement not reset yet)
+  }
+  sqlite3_reset(st);
+  return rc == SQLITE_DONE ? 0 : -1;
 }
