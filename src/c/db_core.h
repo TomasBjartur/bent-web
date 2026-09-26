@@ -79,9 +79,10 @@ typedef struct {
 enum {
   Q_BLOG_BY_SLUG = 0,   // text=slug -> id, title, slug, owner name
   Q_POST_ID,            // a=blog, text=slug -> id  (any state; callers answer 404 unless allowed)
-  Q_POSTS_PUBLIC,       // a=blog -> slug, title, author, date, excerpt, minutes, author_id  (published only)
-  Q_RECENT_PUBLIC,      // -> blog_slug, post_slug, title, blog_title, author, date, excerpt, minutes, author_id
+  Q_POSTS_PUBLIC,       // a=blog -> slug, title, author, date, excerpt, minutes, author_id, rfc822 date
                         //    (published only)
+  Q_RECENT_PUBLIC,      // -> blog_slug, post_slug, title, blog_title, author, date, excerpt, minutes, author_id,
+                        //    rfc822 date  (published only)
   Q_POST_VIEW,          // a=post -> slug, title, published, blog_slug, blog_title, author, date, minutes,
                         //    author_id  (published, or member)
   Q_MY_BLOGS,           // -> id, slug, title, role, published count, draft count  (the session's user)

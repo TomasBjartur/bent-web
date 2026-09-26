@@ -87,10 +87,53 @@ def blog_rows(+token: String, +slug: String) -> IO(List<&2, List<&2, String>>):
 def cache_key(+kind: String, +who: U32, +rest: String) -> String:
   kind ++ (U32.show(Bool.to_u32(signed(who))) ++ (":" ++ rest))
 
-def cache_send(s: Socket, +key: String, +html: String) -> IO(Unit):
+def cache_send_t(s: Socket, +key: String, +ctype: U32, +text: String) -> IO(Unit):
   do IO<Unit>:
-    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page_cache_put(s, key, one(html))
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page_cache_put(s, key, ctype, one(text))
     done(r)
+
+def cache_send(s: Socket, +key: String, +html: String) -> IO(Unit):
+  cache_send_t(s, key, 0, html)
+
+# Serves the cached response for key, or runs render (which should store
+# one with cache_send).
+def cached_or(r: Socket & Result<&1, &1, U32 & String, Unit>, render: Socket -> IO(Unit)) -> IO(Unit):
+  (s, x) = r
+  match x:
+    case Done{u}:
+      Socket.close(s)
+    case Fail{err}:
+      render(s)
+
+# RSS: the site's recent posts, and a blog's posts (content type 6).
+def h_feed2(s: Socket, +token: String, +origin: String) -> IO(Unit):
+  do IO<Unit>:
+    rows : List<&2, List<&2, String>> <- Db.query(Db.q_recent_public(), 0, 0, "", token)
+    cache_send_t(s, "rss:", 6, Pages.rss(origin, "slopstack", "/", "Recent posts on slopstack", Pages.rss_recent(origin, rows)))
+
+def h_feed(s: Socket, +token: String, +origin: String) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, "rss:")
+    cached_or(r, s2 => h_feed2(s2, token, origin))
+
+def h_blog_feed3(s: Socket, +token: String, +origin: String, +slug: String, +blog: List<&2, List<&2, String>>) -> IO(Unit):
+  match blog:
+    case Nil{}:
+      fail(s, token, 0, 404)
+    case Con{+r, t}:
+      do IO<Unit>:
+        rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_public(), num(Pages.col(r, 0n)), 0, "", token)
+        cache_send_t(s, "rss:" ++ slug, 6, Pages.rss(origin, Pages.col(r, 1n), "/b/" ++ slug, Pages.col(r, 1n) ++ (" by " ++ Pages.col(r, 3n)), Pages.rss_blog(origin, slug, rows)))
+
+def h_blog_feed2(s: Socket, +token: String, +origin: String, +slug: String) -> IO(Unit):
+  do IO<Unit>:
+    blog : List<&2, List<&2, String>> <- blog_rows(token, slug)
+    h_blog_feed3(s, token, origin, slug, blog)
+
+def h_blog_feed(s: Socket, +token: String, +origin: String, +slug: String) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, "rss:" ++ slug)
+    cached_or(r, s2 => h_blog_feed2(s2, token, origin, slug))
 
 def h_home2(s: Socket, +token: String, +who: U32) -> IO(Unit):
   do IO<Unit>:
@@ -608,8 +651,12 @@ def h_sync(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO
 
 # DISPATCH
 # --------
-def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String) -> IO(Unit):
+def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +origin: String) -> IO(Unit):
   match r:
+    case Route.RFeed{}:
+      h_feed(s, token, origin)
+    case Route.RBlogFeed{+b}:
+      h_blog_feed(s, token, origin, b)
     case Route.RHome{}:
       h_home(s, token, who)
     case Route.RHealth{}:
@@ -680,7 +727,7 @@ def write_route(s: Socket, r: Route.Route, +c: Auth.Conf, +token: String, +who: 
 def exec(s: Socket, p: Route.Plan, +c: Auth.Conf, +token: String, +who: U32, +body: String, +query: String) -> IO(Unit):
   match p:
     case Route.Read{r}:
-      read(s, r, token, who, query)
+      read(s, r, token, who, query, Auth.origin(c))
     case Route.Write{r}:
       write_route(s, r, c, token, who, body)
     case Route.Deny{+status}:

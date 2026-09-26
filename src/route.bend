@@ -37,6 +37,8 @@ type Route is Data:
   RSync{post: U32}
   RAuthor{user: U32}
   RWrite{}
+  RFeed{}
+  RBlogFeed{blog: String}
   RNotFound{}
 
 type Plan is Data:
@@ -78,6 +80,8 @@ def get1(k: Nat, +a: String) -> Route:
       RLoginPage{}
     case 5n:
       RVerify{}
+    case 6n:
+      RFeed{}
     case _:
       RNotFound{}
 
@@ -96,10 +100,13 @@ def get2(k: Nat, +b: String) -> Route:
     case _:
       RNotFound{}
 
+# /b/<blog>/<post>, /b/<blog>/feed.xml (a post slug never has a '.').
 def get3(k: Nat, +b: String, +c: String) -> Route:
   match k:
     case 1n:
       RPost{b, c}
+    case 2n:
+      RBlogFeed{b}
     case _:
       RNotFound{}
 
@@ -110,7 +117,7 @@ def route_get(xs: List<&2, String>) -> Route:
     case Con{+a, t}:
       match t:
         case Nil{}:
-          get1(Nat.add(eq(a, "healthz"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.add(Nat.mul(eq(a, "login"), 4n), Nat.mul(eq(a, "verify"), 5n))))), a)
+          get1(Nat.add(eq(a, "healthz"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.add(Nat.mul(eq(a, "login"), 4n), Nat.add(Nat.mul(eq(a, "verify"), 5n), Nat.mul(eq(a, "feed.xml"), 6n)))))), a)
         case Con{+b, u}:
           match u:
             case Nil{}:
@@ -118,7 +125,7 @@ def route_get(xs: List<&2, String>) -> Route:
             case Con{+c, v}:
               match v:
                 case Nil{}:
-                  get3(eq(a, "b"), b, c)
+                  get3(Nat.mul(eq(a, "b"), Nat.add(1n, eq(c, "feed.xml"))), b, c)
                 case Con{d, w}:
                   RNotFound{}
 

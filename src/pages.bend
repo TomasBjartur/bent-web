@@ -35,7 +35,7 @@ def nav(b: Bool) -> String:
       "<a href=\"/login\">Log in</a><a class=\"btn primary\" href=\"/signup\">Start writing</a>"
 
 def head(+title: String) -> String:
-  "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>" ++ (e(title) ++ (" · slopstack</title><link rel=\"stylesheet\" href=\"" ++ (asset("app.css") ++ "\"></head><body><a class=\"skip\" href=\"#main\">Skip to content</a>")))
+  "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>" ++ (e(title) ++ (" · slopstack</title><link rel=\"stylesheet\" href=\"" ++ (asset("app.css") ++ "\"><link rel=\"alternate\" type=\"application/rss+xml\" title=\"slopstack\" href=\"/feed.xml\"></head><body><a class=\"skip\" href=\"#main\">Skip to content</a>")))
 
 def top(signed_in: Bool) -> String:
   "<header class=\"top\"><div class=\"wrap wide\"><a class=\"brand\" href=\"/\">slop<span>stack</span></a><nav>" ++ (nav(signed_in) ++ "</nav></div></header>")
@@ -206,7 +206,7 @@ def blog_feed(+slug: String, rows: List<&2, List<&2, String>>) -> String:
       "<ul class=\"feed\">" ++ (post_items(slug, Con{r, t}) ++ "</ul>")
 
 def blog_page(+slug: String, title: String, owner: String, rows: List<&2, List<&2, String>>) -> String:
-  "<header class=\"masthead\"><h1>" ++ (e(title) ++ ("</h1><p class=\"muted\">by " ++ (e(owner) ++ ("</p></header>" ++ blog_feed(slug, rows)))))
+  "<header class=\"masthead\"><h1>" ++ (e(title) ++ ("</h1><p class=\"muted\">by " ++ (e(owner) ++ ("<span class=\"dot\"></span><a href=\"/b/" ++ (e(slug) ++ ("/feed.xml\">RSS</a></p></header>" ++ blog_feed(slug, rows)))))))
 
 # POST (the stored body is spliced in between the two halves)
 # ----
@@ -367,3 +367,29 @@ def edit_page(+id: String, +rep: String, +md: List<&2, String>) -> String:
 # rows: as recent_items.
 def author_page(+name: String, rows: List<&2, List<&2, String>>) -> String:
   "<header class=\"masthead\"><h1>" ++ (e(name) ++ ("</h1><p class=\"muted\">Posts by " ++ (e(name) ++ ("</p></header>" ++ feed_or_empty(rows, "Nothing published yet.")))))
+
+# RSS
+# ---
+# RSS 2.0 with absolute links (origin: the configured site origin). Every
+# text goes through the same escaper, whose entities are also valid XML.
+def rss(+origin: String, +title: String, +path: String, +desc: String, items: String) -> String:
+  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<rss version=\"2.0\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><channel><title>" ++ (e(title) ++ ("</title><link>" ++ (e(origin ++ path) ++ ("</link><description>" ++ (e(desc) ++ ("</description>" ++ (items ++ "</channel></rss>\n")))))))
+
+def rss_item(+origin: String, +bslug: String, +pslug: String, +title: String, +author: String, +excerpt: String, +date: String) -> String:
+  "<item><title>" ++ (e(title) ++ ("</title><link>" ++ (e(origin) ++ ("/b/" ++ (e(bslug) ++ ("/" ++ (e(pslug) ++ ("</link><guid isPermaLink=\"true\">" ++ (e(origin) ++ ("/b/" ++ (e(bslug) ++ ("/" ++ (e(pslug) ++ ("</guid><dc:creator>" ++ (e(author) ++ ("</dc:creator><pubDate>" ++ (e(date) ++ ("</pubDate><description>" ++ (e(excerpt) ++ "</description></item>")))))))))))))))))))
+
+# Recent rows (see recent_items), col 9: RFC 822 date.
+def rss_recent(+origin: String, rows: List<&2, List<&2, String>>) -> String:
+  match rows:
+    case Nil{}:
+      ""
+    case Con{+r, t}:
+      rss_item(origin, col(r, 0n), col(r, 1n), col(r, 2n), col(r, 4n), col(r, 6n), col(r, 9n)) ++ rss_recent(origin, t)
+
+# A blog's rows (see post_items), col 7: RFC 822 date.
+def rss_blog(+origin: String, +bslug: String, rows: List<&2, List<&2, String>>) -> String:
+  match rows:
+    case Nil{}:
+      ""
+    case Con{+r, t}:
+      rss_item(origin, bslug, col(r, 0n), col(r, 1n), col(r, 2n), col(r, 4n), col(r, 7n)) ++ rss_blog(origin, bslug, t)

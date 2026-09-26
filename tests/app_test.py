@@ -301,6 +301,37 @@ def run(dbpath):
     check("cache: signed-in home has Log out", "Log out" in signed_in and "Log in" not in signed_in)
     check("cache: anonymous again", "Log out" not in req("GET", "/")[2])
 
+    # RSS: well-formed XML, absolute links, escaped text, fresh after writes.
+    import xml.etree.ElementTree as ET
+    st, _, xml, head = req("GET", "/feed.xml")
+    check("site feed served as RSS", st == 200 and "application/rss+xml" in head, head[:200])
+    try:
+        root = ET.fromstring(xml.encode())
+        items = root.findall("./channel/item")
+        titles = [i.findtext("title") for i in items]
+        links = [i.findtext("link") for i in items]
+        check("site feed parses, has items", len(items) >= 2, titles)
+        check("feed titles are text, escaped on the wire", "First <post>" in titles and "First &lt;post&gt;" in xml, titles)
+        check("feed links are absolute", all(l.startswith("http") and "/b/" in l for l in links), links[:3])
+        check("feed dates are RFC 822", all(re.match(r"^[A-Z][a-z]{2}, \d\d [A-Z][a-z]{2} \d{4} \d\d:\d\d:\d\d \+0000$", i.findtext("pubDate") or "") for i in items),
+              [i.findtext("pubDate") for i in items][:2])
+    except ET.ParseError as ex:
+        check("site feed parses", False, str(ex))
+    st, _, xml, head = req("GET", "/b/bob-s-great-blog/feed.xml")
+    check("blog feed", st == 200 and "Hello, World" in xml and "application/rss+xml" in head, st)
+    try:
+        ET.fromstring(xml.encode())
+        check("blog feed parses", True)
+    except ET.ParseError as ex:
+        check("blog feed parses", False, str(ex))
+    st, _, _, _ = req("GET", "/b/nope/feed.xml")
+    check("unknown blog feed 404", st == 404, st)
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b, {"title": "Feed probe"})
+    req("POST", loc, b, {"title": "Feed probe", "body": "x", "action": "publish"})
+    check("feed fresh after publish", "Feed probe" in req("GET", "/feed.xml")[2] and "Feed probe" in req("GET", "/b/bob-s-great-blog/feed.xml")[2])
+    _, _, body, _ = req("GET", "/")
+    check("pages advertise the feed", 'type="application/rss+xml"' in body)
+
     # Security headers everywhere.
     _, _, _, head = req("GET", "/b/alice/first")
     check("CSP present", "Content-Security-Policy: default-src 'none'" in head)

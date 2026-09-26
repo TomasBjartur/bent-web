@@ -277,6 +277,7 @@ static const char *const page_ctypes[] = {
   "application/json",
   "text/css; charset=utf-8",
   "text/javascript; charset=utf-8",
+  "application/rss+xml; charset=utf-8",
 };
 
 // A redirect target: starts with "/", not "//", only unreserved characters
@@ -431,7 +432,7 @@ static void __attribute__((constructor)) page_use(void) {
 
 typedef struct {
   uint64_t gen;  // 0: empty
-  uint32_t key_len, len;
+  uint32_t key_len, len, ctype;
   char key[PAGE_CACHE_KEY_MAX];
   char bytes[PAGE_CACHE_BYTES];
 } PageCacheSlot;
@@ -444,11 +445,13 @@ static uint32_t page_cache_slot(const char *k, u64 n) {
   return h % PAGE_CACHE_SLOTS;
 }
 
-// Sends body (HTML, 200, no cookie) on w's socket; takes ownership of it.
-static Term page_emit(Env e, IoWork *w, PageOut *body) {
+// Sends body (200, no cookie, content type ctype) on w's socket; takes
+// ownership of it.
+static Term page_emit(Env e, IoWork *w, uint32_t ctype, PageOut *body) {
+  ASSERT(ctype < sizeof page_ctypes / sizeof page_ctypes[0]);
   char head[1024];
   int hn = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s\r\n",
-                    page_ctypes[0], (unsigned long long)body->len, NET_SECURITY_HEADERS, NET_NO_STORE);
+                    page_ctypes[ctype], (unsigned long long)body->len, NET_SECURITY_HEADERS, NET_NO_STORE);
   ASSERT(hn > 0 && (size_t)hn < sizeof head);
   u64 total = (u64)hn + body->len;
   char *out = io_mem(malloc(total));
@@ -478,7 +481,7 @@ Term cached_run(Env e, Term *f, IoWork *w) {
       ASSERT(c->len <= PAGE_CACHE_BYTES);
       PageOut body = {io_mem(malloc(c->len > 0u ? c->len : 1u)), 0, c->len > 0u ? c->len : 1u, 0};
       page_put(&body, c->bytes, c->len);
-      r = page_emit(e, w, &body);
+      r = page_emit(e, w, c->ctype, &body);
       hit = 1;
     }
   }
@@ -492,14 +495,16 @@ static void __attribute__((constructor)) cached_use(void) {
 #endif
 
 #ifdef CID(page_cache_put)
-// page_cache_put(sock, key, texts): sends texts as a 200 HTML page and
-// stores it under key at the current write generation (if it fits).
+// page_cache_put(sock, key, ctype, texts): sends texts as a 200 response
+// of content type ctype and stores it under key at the current write
+// generation (if it fits).
 Term page_cache_put_run(Env e, Term *f, IoWork *w) {
   w->hand = (intptr_t)io_hand_v(f[0]);
   u64 kn = 0;
   char *key = io_cstr(e, f[1], &kn);
+  uint32_t ctype = (uint32_t)f[2];
   PageOut body = {io_mem(malloc(16384)), 0, 16384, 0};
-  Term texts = f[2], x, rest;
+  Term texts = f[3], x, rest;
   for (uint32_t i = 0; i < 100000u && app_uncons(e, CID(Con), texts, &x, &rest); i++) {
     u64 n = 0;
     char *s = io_cstr(e, x, &n);
@@ -507,7 +512,7 @@ Term page_cache_put_run(Env e, Term *f, IoWork *w) {
     free(s);
     texts = rest;
   }
-  if (body.overflow) {
+  if (body.overflow || ctype >= sizeof page_ctypes / sizeof page_ctypes[0]) {
     free(key);
     free(body.buf);
     return io_tup(e, io_hand(w->hand), io_fail(e, 1, NULL));
@@ -518,10 +523,11 @@ Term page_cache_put_run(Env e, Term *f, IoWork *w) {
     c->key_len = (uint32_t)kn;
     memcpy(c->bytes, body.buf, body.len);
     c->len = (uint32_t)body.len;
+    c->ctype = ctype;
     c->gen = app_write_gen;
   }
   free(key);
-  return page_emit(e, w, &body);
+  return page_emit(e, w, ctype, &body);
 }
 
 static void __attribute__((constructor)) page_cache_put_use(void) {

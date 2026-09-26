@@ -81,13 +81,20 @@ static const char *const DB_SQL[ST_COUNT] = {
   "substr(trim(replace(replace(replace(replace(replace(replace(p.body_md, char(13), ''), char(10), ' '), '#', ''), '*', ''), '>', ''), '`', '')), 1, 240)"
 #define POST_MINUTES "max(1, (length(p.body_md) + 999) / 1100)"
 
-#define FEED_COLS "b.slug, p.slug, p.title, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES ", p.author_id"
+// RFC 822 date for RSS, e.g. "Sat, 26 Sep 2026 18:20:35 +0000".
+#define POST_RFC822_AT(t) \
+  "substr('SunMonTueWedThuFriSat', 1 + 3 * strftime('%w', " t " / 1000, 'unixepoch'), 3) || ', ' || " \
+  "strftime('%d ', " t " / 1000, 'unixepoch') || " \
+  "substr('JanFebMarAprMayJunJulAugSepOctNovDec', 3 * strftime('%m', " t " / 1000, 'unixepoch') - 2, 3) || " \
+  "strftime(' %Y %H:%M:%S +0000', " t " / 1000, 'unixepoch')"
+#define POST_RFC822 POST_RFC822_AT("coalesce(p.published_ms, p.updated_ms)")
+#define FEED_COLS "b.slug, p.slug, p.title, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES ", p.author_id, " POST_RFC822
 
 static const char *const DB_Q[Q_COUNT] = {
   [Q_BLOG_BY_SLUG] = ("SELECT b.id, b.title, b.slug, coalesce((SELECT name FROM user WHERE id = b.owner_id), '') "
                       "FROM blog b WHERE b.slug = ?3"),
   [Q_POST_ID] = "SELECT id FROM post WHERE blog_id = ?1 AND slug = ?3",
-  [Q_POSTS_PUBLIC] = ("SELECT p.slug, p.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES ", p.author_id "
+  [Q_POSTS_PUBLIC] = ("SELECT p.slug, p.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES ", p.author_id, " POST_RFC822 " "
                       "FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.blog_id = ?1 AND p.published = 1 "
                       "ORDER BY p.published_ms DESC LIMIT 100"),
   [Q_RECENT_PUBLIC] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.published = 1 "
