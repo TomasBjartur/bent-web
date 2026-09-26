@@ -62,3 +62,31 @@ def all_slug_chars(s: String) -> Bool:
 
 def slug_ok(+s: String) -> Bool:
   Bool.and(Bool.not(String.is_empty(s)), Bool.and(Nat.is_le(String.length(s), 64n), all_slug_chars(s)))
+
+# An email address, conservatively: 3..254 printable ASCII characters with
+# exactly one '@', not first or last, and none of < > " ' ( ) [ ] , ; : \
+# or space. (Stricter than RFC 5321; safe to put in a mail header or HTML.)
+def email_char(+c: Char) -> Bool:
+  +x = Char.to_u32(c)
+  Bool.and(Http.in_range(x, 33, 126), Bool.not(Bool.or(U32.is_eq(x, 60), Bool.or(U32.is_eq(x, 62), Bool.or(U32.is_eq(x, 34), Bool.or(U32.is_eq(x, 39), Bool.or(U32.is_eq(x, 40), Bool.or(U32.is_eq(x, 41), Bool.or(U32.is_eq(x, 91), Bool.or(U32.is_eq(x, 93), Bool.or(U32.is_eq(x, 44), Bool.or(U32.is_eq(x, 59), Bool.or(U32.is_eq(x, 58), U32.is_eq(x, 92))))))))))))))
+
+def all_email_chars(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{+h, t}:
+      Bool.and(email_char(h), all_email_chars(t))
+
+def ats(s: String) -> Nat:
+  match s:
+    case SNil{}:
+      0n
+    case SCon{+h, t}:
+      Nat.add(U32.to_nat(Bool.to_u32(Char.is_eq(h, '@'))), ats(t))
+
+def email_ok(+s: String) -> Bool:
+  Bool.and(Nat.is_le(3n, String.length(s)), Bool.and(Nat.is_le(String.length(s), 254n), Bool.and(all_email_chars(s), Bool.and(Nat.is_eq(ats(s), 1n), Bool.and(Bool.not(String.starts_with(s, "@")), Bool.not(String.ends_with(s, "@")))))))
+
+# A display name: 1..64 line characters.
+def name_ok(+s: String) -> Bool:
+  Bool.and(Bool.not(String.is_empty(s)), Bool.and(Nat.is_le(String.length(s), 64n), all_line_chars(s)))

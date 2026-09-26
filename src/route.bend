@@ -25,28 +25,43 @@ type Route is Data:
   RRemoveAuthor{blog: String, user: U32}
   RLogout{}
   RStatic{name: String}
+  RSignupPage{}
+  RLoginPage{}
+  RVerify{}
+  RSignup{}
+  RRecover{}
+  RRegOptions{}
+  RRegister{}
+  RLoginOptions{}
+  RLogin{}
   RNotFound{}
+
 type Plan is Data:
   Read{route: Route}
   Write{route: Route}
   Deny{status: U32}
+
 def texts(xs: List<&2, Http.Seg>) -> List<&2, String>:
   match xs:
     case Nil{}:
       Nil{}
     case Con{x, t}:
       Http.Seg.text(x) <> texts(t)
+
 def id_of.go(b: Bool, +s: String) -> U32:
   match b:
     case True{}:
       Maybe.default(&2, U32, U32.read(s), 0)
     case False{}:
       0
+
 # A decimal id (1..9 digits), or 0.
 def id_of(+s: String) -> U32:
   id_of.go(Nat.is_le(String.length(s), 9n), s)
+
 def eq(+a: String, +b: String) -> Nat:
   U32.to_nat(Bool.to_u32(String.eq(a, b)))
+
 # GET routes.
 def get1(k: Nat, +a: String) -> Route:
   match k:
@@ -54,8 +69,15 @@ def get1(k: Nat, +a: String) -> Route:
       RHealth{}
     case 2n:
       RDash{}
+    case 3n:
+      RSignupPage{}
+    case 4n:
+      RLoginPage{}
+    case 5n:
+      RVerify{}
     case _:
       RNotFound{}
+
 def get2(k: Nat, +b: String) -> Route:
   match k:
     case 1n:
@@ -68,12 +90,14 @@ def get2(k: Nat, +b: String) -> Route:
       RStatic{b}
     case _:
       RNotFound{}
+
 def get3(k: Nat, +b: String, +c: String) -> Route:
   match k:
     case 1n:
       RPost{b, c}
     case _:
       RNotFound{}
+
 def route_get(xs: List<&2, String>) -> Route:
   match xs:
     case Nil{}:
@@ -81,7 +105,7 @@ def route_get(xs: List<&2, String>) -> Route:
     case Con{+a, t}:
       match t:
         case Nil{}:
-          get1(Nat.add(eq(a, "healthz"), Nat.mul(eq(a, "dash"), 2n)), a)
+          get1(Nat.add(eq(a, "healthz"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.add(Nat.mul(eq(a, "login"), 4n), Nat.mul(eq(a, "verify"), 5n))))), a)
         case Con{+b, u}:
           match u:
             case Nil{}:
@@ -92,6 +116,7 @@ def route_get(xs: List<&2, String>) -> Route:
                   get3(eq(a, "b"), b, c)
                 case Con{d, w}:
                   RNotFound{}
+
 # POST routes.
 def post1(k: Nat) -> Route:
   match k:
@@ -99,14 +124,24 @@ def post1(k: Nat) -> Route:
       RCreateBlog{}
     case 2n:
       RLogout{}
+    case 3n:
+      RSignup{}
+    case 4n:
+      RRecover{}
     case _:
       RNotFound{}
+
 def post2(k: Nat, +b: String) -> Route:
   match k:
     case 1n:
       RSavePost{id_of(b)}
+    case 2n:
+      RLogin{}
+    case 3n:
+      RRegister{}
     case _:
       RNotFound{}
+
 # /dash/<slug>/posts, /dash/<slug>/authors, /edit/<id>/publish,
 # /edit/<id>/unpublish, /edit/<id>/delete
 def post3(k: Nat, +b: String) -> Route:
@@ -121,10 +156,19 @@ def post3(k: Nat, +b: String) -> Route:
       RUnpublish{id_of(b)}
     case 5n:
       RDeletePost{id_of(b)}
+    case 6n:
+      RRegOptions{}
+    case 7n:
+      RLoginOptions{}
     case _:
       RNotFound{}
-def post3_id(+a: String, +c: String) -> Nat:
+
+def post3_old(+a: String, +c: String) -> Nat:
   Nat.add(Nat.mul(eq(a, "dash"), Nat.add(eq(c, "posts"), Nat.mul(eq(c, "authors"), 2n))), Nat.mul(eq(a, "edit"), Nat.add(Nat.mul(eq(c, "publish"), 3n), Nat.add(Nat.mul(eq(c, "unpublish"), 4n), Nat.mul(eq(c, "delete"), 5n)))))
+
+def post3_id(+a: String, +b: String, +c: String) -> Nat:
+  Nat.add(Nat.mul(Nat.mul(eq(a, "passkey"), eq(c, "options")), Nat.add(Nat.mul(eq(b, "register"), 6n), Nat.mul(eq(b, "login"), 7n))), post3_old(a, c))
+
 # /dash/<slug>/authors/<id>/remove
 def post5(k: Nat, +b: String, +d: String) -> Route:
   match k:
@@ -132,6 +176,7 @@ def post5(k: Nat, +b: String, +d: String) -> Route:
       RRemoveAuthor{b, id_of(d)}
     case _:
       RNotFound{}
+
 def route_post(xs: List<&2, String>) -> Route:
   match xs:
     case Nil{}:
@@ -139,15 +184,15 @@ def route_post(xs: List<&2, String>) -> Route:
     case Con{+a, t}:
       match t:
         case Nil{}:
-          post1(Nat.add(eq(a, "blogs"), Nat.mul(eq(a, "logout"), 2n)))
+          post1(Nat.add(eq(a, "blogs"), Nat.add(Nat.mul(eq(a, "logout"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.mul(eq(a, "recover"), 4n)))))
         case Con{+b, u}:
           match u:
             case Nil{}:
-              post2(eq(a, "edit"), b)
+              post2(Nat.add(eq(a, "edit"), Nat.mul(eq(a, "passkey"), Nat.add(Nat.mul(eq(b, "login"), 2n), Nat.mul(eq(b, "register"), 3n)))), b)
             case Con{+c, v}:
               match v:
                 case Nil{}:
-                  post3(post3_id(a, c), b)
+                  post3(post3_id(a, b, c), b)
                 case Con{+d, w}:
                   match w:
                     case Nil{}:
@@ -158,6 +203,7 @@ def route_post(xs: List<&2, String>) -> Route:
                           post5(U32.to_nat(Bool.to_u32(Bool.and(String.eq(a, "dash"), Bool.and(String.eq(c, "authors"), String.eq(e, "remove"))))), b, d)
                         case Con{f, y}:
                           RNotFound{}
+
 def site_of(h: Http.Hdrs) -> Maybe<&2, String>:
   match h:
     case Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}:
@@ -166,12 +212,14 @@ def site_of(h: Http.Hdrs) -> Maybe<&2, String>:
           None{}
         case Some{v}:
           Some{Http.Hval.text(v)}
+
 def plan_post(ok: Bool, path: Http.Path) -> Plan:
   match ok:
     case True{}:
       Write{route_post(texts(Http.Path.segs(path)))}
     case False{}:
       Deny{403}
+
 def plan(h: Http.Head) -> Plan:
   match h:
     case Http.Head{m, path, q, hdrs}:

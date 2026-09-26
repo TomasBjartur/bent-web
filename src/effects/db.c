@@ -14,50 +14,7 @@
 //
 // Spliced into the Bend program's C source after the runtime; includes the
 // cores by paths relative to build/.
-#include <time.h>
-
-#include "../src/c/db_core.c"
-#include "../src/c/token_core.h"
-#include "../src/c/http_headers.h"
-#include "../src/c/limits.h"
-
-static Db app_db;
-static int32_t app_db_ready;
-
-static uint64_t app_now_ms(void) {
-  struct timespec t;
-  clock_gettime(CLOCK_REALTIME, &t);
-  return (uint64_t)t.tv_sec * 1000ull + (uint64_t)t.tv_nsec / 1000000ull;
-}
-
-// Session tokens live 30 days.
-#define SESSION_TTL_MS (30ull * 24ull * 3600ull * 1000ull)
-
-// The SHA-256 of the session token in `t` (a Bend String of hex), or all
-// zeros (which matches no session) if it is not a well-formed token.
-static void app_token_hash(Env e, Term t, uint8_t out[32]) {
-  u64 n = 0;
-  char *s = io_cstr(e, t, &n);
-  uint8_t raw[TOKEN_BYTES];
-  memset(out, 0, 32);
-  if (n == TOKEN_HEX && token_decode((const uint8_t *)s, (uint32_t)n, raw)) {
-    db_token_hash(raw, out);
-  }
-  explicit_bzero(raw, sizeof raw);
-  explicit_bzero(s, n);
-  free(s);
-}
-
-// Takes one element off a Bend list term: returns 1 and sets *head/*tail if
-// it is a cons, 0 if it is empty.
-static int app_uncons(Env e, Term s, Term *head, Term *tail) {
-  if (term_aux(s) != CID(Con)) return 0;
-  Term fb[2];
-  spare_free(e, cls_fit(2), ctr_take(e, s, 2, fb));
-  *head = fb[0];
-  *tail = fb[1];
-  return 1;
-}
+#include "../src/effects/app_common.h"
 
 // OPEN
 // ----
@@ -383,14 +340,14 @@ Term page_run(Env e, Term *f, IoWork *w) {
   PageOut body = {io_mem(malloc(16384)), 0, 16384, 0};
   Term texts = f[3], ids = f[4], x, rest;
   uint64_t now = app_now_ms();
-  for (uint32_t i = 0; i < 100000u && app_uncons(e, texts, &x, &rest); i++) {
+  for (uint32_t i = 0; i < 100000u && app_uncons(e, CID(Con), texts, &x, &rest); i++) {
     u64 n = 0;
     char *s = io_cstr(e, x, &n);
     page_put(&body, s, n);
     free(s);
     texts = rest;
     Term id;
-    if (app_uncons(e, ids, &id, &rest)) {
+    if (app_uncons(e, CID(Con), ids, &id, &rest)) {
       const char *html;
       uint32_t hl;
       if (db_body(&app_db, (uint32_t)id, h, now, &html, &hl) == 1) page_put(&body, html, hl);

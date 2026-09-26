@@ -20,6 +20,8 @@ import ./spec/text.bend as TextSpec
 import ./src/text.bend as Text
 import ./spec/csrf.bend as CsrfSpec
 import ./src/route.bend as Route
+import ./spec/webauthn.bend as WSpec
+import ./src/webauthn.bend as WA
 
 # HTML ESCAPING
 # -------------
@@ -363,3 +365,61 @@ law route_only_post_writes:
   for h: Http.Hdrs
   for e: {is_write(Route.plan(Http.Head{m, path, q, h})) == True{} : Bool}
   {m == Http.POST{} : Http.Method}
+
+# PASSKEYS
+# --------
+# The effects that create sessions take a RegOk or LoginOk (tools/lint.sh
+# checks nothing else calls them), so these invariants mean: a session is
+# only ever created for a response that passed every check in
+# spec/webauthn.bend.
+
+def reg_holds(r: WA.RegOk) -> Bool:
+  match r:
+    case WA.RegOk{e, c, a, cred, pf}:
+      WSpec.register_ok(e, c, a)
+
+def login_holds(l: WA.LoginOk) -> Bool:
+  match l:
+    case WA.LoginOk{e, c, a, sig, stored, pf}:
+      WSpec.login_ok(e, c, a, sig, stored)
+
+# LAW: every accepted registration met the spec.
+law webauthn_reg_ok:
+  for r: WA.RegOk
+  {reg_holds(r) == True{} : Bool}
+
+# LAW: every accepted login met the spec.
+law webauthn_login_ok:
+  for l: WA.LoginOk
+  {login_holds(l) == True{} : Bool}
+
+# LAW (spec sanity): without a valid signature there is no login, whatever
+# else the response says.
+law webauthn_no_sig_no_login:
+  for +e: WSpec.Expect
+  for +c: WSpec.Client
+  for +a: WSpec.Auth
+  for +stored: U32
+  {WSpec.login_ok(e, c, a, False{}, stored) == False{} : Bool}
+
+# LAW (spec sanity): a response made in a cross-origin frame is never
+# accepted, for login or registration.
+law webauthn_no_cross_origin_login:
+  for +origin: String
+  for +rp: String
+  for +k: String
+  for +ch: String
+  for +o: String
+  for +a: WSpec.Auth
+  for +sig: Bool
+  for +stored: U32
+  {WSpec.login_ok(WSpec.Expect{origin, rp}, WSpec.Client{k, ch, o, True{}}, a, sig, stored) == False{} : Bool}
+
+law webauthn_no_cross_origin_reg:
+  for +origin: String
+  for +rp: String
+  for +k: String
+  for +ch: String
+  for +o: String
+  for +a: WSpec.Auth
+  {WSpec.register_ok(WSpec.Expect{origin, rp}, WSpec.Client{k, ch, o, True{}}, a) == False{} : Bool}

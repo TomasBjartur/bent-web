@@ -46,4 +46,25 @@ static inline int32_t token_decode(const uint8_t *text, uint32_t len, uint8_t ra
   return 1;
 }
 
+// Decodes lowercase hex text[0..len) into out (capacity cap). Returns the
+// number of bytes, or -1 if len is odd, too long for cap, or any character
+// is not a lowercase hex digit.
+static inline int32_t hex_decode(const uint8_t *text, uint32_t len, uint8_t *out, uint32_t cap) {
+  if ((len & 1u) != 0u || len / 2u > cap) return -1;
+  for (uint32_t i = 0; i < len / 2u; i++) {
+    int32_t hi = hex_value(text[2u * i]), lo = hex_value(text[2u * i + 1u]);
+    if (hi < 0 || lo < 0) return -1;
+    out[i] = (uint8_t)((hi << 4) | lo);
+  }
+  return (int32_t)(len / 2u);
+}
+
+// Encodes raw[0..n) as lowercase hex into out (2n bytes).
+static inline void hex_encode(const uint8_t *raw, uint32_t n, uint8_t *out) {
+  for (uint32_t i = 0; i < n; i++) {
+    out[2u * i] = hex_digit((uint8_t)(raw[i] >> 4));
+    out[2u * i + 1u] = hex_digit((uint8_t)(raw[i] & 15u));
+  }
+}
+
 #endif

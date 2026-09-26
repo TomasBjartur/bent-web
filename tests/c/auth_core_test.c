@@ -72,6 +72,19 @@ static size_t sign(Key *k, const uint8_t *msg, size_t n, uint8_t sig[80]) {
 
 static uint8_t cred_id[20] = "credential-id-000001";
 
+static AuthResult login_with(const uint8_t chh[32], Key *k, uint32_t count, uint64_t when) {
+  uint8_t msg[37 + 32];
+  memset(msg, 0xab, sizeof msg);
+  msg[32] = 0x05;
+  msg[33] = (uint8_t)(count >> 24); msg[34] = (uint8_t)(count >> 16);
+  msg[35] = (uint8_t)(count >> 8); msg[36] = (uint8_t)count;
+  uint8_t sig[80];
+  size_t sl = sign(k, msg, sizeof msg, sig);
+  uint32_t u = 0;
+  uint8_t s[32];
+  return auth_login(&db, chh, cred_id, sizeof cred_id, msg, sizeof msg, sig, (uint32_t)sl, when, &u, s);
+}
+
 int main(void) {
   const char *path = "/tmp/claude-auth-core-test.db";
   unlink(path);
@@ -163,30 +176,31 @@ int main(void) {
   bad_y[31] ^= 1;
   CHECK(auth_p256_verify(cx, bad_y, msg, sizeof msg, sig, (uint32_t)sl) == 0);
 
-  // Login transactions.
+  // Login transactions: msg is authenticator data (count at bytes 33..36)
+  // followed by a 32-byte clientData hash, signed by the credential's key.
+  #define LOGIN(chh, key_, cnt_, when) login_with(chh, &(key_), cnt_, when)
   uint8_t lc[32], lch[32];
   CHECK(auth_challenge(&db, CHAL_LOGIN, NULL, NOW, lc) == AUTH_OK);
   auth_sha256(lc, 32, lch);
-  CHECK(auth_login(&db, lch, cred_id, sizeof cred_id, 5, NOW, &user, session) == AUTH_OK);
-  CHECK(auth_login(&db, lch, cred_id, sizeof cred_id, 6, NOW, &user, session) == AUTH_INVALID);  // replay
+  CHECK(LOGIN(lch, key, 5, NOW) == AUTH_OK);
+  CHECK(LOGIN(lch, key, 6, NOW) == AUTH_INVALID);  // replay
   CHECK(auth_challenge(&db, CHAL_LOGIN, NULL, NOW, lc) == AUTH_OK);
   auth_sha256(lc, 32, lch);
-  CHECK(auth_login(&db, lch, cred_id, sizeof cred_id, 5, NOW, &user, session) == AUTH_COUNTER);  // not increasing
+  CHECK(LOGIN(lch, key, 5, NOW) == AUTH_COUNTER);  // not increasing
   CHECK(auth_challenge(&db, CHAL_LOGIN, NULL, NOW, lc) == AUTH_OK);
   auth_sha256(lc, 32, lch);
-  CHECK(auth_login(&db, lch, cred_id, sizeof cred_id, 0, NOW, &user, session) == AUTH_COUNTER);  // reset to 0
+  CHECK(LOGIN(lch, key, 0, NOW) == AUTH_COUNTER);  // reset to 0
   CHECK(auth_challenge(&db, CHAL_LOGIN, NULL, NOW, lc) == AUTH_OK);
   auth_sha256(lc, 32, lch);
-  CHECK(auth_login(&db, lch, cred_id, sizeof cred_id, 7, NOW + CHALLENGE_TTL_MS + 1, &user, session) == AUTH_INVALID);  // expired
+  CHECK(LOGIN(lch, key, 7, NOW + CHALLENGE_TTL_MS + 1) == AUTH_INVALID);  // expired
   // A register challenge cannot log in.
-  CHECK(auth_login(&db, chal_c_hash, cred_id, sizeof cred_id, 9, NOW, &user, session) == AUTH_INVALID);
-  // Unknown credential.
+  CHECK(LOGIN(chal_c_hash, key, 9, NOW) == AUTH_INVALID);
+  // Signed by another key (e.g. an attacker's), for this credential id.
   CHECK(auth_challenge(&db, CHAL_LOGIN, NULL, NOW, lc) == AUTH_OK);
   auth_sha256(lc, 32, lch);
-  uint8_t nope[20] = "credential-id-nope!!";
-  CHECK(auth_login(&db, lch, nope, sizeof nope, 9, NOW, &user, session) == AUTH_INVALID);
+  CHECK(LOGIN(lch, other, 9, NOW) == AUTH_INVALID);
   // The failed login rolled back: its challenge is still unused.
-  CHECK(auth_login(&db, lch, cred_id, sizeof cred_id, 9, NOW, &user, session) == AUTH_OK);
+  CHECK(LOGIN(lch, key, 9, NOW) == AUTH_OK);
 
   // Recovery: a new passkey for the existing account.
   CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), ORIGIN, NOW + 3700001) == AUTH_OK);

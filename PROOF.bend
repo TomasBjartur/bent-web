@@ -9,6 +9,8 @@ import ./src/authz.bend as Authz
 import ./src/text.bend as Text
 import ./spec/csrf.bend as CsrfSpec
 import ./src/route.bend as Route
+import ./spec/webauthn.bend as WSpec
+import ./src/webauthn.bend as WA
 import ./LAWS.bend as Laws
 
 # Each encoding branch emits a fixed entity (whose characters compute to
@@ -344,3 +346,33 @@ def Laws.route_only_post_writes(m, path, q, h, e):
       plan_absurd(L.false_ne_true(e), Http.PATCH{})
     case Http.DELETE{}:
       plan_absurd(L.false_ne_true(e), Http.DELETE{})
+
+# PASSKEYS
+
+def Laws.webauthn_reg_ok(r):
+  match r:
+    case WA.RegOk{e, c, a, cred, pf}:
+      pf
+
+def Laws.webauthn_login_ok(l):
+  match l:
+    case WA.LoginOk{e, c, a, sig, stored, pf}:
+      pf
+
+# login_ok(..., False, ...) = C && (A && (False && N)) = C && (A && False).
+def Laws.webauthn_no_sig_no_login(e, c, a, stored):
+  %Equal.sym(Bool, Bool.and(WSpec.auth_ok(e, a), False{}), False{}, L.and_false_r(WSpec.auth_ok(e, a))) : {Bool.and(WSpec.client_ok(e, c, "webauthn.get"), _) == False{} : Bool}
+  L.and_false_r(WSpec.client_ok(e, c, "webauthn.get"))
+
+# client_ok with cross = True is k == kind && (o == origin && False).
+def cross_client(+origin: String, +rp: String, +k: String, +ch: String, +o: String, +kind: String) -> {WSpec.client_ok(WSpec.Expect{origin, rp}, WSpec.Client{k, ch, o, True{}}, kind) == False{} : Bool}:
+  %Equal.sym(Bool, Bool.and(String.eq(o, origin), False{}), False{}, L.and_false_r(String.eq(o, origin))) : {Bool.and(String.eq(k, kind), _) == False{} : Bool}
+  L.and_false_r(String.eq(k, kind))
+
+def Laws.webauthn_no_cross_origin_login(origin, rp, k, ch, o, a, sig, stored):
+  %Equal.sym(Bool, WSpec.client_ok(WSpec.Expect{origin, rp}, WSpec.Client{k, ch, o, True{}}, "webauthn.get"), False{}, cross_client(origin, rp, k, ch, o, "webauthn.get")) : {Bool.and(_, Bool.and(WSpec.auth_ok(WSpec.Expect{origin, rp}, a), Bool.and(sig, WSpec.counter_ok(stored, WSpec.auth_count(a))))) == False{} : Bool}
+  {==}
+
+def Laws.webauthn_no_cross_origin_reg(origin, rp, k, ch, o, a):
+  %Equal.sym(Bool, WSpec.client_ok(WSpec.Expect{origin, rp}, WSpec.Client{k, ch, o, True{}}, "webauthn.create"), False{}, cross_client(origin, rp, k, ch, o, "webauthn.create")) : {Bool.and(_, Bool.and(WSpec.auth_ok(WSpec.Expect{origin, rp}, a), WSpec.at(WSpec.auth_flags(a)))) == False{} : Bool}
+  {==}

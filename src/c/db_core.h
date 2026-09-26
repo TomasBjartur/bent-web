@@ -182,6 +182,10 @@ AuthResult auth_email_token(Db *db, uint32_t purpose, DbText email, DbText name,
 // Whether an email token is valid (unused, unexpired); fills purpose.
 AuthResult auth_token_check(Db *db, const uint8_t token_hash[32], uint64_t now_ms, uint32_t *purpose);
 
+// A valid email token's purpose, email and name (NUL-terminated).
+AuthResult auth_token_info(Db *db, const uint8_t token_hash[32], uint64_t now_ms, uint32_t *purpose,
+                           char email[256], char name[128]);
+
 // A new challenge. For CHAL_REGISTER it is bound to an email token, which
 // must be valid. Writes the raw challenge to out.
 AuthResult auth_challenge(Db *db, uint32_t purpose, const uint8_t *token_hash, uint64_t now_ms, uint8_t out[32]);
@@ -198,10 +202,14 @@ AuthResult auth_register(Db *db, const uint8_t token_hash[32], const uint8_t cha
                          uint32_t count, uint64_t now_ms, uint32_t *user, uint8_t session[32]);
 
 // Completes a login in one transaction: consumes the login challenge,
-// advances the credential's counter (it must increase, or stay 0 for
-// authenticators without counters), and creates a session.
+// re-verifies the signature over msg (authenticator data followed by the
+// SHA-256 of clientDataJSON) with the public key stored for this
+// credential, advances the credential's counter to the one inside the
+// signed authenticator data (it must increase, or stay 0 for authenticators
+// without counters), and creates a session.
 AuthResult auth_login(Db *db, const uint8_t challenge_hash[32], const uint8_t *id, uint32_t id_len,
-                      uint32_t count, uint64_t now_ms, uint32_t *user, uint8_t session[32]);
+                      const uint8_t *msg, uint32_t msg_len, const uint8_t *sig, uint32_t sig_len,
+                      uint64_t now_ms, uint32_t *user, uint8_t session[32]);
 
 // SHA-256 (BearSSL).
 void auth_sha256(const uint8_t *p, uint32_t n, uint8_t out[32]);

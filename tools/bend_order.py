@@ -88,7 +88,11 @@ def main():
         sys.exit(1)
     # keep types in place relative to each other, first
     new = [chunks[i] for i in types] + [chunks[i] for i in order]
-    out = '\n'.join(header) + ('\n' if header else '') + '\n'.join('\n'.join(c) for c in new)
+    def strip(c):
+        while c and not c[-1].strip():
+            c = c[:-1]
+        return c
+    out = '\n'.join(header) + ('\n' if header else '') + '\n\n'.join('\n'.join(strip(c)) for c in new)
     out = re.sub(r'\n{3,}', '\n\n', out).rstrip('\n') + '\n'
     if '--check' in sys.argv:
         sys.exit(0 if out == text else 2)

@@ -15,14 +15,28 @@ hits=$(grep -rn "Permit{" src --include=*.bend | grep -v "^src/authz.bend:" | gr
 
 # 3. Refined values are only built by their smart constructors (a literal
 #    proof {==} next to a constructor outside its module would forge one).
-for t in Seg Path Query Hval Clen Title Body Slug; do
+for t in Seg Path Query Hval Clen Title Body Slug Email Name; do
   hits=$(grep -rn "[^A-Za-z.]$t{" src --include=*.bend | grep -v "case " | grep -v "^src/http.bend:" | grep -v "^src/text.bend:" || true)
   [ -z "$hits" ] || rule "$t built outside its module: $hits"
 done
 
-# 4. Only src/db.bend declares database effects.
+# 4. Only src/db.bend and src/auth.bend declare database effects.
 hits=$(grep -rln 'import "./effects/db.c"' src | grep -v "^src/db.bend$" || true)
-[ -z "$hits" ] || rule "database effects declared outside src/db.bend: $hits"
+[ -z "$hits" ] || rule "database effects declared outside src/db.bend, src/auth.bend: $hits"
+
+# 4b. Sessions are only created from a RegOk / LoginOk: the raw effects are
+#     only called by register.go and login_go in src/auth.bend.
+hits=$(grep -rn "auth_register_raw(\|auth_login_raw(" src --include=*.bend | grep -v "^src/auth.bend:.*def auth_" || true)
+bad=$(echo "$hits" | grep -v "^$" | while IFS= read -r line; do
+  n=$(echo "$line" | cut -d: -f2)
+  fn=$(head -n "$n" src/auth.bend | grep "^def " | tail -1)
+  case "$fn" in "def register.go("*|"def login_go("*) ;; *) echo "$line ($fn)";; esac
+done)
+[ -z "$bad" ] || rule "session effect called outside register.go/login_go: $bad"
+
+# 4c. RegOk / LoginOk only built in src/webauthn.bend.
+hits=$(grep -rn "RegOk{\|LoginOk{" src --include=*.bend | grep -v "^src/webauthn.bend:" | grep -v "case WA\." || true)
+[ -z "$hits" ] || rule "RegOk/LoginOk built outside src/webauthn.bend: $hits"
 
 # 5. Banned C functions (docs/C_STYLE.md section 8).
 hits=$(grep -rnE '\b(strcpy|strcat|sprintf|vsprintf|gets|strtok|atoi|atol|scanf|sscanf|rand|system|popen)\s*\(' src/c src/effects || true)

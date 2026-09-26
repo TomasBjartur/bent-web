@@ -553,6 +553,29 @@ AuthResult auth_token_check(Db *db, const uint8_t token_hash[32], uint64_t now_m
   return r == 1 ? AUTH_OK : AUTH_INVALID;
 }
 
+AuthResult auth_token_info(Db *db, const uint8_t token_hash[32], uint64_t now_ms, uint32_t *purpose,
+                           char email[256], char name[128]) {
+  sqlite3_stmt *st = db->st[ST_TOKEN_GET];
+  sqlite3_bind_blob(st, 1, token_hash, 32, SQLITE_STATIC);
+  sqlite3_bind_int64(st, 2, (sqlite3_int64)now_ms);
+  int rc = sqlite3_step(st);
+  AuthResult r = rc == SQLITE_DONE ? AUTH_INVALID : AUTH_ERROR;
+  if (rc == SQLITE_ROW) {
+    int el = sqlite3_column_bytes(st, 1), nl = sqlite3_column_bytes(st, 2);
+    if (el >= 0 && el < 256 && nl >= 0 && nl < 128) {
+      *purpose = (uint32_t)sqlite3_column_int64(st, 0);
+      memcpy(email, sqlite3_column_text(st, 1), (size_t)el);
+      email[el] = 0;
+      memcpy(name, sqlite3_column_text(st, 2), (size_t)nl);
+      name[nl] = 0;
+      r = AUTH_OK;
+    }
+  }
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+  return r;
+}
+
 AuthResult auth_challenge(Db *db, uint32_t purpose, const uint8_t *token_hash, uint64_t now_ms, uint8_t out[32]) {
   ASSERT(purpose == CHAL_REGISTER || purpose == CHAL_LOGIN);
   ASSERT((purpose == CHAL_REGISTER) == (token_hash != NULL));
@@ -671,15 +694,20 @@ AuthResult auth_register(Db *db, const uint8_t token_hash[32], const uint8_t cha
 }
 
 AuthResult auth_login(Db *db, const uint8_t challenge_hash[32], const uint8_t *id, uint32_t id_len,
-                      uint32_t count, uint64_t now_ms, uint32_t *user, uint8_t session[32]) {
+                      const uint8_t *msg, uint32_t msg_len, const uint8_t *sig, uint32_t sig_len,
+                      uint64_t now_ms, uint32_t *user, uint8_t session[32]) {
   *user = 0;
   if (id_len == 0u || id_len > CRED_ID_MAX) return AUTH_INVALID;
+  // authenticator data is at least 37 bytes; the clientDataJSON hash is 32.
+  if (msg_len < 37u + 32u || msg_len > 4096u) return AUTH_INVALID;
+  uint32_t count = ((uint32_t)msg[33] << 24) | ((uint32_t)msg[34] << 16) | ((uint32_t)msg[35] << 8) | (uint32_t)msg[36];
   if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return AUTH_ERROR;
   if (auth_use_challenge(db, challenge_hash, CHAL_LOGIN, NULL, now_ms) != 1) return auth_rollback(db, AUTH_INVALID);
   uint8_t x[32], y[32];
   uint32_t uid = 0, old = 0;
   AuthResult r = auth_credential(db, id, id_len, &uid, x, y, &old);
   if (r != AUTH_OK) return auth_rollback(db, r);
+  if (auth_p256_verify(x, y, msg, msg_len, sig, sig_len) != 1) return auth_rollback(db, AUTH_INVALID);
   sqlite3_stmt *st = db->st[ST_CRED_COUNT];
   sqlite3_bind_blob(st, 1, id, (int)id_len, SQLITE_STATIC);
   sqlite3_bind_int64(st, 2, count);
