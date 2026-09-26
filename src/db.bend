@@ -15,14 +15,19 @@ import ./markdown.bend as Md
 
 # The data a write carries besides its action. The stored HTML of a post
 # can only be a Rendered: spec/markup.bend's serialization of some Node.
+# n: a number for the write (a schedule's minutes since 1970), 0 otherwise.
 type WData is Data:
-  WData{slug: String, title: String, body_md: String, body_html: Maybe<&2, Md.Rendered>}
+  WData{slug: String, title: String, body_md: String, body_html: Maybe<&2, Md.Rendered>, n: U32}
 
 # [kind, target, user, flag] for an action (flag: 1 publish; 0 otherwise).
 type Act is Data:
   Act{kind: U32, target: U32, user: U32, flag: U32}
 
 def db_open(path: String) -> IO(Result<&1, &1, U32 & String, Unit>):
+  import "./effects/db.c"
+
+# Publishes scheduled posts that are due (checked at most every 10 s).
+def tick() -> IO(Unit):
   import "./effects/db.c"
 
 # The user id of a session token (from the sid cookie), or 0.
@@ -211,22 +216,27 @@ def who_code(p: Spec.Principal) -> U32:
       id
 
 def no_data() -> WData:
-  WData{"", "", "", None{}}
+  WData{"", "", "", None{}, 0}
 
 def blog_data(s: Text.Slug, t: Text.Title) -> WData:
-  WData{Text.Slug.text(s), Text.Title.text(t), "", None{}}
+  WData{Text.Slug.text(s), Text.Title.text(t), "", None{}, 0}
 
 def title_data(t: Text.Title) -> WData:
-  WData{"", Text.Title.text(t), "", None{}}
+  WData{"", Text.Title.text(t), "", None{}, 0}
+
+# Scheduling (apply's flag 2): the address the draft will take and when
+# (minutes since 1970, UTC).
+def schedule_data(s: Text.Slug, +minutes: U32) -> WData:
+  WData{Text.Slug.text(s), "", "", None{}, minutes}
 
 # Publishing: the address a never-published draft takes (src/c/db_core.c,
 # db_publish_rename).
 def slug_data(s: Text.Slug) -> WData:
-  WData{Text.Slug.text(s), "", "", None{}}
+  WData{Text.Slug.text(s), "", "", None{}, 0}
 
 # A comment (its parent goes in apply's flag).
 def comment_data(+b: Text.Body) -> WData:
-  WData{"", "", Text.Body.text(b), Some{Md.render_body(b)}}
+  WData{"", "", Text.Body.text(b), Some{Md.render_body(b)}, 0}
 
 # The body id Db.page splices a comment's stored HTML for (the top bit
 # set; src/effects/db.c PAGE_COMMENT_BIT).
@@ -234,12 +244,12 @@ def comment_body(+id: U32) -> U32:
   (id + 2147483648 : U32)
 
 def post_data(t: Text.Title, +b: Text.Body) -> WData:
-  WData{"", Text.Title.text(t), Text.Body.text(b), Some{Md.render_body(b)}}
+  WData{"", Text.Title.text(t), Text.Body.text(b), Some{Md.render_body(b)}, 0}
 
 # A save that also sets the tags (apply's flag 1): "a,b,c" from
 # Text.tags_of.
 def post_tags_data(t: Text.Title, +b: Text.Body, +tags: String) -> WData:
-  WData{tags, Text.Title.text(t), Text.Body.text(b), Some{Md.render_body(b)}}
+  WData{tags, Text.Title.text(t), Text.Body.text(b), Some{Md.render_body(b)}, 0}
 
 def html_of(m: Maybe<&2, Md.Rendered>) -> String:
   match m:
@@ -294,8 +304,9 @@ def apply_go(+token: String, f: Spec.Facts, a: Act, d: WData) -> IO(Result<&1, &
       match a:
         case Act{kind, target, user, flag}:
           match d:
-            case WData{slug, title, md, html}:
-              apply_post(token, who_code(who), blog, role_code(role), post, kind, target, user, flag, slug, title, md, html_of(html))
+            # (n rides in the user field: no action with a user has an n.)
+            case WData{slug, title, md, html, n}:
+              apply_post(token, who_code(who), blog, role_code(role), post, kind, target, (user + n : U32), flag, slug, title, md, html_of(html))
 
 # Performs the write a Permit allows. flag: 1 to publish, 0 to unpublish
 # (only read for PublishPost). Answers the new id, or fails with a code:

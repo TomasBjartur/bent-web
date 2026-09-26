@@ -49,7 +49,7 @@ def req(method, path, token=None, form=None, site="same-origin", extra=b""):
 def main():
     tmp = tempfile.mkdtemp()
     dbpath = os.path.join(tmp, "blog.db")
-    env = dict(os.environ, PORT=str(PORT), BLOG_DB=dbpath)
+    env = dict(os.environ, PORT=str(PORT), BLOG_DB=dbpath, BLOG_TICK_MS="0")
     srv = subprocess.Popen([os.path.join(ROOT, "build/server")], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
         for _ in range(50):
@@ -428,6 +428,36 @@ def run(dbpath):
     st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b, {"title": "Draft tagged"})
     req("POST", loc, b, {"title": "Draft tagged", "body": "t", "tags": "rust"})
     check("drafts never on tag pages", "Draft tagged" not in req("GET", "/t/rust")[2])
+
+    # Scheduled posts: set a time, see it on the dashboard, cancel; a due
+    # schedule publishes on the next request with its address from its
+    # title; times in the past are refused.
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b)
+    spid = loc.rsplit("/", 1)[1]
+    soon = int(time.time() // 60) + 60
+    st, loc, _, _ = req("POST", f"/edit/{spid}", b, {"title": "Tomorrow's news", "body": "Later.", "action": "schedule", "at": str(soon)})
+    check("schedule: back to the editor", st == 303 and loc == f"/edit/{spid}", (st, loc))
+    _, _, body, _ = req("GET", f"/edit/{spid}", b)
+    check("editor shows the schedule and Cancel", "Scheduled for" in body and 'value="unschedule"' in body)
+    _, _, body, _ = req("GET", "/dash/bob-s-great-blog", b)
+    check("dashboard: Scheduled badge", "badge sched" in body)
+    check("not public before its time", "Tomorrow" not in req("GET", "/")[2])
+    st, _, _, _ = req("POST", f"/edit/{spid}", b, {"title": "Tomorrow's news", "body": "Later.", "action": "schedule", "at": str(int(time.time() // 60) - 5)})
+    check("schedule in the past: 400", st == 400, st)
+    req("POST", f"/edit/{spid}", b, {"title": "Tomorrow's news", "body": "Later.", "action": "unschedule"})
+    check("cancelled", "Scheduled for" not in req("GET", f"/edit/{spid}", b)[2])
+    st, _, _, _ = req("POST", f"/edit/{spid}", b, {"title": "Tomorrow's news", "body": "Later.", "action": "schedule", "at_local": "2099-01-01T10:00"})
+    check("schedule without JavaScript (UTC)", "2099-01-01 10:00 UTC" in req("GET", f"/edit/{spid}", b)[2])
+    st, _, _, _ = req("POST", f"/edit/{spid}", c, {"title": "x", "body": "x", "action": "schedule", "at": str(soon)})
+    check("outsider cannot schedule", st == 403, st)
+    q = sqlite3.connect(dbpath)
+    q.execute("UPDATE post SET publish_at_ms = ? WHERE id = ?", (int(time.time() * 1000) - 1000, spid))
+    q.commit()
+    q.close()
+    _, _, body, _ = req("GET", "/")
+    check("due: published on the next request, home fresh", "Tomorrow&#39;s news" in body, body[:0])
+    st, _, body, _ = req("GET", "/b/bob-s-great-blog/tomorrow-s-news")
+    check("due: address from its title", st == 200 and "Later." in body, st)
 
     # Security headers everywhere.
     _, _, _, head = req("GET", "/b/alice/first")

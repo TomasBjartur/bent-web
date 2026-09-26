@@ -683,28 +683,77 @@ def h_publish.go(one: Bool, s: Socket, +token: String, +who: U32, +pid: U32) -> 
 def h_publish(s: Socket, +token: String, +who: U32, +pid: U32, +flag: U32) -> IO(Unit):
   h_publish.go(U32.is_ne(flag, 0), s, token, who, pid)
 
+def scheduled_fail(bad_time: Bool, s: Socket, +token: String, +who: U32, +code: U32) -> IO(Unit):
+  match bad_time:
+    case True{}:
+      fail(s, token, who, 400)
+    case False{}:
+      fail(s, token, who, apply_status(code))
+
+# SCHEDULING: flag 2 sets when (and the address it will take, from its
+# title), flag 3 cancels. A time not in the future is refused (400).
+def scheduled_done(s: Socket, +token: String, +who: U32, +pid: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+  match r:
+    case Done{id}:
+      redirect(s, token, "/edit/" ++ U32.show(pid), "")
+    case Fail{err}:
+      (+code, msg) = err
+      scheduled_fail(U32.is_eq(code, 3), s, token, who, code)
+
+def schedule_data.go(m: Maybe<&2, Text.Slug>, +minutes: U32) -> Db.WData:
+  match m:
+    case None{}:
+      Db.no_data()
+    case Some{sl}:
+      Db.schedule_data(sl, minutes)
+
+def h_schedule2(s: Socket, +token: String, +who: U32, +pid: U32, +flag: U32, +minutes: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match m:
+    case None{}:
+      fail(s, token, who, 403)
+    case Some{p}:
+      do IO<Unit>:
+        md : List<&2, List<&2, String>> <- Db.query(Db.q_post_md(), pid, 0, "", token)
+        r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, flag, schedule_data.go(Text.mk_slug(Text.slugify(first_col(md, 1n))), minutes))
+        scheduled_done(s, token, who, pid, r)
+
+def h_schedule(s: Socket, +token: String, +who: U32, +pid: U32, +flag: U32, +minutes: U32) -> IO(Unit):
+  do IO<Unit>:
+    f : Spec.Facts <- Db.facts(who, 0, pid)
+    h_schedule2(s, token, who, pid, flag, minutes, Authz.authorize(f, Spec.PublishPost{pid}))
+
+def h_after_save(k: Nat, s: Socket, +token: String, +who: U32, +pid: U32, +minutes: U32) -> IO(Unit):
+  match k:
+    case 1n:
+      h_publish(s, token, who, pid, 1)
+    case 2n:
+      h_schedule(s, token, who, pid, 2, minutes)
+    case 3n:
+      h_schedule(s, token, who, pid, 3, 0)
+    case _:
+      redirect(s, token, "/edit/" ++ U32.show(pid), "")
+
 # After saving: publish too if that is what the button said. Publishing
 # needs its own Permit (PublishPost), checked on fresh facts.
-def h_save3(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
-  match publish:
-    case True{}:
-      match r:
-        case Done{id}:
-          h_publish(s, token, who, pid, 1)
-        case Fail{err}:
-          (code, msg) = err
-          fail(s, token, who, apply_status(code))
-    case False{}:
-      write_done(s, token, who, "/edit/" ++ U32.show(pid), r)
+# After saving, by the button pressed (mode): 0 save, 1 publish, 2
+# schedule (at minutes since 1970), 3 cancel the schedule. Each of 1-3
+# needs its own PublishPost permit, on fresh facts.
+def h_save3(+mode: U32, s: Socket, +token: String, +who: U32, +pid: U32, +minutes: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+  match r:
+    case Done{id}:
+      h_after_save(U32.to_nat(mode), s, token, who, pid, minutes)
+    case Fail{err}:
+      (code, msg) = err
+      fail(s, token, who, apply_status(code))
 
-def h_save.run(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>, +flag: U32, d: Db.WData) -> IO(Unit):
+def h_save.run(+mode: U32, +minutes: U32, s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>, +flag: U32, d: Db.WData) -> IO(Unit):
   match m:
     case None{}:
       fail(s, token, who, 403)
     case Some{p}:
       do IO<Unit>:
         r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, flag, d)
-        h_save3(publish, s, token, who, pid, r)
+        h_save3(mode, s, token, who, pid, minutes, r)
 
 # With a tags field, the save also sets the post's tags (flag 1).
 def save_flag(+tags: Maybe<&2, String>) -> U32:
@@ -721,12 +770,12 @@ def save_data(ti: Text.Title, +bo: Text.Body, +tags: Maybe<&2, String>) -> Db.WD
     case Some{+t}:
       Db.post_tags_data(ti, bo, Text.tags_of(t))
 
-def h_save2(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, title: Maybe<&2, Text.Title>, body: Maybe<&2, Text.Body>, +tags: Maybe<&2, String>) -> IO(Unit):
+def h_save2(+mode: U32, +minutes: U32, s: Socket, +token: String, +who: U32, +pid: U32, title: Maybe<&2, Text.Title>, body: Maybe<&2, Text.Body>, +tags: Maybe<&2, String>) -> IO(Unit):
   match title body:
     case Some{ti} Some{+bo}:
       do IO<Unit>:
         f : Spec.Facts <- Db.facts(who, 0, pid)
-        h_save.run(publish, s, token, who, pid, Authz.authorize(f, Spec.EditPost{pid}), save_flag(tags), save_data(ti, bo, tags))
+        h_save.run(mode, minutes, s, token, who, pid, Authz.authorize(f, Spec.EditPost{pid}), save_flag(tags), save_data(ti, bo, tags))
     case _ _:
       fail(s, token, who, 400)
 
@@ -737,15 +786,34 @@ def ops_text(m: Maybe<&2, List<&2, Crdt.Op>>) -> String:
     case Some{+xs}:
       Crdt.text(xs)
 
-def wants_publish(+xs: List<&2, Text.Field>) -> Bool:
-  String.eq(Maybe.default(&2, String, Text.form_raw(xs, "action"), ""), "publish")
+# The editor's button: 1 publish, 2 schedule, 3 unschedule, 0 save.
+def save_mode.go(+a: String) -> U32:
+  (Bool.to_u32(String.eq(a, "publish")) + ((2 * Bool.to_u32(String.eq(a, "schedule"))) + (3 * Bool.to_u32(String.eq(a, "unschedule")))) : U32)
+
+def save_mode(+xs: List<&2, Text.Field>) -> U32:
+  save_mode.go(Maybe.default(&2, String, Text.form_raw(xs, "action"), ""))
+
+def schedule_minutes.pick(js: Bool, +at: U32, +xs: List<&2, Text.Field>) -> U32:
+  match js:
+    case True{}:
+      at
+    case False{}:
+      Text.minutes_of(Maybe.default(&2, String, Text.decode_of(Text.form_get(xs, "at_local")), ""))
+
+# When to publish: "at" (minutes since 1970, set by the editor's script
+# from the local time), else "at_local" read as UTC (without JavaScript).
+def schedule_minutes.go(+at: U32, +xs: List<&2, Text.Field>) -> U32:
+  schedule_minutes.pick(U32.is_ne(at, 0), at, xs)
+
+def schedule_minutes(+xs: List<&2, Text.Field>) -> U32:
+  schedule_minutes.go(form_num(xs, "at"), xs)
 
 def h_save.pick(none: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>, +wire: String) -> IO(Unit):
   match none:
     case True{}:
-      h_save2(wants_publish(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.form_body(xs, "body"), Text.decode_of(Text.form_get(xs, "tags")))
+      h_save2(save_mode(xs), schedule_minutes(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.form_body(xs, "body"), Text.decode_of(Text.form_get(xs, "tags")))
     case False{}:
-      h_save2(wants_publish(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.body_of(Some{ops_text(Crdt.decode(wire))}), Text.decode_of(Text.form_get(xs, "tags")))
+      h_save2(save_mode(xs), schedule_minutes(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.body_of(Some{ops_text(Crdt.decode(wire))}), Text.decode_of(Text.form_get(xs, "tags")))
 
 def h_save.go(s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>) -> IO(Unit):
   do IO<Unit>:

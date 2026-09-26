@@ -26,6 +26,35 @@
 // (PRAGMA data_version).
 static uint64_t app_write_gen = 1;
 
+// SCHEDULED POSTS
+// ---------------
+// tick(): called at the start of every request; at most every
+// TICK_INTERVAL_MS (tests: BLOG_TICK_MS) it publishes scheduled posts that
+// are due. Publishing is observed only through requests, so checking on
+// requests is enough.
+#define TICK_INTERVAL_MS 10000ull
+
+#ifdef CID(tick)
+static uint64_t app_next_tick = 0;
+static uint64_t app_tick_ms = TICK_INTERVAL_MS;
+
+Term tick_run(Env e, Term *f, IoWork *w) {
+  (void)f;
+  (void)w;
+  ASSERT(app_db_ready);
+  uint64_t now = app_now_ms();
+  if (now >= app_next_tick) {
+    app_next_tick = now + app_tick_ms;
+    if (db_publish_due(&app_db, now) > 0) app_write_gen++;
+  }
+  return term_pak(CID(Unit), 0);
+}
+
+static void __attribute__((constructor)) tick_use(void) {
+  io_eff(CID(tick), tick_run, 0);
+}
+#endif
+
 // OPEN
 // ----
 
@@ -39,6 +68,10 @@ Term db_open_run(Env e, Term *f, IoWork *w) {
   free(path);
   if (r != 0) return io_fail(e, EIO, "cannot open the database");
   app_db_ready = 1;
+#ifdef CID(tick)
+  const char *t = getenv("BLOG_TICK_MS");
+  if (t != NULL && t[0] >= '0' && t[0] <= '9') app_tick_ms = strtoull(t, NULL, 10) <= 60000ull ? strtoull(t, NULL, 10) : TICK_INTERVAL_MS;
+#endif
   return io_done(e, term_pak(CID(Unit), 0));
 }
 

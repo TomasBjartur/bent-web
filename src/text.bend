@@ -740,3 +740,31 @@ def tags.join(xs: List<&2, String>) -> String:
 
 def tags_of(s: String) -> String:
   tags.join(tags.go(s, SNil{}, Nil{}))
+
+def days.go(+y: U32, +m: U32, +d: U32) -> U32:
+  ((((y / 400) * 146097) + ((((y % 400) * 365) + ((y % 400) / 4)) - ((y % 400) / 100))) + ((((153 * ((m + 9) % 12)) + 2) / 5) + (d - 1)) - 719468 : U32)
+
+# DATES
+# -----
+# Days from 1970-01-01 to y-m-d (proleptic Gregorian; H. Hinnant's
+# days_from_civil, for y >= 1970 so U32 never goes below zero).
+def days_from_civil(+y: U32, +m: U32, +d: U32) -> U32:
+  days.go((y - Bool.to_u32(U32.is_le(m, 2)) : U32), m, d)
+
+def digits(+s: String, +at: Nat, +n: Nat) -> U32:
+  Maybe.default(&2, U32, U32.read(String.take(String.drop(s, at), n)), 0)
+
+# "YYYY-MM-DDTHH:MM" (a datetime-local field) as minutes since 1970, UTC;
+# 0 if malformed or out of range.
+def minutes.ok(+s: String) -> Bool:
+  Bool.and(String.eq(String.take(String.drop(s, 10n), 1n), "T"), Bool.and(Bool.and(U32.is_ge(digits(s, 0n, 4n), 1970), U32.is_le(digits(s, 0n, 4n), 9999)), Bool.and(Bool.and(U32.is_ge(digits(s, 5n, 2n), 1), U32.is_le(digits(s, 5n, 2n), 12)), Bool.and(Bool.and(U32.is_ge(digits(s, 8n, 2n), 1), U32.is_le(digits(s, 8n, 2n), 31)), Bool.and(U32.is_le(digits(s, 11n, 2n), 23), U32.is_le(digits(s, 14n, 2n), 59))))))
+
+def minutes.pick(ok: Bool, +s: String) -> U32:
+  match ok:
+    case True{}:
+      (((days_from_civil(digits(s, 0n, 4n), digits(s, 5n, 2n), digits(s, 8n, 2n)) * 1440) + (digits(s, 11n, 2n) * 60)) + digits(s, 14n, 2n) : U32)
+    case False{}:
+      0
+
+def minutes_of(+s: String) -> U32:
+  minutes.pick(Bool.and(U32.is_eq(U32.from_nat(String.length(s)), 16), minutes.ok(s)), s)

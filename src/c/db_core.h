@@ -67,7 +67,8 @@ typedef struct {
   uint32_t kind;     // A_*
   uint32_t target;   // blog id (blog actions) or post id (post actions)
   uint32_t user;     // A_ADD_AUTHOR, A_REMOVE_AUTHOR
-  uint32_t flag;     // A_PUBLISH_POST: 1 publish, 0 unpublish
+  uint32_t flag;     // A_PUBLISH_POST: 1 publish, 0 unpublish, 2 schedule (user =
+                     // minutes since 1970, slug = the address), 3 cancel the schedule
   DbText slug;       // A_CREATE_BLOG, A_CREATE_POST; A_PUBLISH_POST: the address
                      // for a never-published draft (see db_publish_rename);
                      // A_EDIT_POST with flag 1: the tags, "a,b,c" (see db_set_tags)
@@ -90,8 +91,10 @@ enum {
   Q_POST_VIEW,          // a=post -> slug, title, published, blog_slug, blog_title, author, date, minutes,
                         //    author_id  (published, or member)
   Q_MY_BLOGS,           // -> id, slug, title, role, published count, draft count  (the session's user)
-  Q_POSTS_MEMBER,       // a=blog -> id, slug, title, published, date, author  (member only)
-  Q_POST_MD,            // a=post -> body_md, title, published, blog_slug, post_slug  (member only)
+  Q_POSTS_MEMBER,       // a=blog -> id, slug, title, published, date, author, scheduled date or ''
+                        //    (member only)
+  Q_POST_MD,            // a=post -> body_md, title, published, blog_slug, post_slug, scheduled
+                        //    ("YYYY-MM-DDTHH:MMZ" or '')  (member only)
   Q_USER_BY_EMAIL,      // text=email -> id
   Q_AUTHORS,            // a=blog -> user_id, name, email, role  (member only)
   Q_OPS,                // a=post -> ops as one wire text  (member only)
@@ -134,7 +137,7 @@ enum {
   ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
   ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
   ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT, ST_SLUG_TAKEN, ST_POST_RENAME,
-  ST_TAGS_CLEAR, ST_TAG_ADD, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
+  ST_TAGS_CLEAR, ST_TAG_ADD, ST_SCHEDULE, ST_UNSCHEDULE, ST_DUE, ST_PUBLISH_DUE, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
   ST_COUNT
 };
 
@@ -159,6 +162,11 @@ int32_t db_body(Db *db, uint32_t post, const uint8_t token_hash[32], uint64_t no
 
 // The same for a comment's stored HTML (not deleted; its post published or
 // the session a member of the post's blog).
+// Publishes scheduled posts that are due (at most DUE_BATCH_MAX a call),
+// each in its own IMMEDIATE transaction. Returns how many, or -1.
+#define DUE_BATCH_MAX 20u
+int32_t db_publish_due(Db *db, uint64_t now_ms);
+
 int32_t db_comment_body(Db *db, uint32_t comment, const uint8_t token_hash[32], uint64_t now_ms,
                         DbOutFn out, void *ctx);
 

@@ -297,8 +297,15 @@ def state_badge.go(b: Bool) -> String:
     case False{}:
       "<span class=\"badge\">Draft</span>"
 
-def state_badge(+p: String) -> String:
-  state_badge.go(String.eq(p, "1"))
+def state_badge.sched(none: Bool, +p: String, +at: String) -> String:
+  match none:
+    case True{}:
+      state_badge.go(String.eq(p, "1"))
+    case False{}:
+      "<span class=\"badge sched\">Scheduled " ++ (date(at) ++ "</span>")
+
+def state_badge(+p: String, +at: String) -> String:
+  state_badge.sched(String.is_empty(at), p, at)
 
 def preview_link(b: Bool, +bslug: String, +pslug: String) -> String:
   match b:
@@ -320,7 +327,7 @@ def member_post_rows(+bslug: String, rows: List<&2, List<&2, String>>) -> String
     case Nil{}:
       ""
     case Con{+r, t}:
-      "<tr><td><a class=\"title\" href=\"/edit/" ++ (e(col(r, 0n)) ++ ("\">" ++ (e(col(r, 2n)) ++ ("</a><div class=\"meta\">" ++ (e(col(r, 5n)) ++ ("<span class=\"dot\"></span>edited " ++ (date(col(r, 4n)) ++ ("</div></td><td>" ++ (state_badge(col(r, 3n)) ++ ("</td><td>" ++ (view_link(String.eq(col(r, 3n), "1"), bslug, col(r, 1n)) ++ ("<a class=\"btn\" href=\"/edit/" ++ (e(col(r, 0n)) ++ ("\">Edit</a></td></tr>" ++ member_post_rows(bslug, t)))))))))))))))
+      "<tr><td><a class=\"title\" href=\"/edit/" ++ (e(col(r, 0n)) ++ ("\">" ++ (e(col(r, 2n)) ++ ("</a><div class=\"meta\">" ++ (e(col(r, 5n)) ++ ("<span class=\"dot\"></span>edited " ++ (date(col(r, 4n)) ++ ("</div></td><td>" ++ (state_badge(col(r, 3n), col(r, 6n)) ++ ("</td><td>" ++ (view_link(String.eq(col(r, 3n), "1"), bslug, col(r, 1n)) ++ ("<a class=\"btn\" href=\"/edit/" ++ (e(col(r, 0n)) ++ ("\">Edit</a></td></tr>" ++ member_post_rows(bslug, t)))))))))))))))
 
 def member_posts(+bslug: String, rows: List<&2, List<&2, String>>) -> String:
   match rows:
@@ -354,14 +361,26 @@ def owner_tools(b: Bool, +blog: String) -> String:
 def dash_blog(+slug: String, title: String, +is_owner: Bool, posts: List<&2, List<&2, String>>, authors: List<&2, List<&2, String>>) -> String:
   "<p class=\"meta crumb\"><a href=\"/dash\">← Your blogs</a></p><div class=\"dash-head\"><h1>" ++ (e(title) ++ ("</h1><div class=\"row\"><a class=\"btn\" href=\"/b/" ++ (e(slug) ++ ("\">View blog</a>" ++ (new_post_button(slug, "New post") ++ ("</div></div><div class=\"cols\"><section>" ++ (member_posts(slug, posts) ++ ("</section><aside><h2>Authors</h2><ul class=\"people\">" ++ (author_items(slug, is_owner, authors) ++ ("</ul>" ++ (owner_tools(is_owner, slug) ++ "</aside></div>")))))))))))
 
+def schedule_ui.go(none: Bool, +at: String) -> String:
+  match none:
+    case True{}:
+      "<details class=\"schedule\"><summary class=\"btn quiet\">Schedule</summary><div class=\"pop\"><label>Publish at <input type=\"datetime-local\" name=\"at_local\" form=\"post-form\"></label><input type=\"hidden\" name=\"at\" form=\"post-form\"><button form=\"post-form\" name=\"action\" value=\"schedule\" class=\"primary\">Schedule</button></div></details>"
+    case False{}:
+      "<span class=\"scheduled\">Scheduled for <time datetime=\"" ++ (e(at) ++ ("\">" ++ (e(String.take(at, 10n)) ++ (" " ++ (e(String.take(String.drop(at, 11n), 5n)) ++ " UTC</time></span><button form=\"post-form\" name=\"action\" value=\"unschedule\" class=\"quiet\">Cancel</button>")))))
+
 # EDITOR
 # ------
-def publish_buttons(published: Bool) -> String:
+# A draft can be scheduled; a scheduled draft shows when (UTC in the
+# markup, local time once the editor's script runs) and can be cancelled.
+def schedule_ui(+at: String) -> String:
+  schedule_ui.go(String.is_empty(at), at)
+
+def publish_buttons(published: Bool, +at: String) -> String:
   match published:
     case True{}:
       "<button form=\"post-form\" name=\"action\" value=\"publish\" class=\"primary\">Update</button>"
     case False{}:
-      "<button form=\"post-form\" name=\"action\" value=\"save\" class=\"quiet hide-sm\">Save draft</button><button form=\"post-form\" name=\"action\" value=\"publish\" class=\"primary\">Publish</button>"
+      "<button form=\"post-form\" name=\"action\" value=\"save\" class=\"quiet hide-sm\">Save draft</button>" ++ (schedule_ui(at) ++ "<button form=\"post-form\" name=\"action\" value=\"publish\" class=\"primary\">Publish</button>")
 
 def unpublish(published: Bool, +id: String) -> String:
   match published:
@@ -403,7 +422,7 @@ def tag_page(+tag: String, rows: List<&2, List<&2, String>>) -> String:
 # parser drops one newline right after <textarea>, so one is put there for
 # it to drop: a text that starts with a newline keeps it.
 def edit_page(+id: String, +rep: String, +md: List<&2, String>, +tags: String) -> String:
-  head("Editing: " ++ col(md, 1n)) ++ ("<header class=\"editor-bar\"><div class=\"wrap wide\"><a class=\"btn quiet\" href=\"/dash/" ++ (e(col(md, 3n)) ++ ("\" aria-label=\"Back to the blog\">←</a><span id=\"sync-status\" class=\"status\" role=\"status\">Saved</span>" ++ (preview_link(String.eq(col(md, 2n), "1"), col(md, 3n), col(md, 4n)) ++ (unpublish(String.eq(col(md, 2n), "1"), id) ++ (publish_buttons(String.eq(col(md, 2n), "1")) ++ ("</div></header><main id=\"main\"><form id=\"post-form\" method=\"post\" action=\"/edit/" ++ (e(id) ++ ("\" class=\"wrap write editor\"><textarea class=\"title\" name=\"title\" rows=\"1\" required maxlength=\"200\" placeholder=\"Title\" aria-label=\"Title\">&#10;" ++ (e(col(md, 1n)) ++ ("</textarea><input class=\"tags\" name=\"tags\" maxlength=\"300\" placeholder=\"Tags, separated by commas\" aria-label=\"Tags\" value=\"" ++ (e(tags) ++ ("\"><textarea id=\"editor\" class=\"text\" name=\"body\" placeholder=\"Tell your story…\" aria-label=\"Text\" data-published=\"" ++ (e(col(md, 2n)) ++ ("\" data-post=\"" ++ (e(id) ++ ("\" data-rep=\"" ++ (e(rep) ++ ("\">&#10;" ++ (e(col(md, 0n)) ++ ("</textarea><p class=\"help\">Markdown: <code>## Heading</code> <code>**bold**</code> <code>*italic*</code> <code>[link](https://…)</code> <code>- list</code> <code>&gt; quote</code>. Your text syncs as you type; Ctrl+S or ⌘S renders it.</p></form><div class=\"wrap danger-zone\"><form method=\"post\" action=\"/edit/" ++ (e(id) ++ ("/delete\" data-confirm=\"Delete this post? This cannot be undone.\"><button class=\"danger\">Delete post</button></form></div></main><script type=\"module\" src=\"" ++ (asset("editor.js") ++ "\"></script></body></html>\n"))))))))))))))))))))))))
+  head("Editing: " ++ col(md, 1n)) ++ ("<header class=\"editor-bar\"><div class=\"wrap wide\"><a class=\"btn quiet\" href=\"/dash/" ++ (e(col(md, 3n)) ++ ("\" aria-label=\"Back to the blog\">←</a><span id=\"sync-status\" class=\"status\" role=\"status\">Saved</span>" ++ (preview_link(String.eq(col(md, 2n), "1"), col(md, 3n), col(md, 4n)) ++ (unpublish(String.eq(col(md, 2n), "1"), id) ++ (publish_buttons(String.eq(col(md, 2n), "1"), col(md, 5n)) ++ ("</div></header><main id=\"main\"><form id=\"post-form\" method=\"post\" action=\"/edit/" ++ (e(id) ++ ("\" class=\"wrap write editor\"><textarea class=\"title\" name=\"title\" rows=\"1\" required maxlength=\"200\" placeholder=\"Title\" aria-label=\"Title\">&#10;" ++ (e(col(md, 1n)) ++ ("</textarea><input class=\"tags\" name=\"tags\" maxlength=\"300\" placeholder=\"Tags, separated by commas\" aria-label=\"Tags\" value=\"" ++ (e(tags) ++ ("\"><textarea id=\"editor\" class=\"text\" name=\"body\" placeholder=\"Tell your story…\" aria-label=\"Text\" data-published=\"" ++ (e(col(md, 2n)) ++ ("\" data-post=\"" ++ (e(id) ++ ("\" data-rep=\"" ++ (e(rep) ++ ("\">&#10;" ++ (e(col(md, 0n)) ++ ("</textarea><p class=\"help\">Markdown: <code>## Heading</code> <code>**bold**</code> <code>*italic*</code> <code>[link](https://…)</code> <code>- list</code> <code>&gt; quote</code>. Your text syncs as you type; Ctrl+S or ⌘S renders it.</p></form><div class=\"wrap danger-zone\"><form method=\"post\" action=\"/edit/" ++ (e(id) ++ ("/delete\" data-confirm=\"Delete this post? This cannot be undone.\"><button class=\"danger\">Delete post</button></form></div></main><script type=\"module\" src=\"" ++ (asset("editor.js") ++ "\"></script></body></html>\n"))))))))))))))))))))))))
 
 # AUTHOR PAGE
 # -----------

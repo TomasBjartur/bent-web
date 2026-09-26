@@ -55,6 +55,7 @@ def head_hdrs(h: Http.Head) -> Http.Hdrs:
 
 def handle.go(s: Socket, +c: Auth.Conf, +h: Http.Head, +body: String, +token: String) -> IO(Unit):
   do IO<Unit>:
+    Db.tick()
     +who : U32 <- Db.session_user(token)
     Handlers.exec(s, Route.plan(h), c, token, who, body, head_query(h))
 

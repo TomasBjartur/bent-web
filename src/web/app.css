@@ -262,6 +262,12 @@ details.more .center { text-align: left; }
 .editor-bar .status.busy::before { color: var(--accent); }
 .editor-bar .status.off::before { color: var(--danger); }
 .write { padding-top: 28px; }
+.editor-bar details.schedule { position: relative; }
+.editor-bar details.schedule summary { list-style: none; }
+.editor-bar details.schedule summary::-webkit-details-marker { display: none; }
+.editor-bar .pop { position: absolute; right: 0; top: 44px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 10px; width: 260px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.08); }
+.editor-bar .scheduled { font-size: 0.85rem; color: var(--accent); }
+.badge.sched { background: transparent; color: var(--accent); border: 1px dashed currentColor; }
 .write textarea.title {
   border: 0; background: transparent; padding: 0; font: 700 2.4rem/1.15 var(--serif); letter-spacing: -0.015em; box-shadow: none;
   resize: none; overflow: hidden; field-sizing: content;

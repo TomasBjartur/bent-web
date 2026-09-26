@@ -66,6 +66,12 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_CRED_NEW] = "INSERT INTO credential(id, user_id, x, y, sign_count, created_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
   [ST_CRED_COUNT] = ("UPDATE credential SET sign_count = ?2 WHERE id = ?1 AND "
                      "(sign_count < ?2 OR (sign_count = 0 AND ?2 = 0))"),
+  [ST_SCHEDULE] = ("UPDATE post SET publish_at_ms = ?2, publish_slug = ?3 WHERE id = ?1 AND published = 0"),
+  [ST_UNSCHEDULE] = "UPDATE post SET publish_at_ms = NULL, publish_slug = NULL WHERE id = ?1",
+  [ST_DUE] = ("SELECT id, coalesce(publish_slug, '') FROM post WHERE publish_at_ms <= ?1 AND published = 0 "
+              "ORDER BY publish_at_ms LIMIT 20"),
+  [ST_PUBLISH_DUE] = ("UPDATE post SET published = 1, published_ms = publish_at_ms, updated_ms = ?2, "
+                      "publish_at_ms = NULL, publish_slug = NULL WHERE id = ?1 AND published = 0 AND publish_at_ms <= ?2"),
   [ST_TAGS_CLEAR] = "DELETE FROM post_tag WHERE post_id = ?1",
   [ST_TAG_ADD] = "INSERT OR IGNORE INTO post_tag(post_id, tag) VALUES (?1, ?2)",
   [ST_LIKE_ADD] = "INSERT OR IGNORE INTO post_like(post_id, user_id, created_ms) VALUES (?1, ?2, ?3)",
@@ -127,9 +133,10 @@ static const char *const DB_Q[Q_COUNT] = {
                   "JOIN session s ON s.user_id = m.user_id WHERE s.token_hash = ?8 AND s.expires_ms > ?9 "
                   "ORDER BY b.title LIMIT 100"),
   [Q_POSTS_MEMBER] = ("SELECT p.id, p.slug, p.title, p.published, strftime('%Y-%m-%d', p.updated_ms / 1000, 'unixepoch'), "
-                      POST_AUTHOR " FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.blog_id = ?1 AND "
+                      POST_AUTHOR ", coalesce(strftime('%Y-%m-%d', p.publish_at_ms / 1000, 'unixepoch'), '') FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.blog_id = ?1 AND "
                       MEMBER_OF("?1") " ORDER BY p.updated_ms DESC LIMIT 100"),
-  [Q_POST_MD] = ("SELECT p.body_md, p.title, p.published, b.slug, p.slug FROM post p JOIN blog b ON b.id = p.blog_id "
+  [Q_POST_MD] = ("SELECT p.body_md, p.title, p.published, b.slug, p.slug, "
+                 "coalesce(strftime('%Y-%m-%dT%H:%MZ', p.publish_at_ms / 1000, 'unixepoch'), '') FROM post p JOIN blog b ON b.id = p.blog_id "
                  "WHERE p.id = ?1 AND " MEMBER_OF("p.blog_id")),
   [Q_USER_BY_EMAIL] = "SELECT id FROM user WHERE email = ?3",
   [Q_AUTHORS] = ("SELECT u.id, u.name, u.email, m.role FROM member m JOIN user u ON u.id = m.user_id "
@@ -219,6 +226,10 @@ static const char *const DB_MIGRATIONS[] = {
   " tag TEXT NOT NULL CHECK (length(tag) BETWEEN 1 AND 32 AND tag NOT GLOB '*[^a-z0-9-]*'),"
   " UNIQUE (post_id, tag));"
   "CREATE INDEX post_tag_tag ON post_tag(tag, post_id);",
+  // v6: scheduled publishing.
+  "ALTER TABLE post ADD COLUMN publish_at_ms INTEGER;"
+  "ALTER TABLE post ADD COLUMN publish_slug TEXT;"
+  "CREATE INDEX post_due ON post(publish_at_ms) WHERE publish_at_ms IS NOT NULL;",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 
@@ -570,6 +581,21 @@ static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *
       if ((r = db_rc(db_exec(st))) != DB_OK) return r;
       return w->flag != 0u ? db_set_tags(db, w->target, w->slug) : DB_OK;
     case A_PUBLISH_POST:
+      if (w->flag == 2u) {
+        // Schedule: a draft, a time in the future; published by db_publish_due.
+        uint64_t at = (uint64_t)w->user * 60000ull;
+        if (at <= now_ms || w->slug.len > DB_RENAME_BASE_MAX) return DB_CONFLICT;
+        st = db->st[ST_SCHEDULE];
+        sqlite3_bind_int64(st, 1, w->target);
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)at);
+        bind_text(st, 3, w->slug);
+        if ((r = db_rc(db_exec(st))) != DB_OK) return r;
+        return sqlite3_changes(db->conn) == 1 ? DB_OK : DB_STALE;
+      }
+      st = db->st[ST_UNSCHEDULE];  // publishing, unpublishing or cancelling ends a schedule
+      sqlite3_bind_int64(st, 1, w->target);
+      if ((r = db_rc(db_exec(st))) != DB_OK) return r;
+      if (w->flag == 3u) return DB_OK;
       if (w->flag != 0u && (r = db_publish_rename(db, w->target, w->slug)) != DB_OK) return r;
       st = db->st[ST_POST_PUBLISH];
       sqlite3_bind_int64(st, 1, w->target);
@@ -688,6 +714,42 @@ int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
   sqlite3_reset(st);
   sqlite3_clear_bindings(st);
   return rows;
+}
+
+int32_t db_publish_due(Db *db, uint64_t now_ms) {
+  uint32_t ids[DUE_BATCH_MAX];
+  char slugs[DUE_BATCH_MAX][DB_RENAME_BASE_MAX + 1u];
+  uint32_t lens[DUE_BATCH_MAX], n = 0;
+  sqlite3_stmt *st = db->st[ST_DUE];
+  sqlite3_bind_int64(st, 1, (sqlite3_int64)now_ms);
+  int rc;
+  while (n < DUE_BATCH_MAX && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+    int len = sqlite3_column_bytes(st, 1);
+    const unsigned char *t = sqlite3_column_text(st, 1);
+    ids[n] = (uint32_t)sqlite3_column_int64(st, 0);
+    lens[n] = len > 0 && (uint32_t)len <= DB_RENAME_BASE_MAX && t != NULL ? (uint32_t)len : 0u;
+    memcpy(slugs[n], t != NULL ? (const char *)t : "", lens[n]);
+    n++;
+  }
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+  int32_t done = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return -1;
+    DbResult r = db_publish_rename(db, ids[i], (DbText){slugs[i], lens[i]});
+    if (r == DB_OK) {
+      st = db->st[ST_PUBLISH_DUE];
+      sqlite3_bind_int64(st, 1, ids[i]);
+      sqlite3_bind_int64(st, 2, (sqlite3_int64)now_ms);
+      r = db_rc(db_exec(st));
+      done += r == DB_OK && sqlite3_changes(db->conn) == 1;
+    }
+    if (r == DB_OK && db_exec(db->st[ST_COMMIT]) == SQLITE_DONE) continue;
+    fprintf(stderr, "db_publish_due: post %u: %s\n", ids[i], sqlite3_errmsg(db->conn));
+    int rb = db_exec(db->st[ST_ROLLBACK]);
+    ASSERT(rb == SQLITE_DONE);
+  }
+  return done;
 }
 
 int32_t db_comment_body(Db *db, uint32_t comment, const uint8_t token_hash[32], uint64_t now_ms,

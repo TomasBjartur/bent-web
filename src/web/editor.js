@@ -68,6 +68,17 @@ function start(ta) {
       ev.preventDefault();
       if (title && !title.value.trim()) title.value = "Untitled";
       const by = ev.submitter || null;
+      // Scheduling: the chosen local time, as minutes since 1970 (UTC).
+      if (by && by.value === "schedule") {
+        const local = form.elements.namedItem("at_local");
+        const t = local && local.value ? new Date(local.value).getTime() : NaN;
+        if (!(t > Date.now())) {
+          if (local) local.focus();
+          show("Pick a time in the future to schedule", "off");
+          return;
+        }
+        form.elements.namedItem("at").value = String(Math.floor(t / 60000));
+      }
       for (const b of form.elements) if (b.tagName === "BUTTON") b.disabled = true;
       local();
       show("Saving…", "busy");
@@ -105,6 +116,12 @@ function start(ta) {
       });
     }
   }
+  // A scheduled time, shown in the reader's own time zone.
+  for (const el of document.querySelectorAll(".scheduled time[datetime]")) {
+    const d = new Date(el.getAttribute("datetime"));
+    if (!Number.isNaN(d.getTime())) el.textContent = d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  }
+
   // Unsent text, or a title not saved yet: ask before leaving.
   window.addEventListener("beforeunload", (ev) => {
     if (leaving) return;
