@@ -63,6 +63,10 @@ def layout_top_w(+title: String, signed_in: Bool, wide: Bool) -> String:
 def layout_top(+title: String, signed_in: Bool) -> String:
   layout_top_w(title, signed_in, False{})
 
+# The post page's script (likes without a reload, live comments).
+def post_script() -> String:
+  "<script src=\"" ++ (asset("post.js") ++ "\" defer></script>")
+
 def layout_bottom() -> String:
   "</div></main></body></html>\n"
 
@@ -626,7 +630,7 @@ def closes(n: Nat) -> String:
     case 0n:
       ""
     case 1n+k:
-      "</div></div>" ++ closes(k)
+      "</details></div>" ++ closes(k)
 
 def depth_of(+s: String) -> Nat:
   U32.to_nat(num(s))
@@ -667,19 +671,41 @@ def comment_close_before(+prev: Maybe<&2, Nat>, +d: Nat) -> Nat:
     case Some{+p}:
       Nat.sub(1n+p, d)
 
+# A comment's replies: a <details>, open unless the thread is collapsed
+# (a top-level comment with replies, on a post with many comments). Live
+# comments are added into it by the page's script.
+def replies_open(collapse: Bool, +n: String) -> String:
+  match collapse:
+    case True{}:
+      "<details class=\"replies\"><summary>" ++ (plural(n, "reply", "replies") ++ "</summary>")
+    case False{}:
+      "<details class=\"replies\" open>"
+
 # Comment rows (see Q_COMMENTS): [id, depth, author id, author, date,
-# deleted, mine, parent], in thread order. Before a comment at depth d,
-# the comments it does not reply to are closed: (previous depth - d + 1)
-# of them, none for a reply to the previous one.
-def comment_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool, +prev: Maybe<&2, Nat>) -> List<&2, Seg>:
+# deleted, mine, parent, handle, replies], in thread order. Before a
+# comment at depth d, the comments it does not reply to are closed:
+# (previous depth - d + 1) of them, none for a reply to the previous one.
+# many: collapse top-level threads.
+def comment_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool, +many: Bool, +prev: Maybe<&2, Nat>) -> List<&2, Seg>:
   match rows:
     case Nil{}:
       Con{T{closes(comment_open_count(prev))}, Nil{}}
     case Con{+r, t}:
-      Con{T{closes(comment_close_before(prev, depth_of(col(r, 1n)))) ++ ("<div class=\"comment\" id=\"c" ++ (e(col(r, 0n)) ++ ("\"><div class=\"meta\">" ++ (author_link(col(r, 2n), col(r, 3n)) ++ (handle_tag(col(r, 8n)) ++ ("<span class=\"dot\"></span><a href=\"#c" ++ (e(col(r, 0n)) ++ ("\">" ++ (date(col(r, 4n)) ++ "</a></div><div class=\"cbody\">")))))))))}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{"</div><div class=\"cactions\">" ++ (reply_link(signed, col(r, 0n)) ++ (delete_comment(Bool.and(Bool.not(String.eq(col(r, 5n), "1")), Bool.or(can_mod, String.eq(col(r, 6n), "1"))), col(r, 0n)) ++ "</div><div class=\"replies\">"))}, comment_segs(t, signed, can_mod, Some{depth_of(col(r, 1n))})}}}
+      Con{T{closes(comment_close_before(prev, depth_of(col(r, 1n)))) ++ ("<div class=\"comment\" id=\"c" ++ (e(col(r, 0n)) ++ ("\" data-parent=\"" ++ (e(col(r, 7n)) ++ ("\"><div class=\"meta\">" ++ (author_link(col(r, 2n), col(r, 3n)) ++ (handle_tag(col(r, 8n)) ++ ("<span class=\"dot\"></span><a href=\"#c" ++ (e(col(r, 0n)) ++ ("\">" ++ (date(col(r, 4n)) ++ "</a></div><div class=\"cbody\">")))))))))))}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{"</div><div class=\"cactions\">" ++ (reply_link(signed, col(r, 0n)) ++ (delete_comment(Bool.and(Bool.not(String.eq(col(r, 5n), "1")), Bool.or(can_mod, String.eq(col(r, 6n), "1"))), col(r, 0n)) ++ ("</div>" ++ replies_open(Bool.and(many, Bool.and(Nat.is_eq(depth_of(col(r, 1n)), 0n), Bool.not(String.eq(col(r, 9n), "0")))), col(r, 9n)))))}, comment_segs(t, signed, can_mod, many, Some{depth_of(col(r, 1n))})}}}
 
-def comments_section(+signed: Bool, +can_mod: Bool, +pid: String, +count: String, rows: List<&2, List<&2, String>>) -> List<&2, Seg>:
-  Con{T{"<section class=\"comments\" id=\"comments\"><h2>Comments</h2>" ++ comment_form(signed, pid)}, List.append(&2, Seg, comment_segs(rows, signed, can_mod, None{}), Con{T{"</section>"}, Nil{}})}
+# New comments for the live update (Q_COMMENTS_AFTER rows, depth 0): each
+# complete, with its parent's id for the script to place it.
+def live_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool) -> List<&2, Seg>:
+  match rows:
+    case Nil{}:
+      Nil{}
+    case Con{+r, t}:
+      List.append(&2, Seg, comment_segs(Con{r, Nil{}}, signed, can_mod, False{}, None{}), live_segs(t, signed, can_mod))
+
+# The thread is in #thread; data-post and data-last let the page's script
+# ask for newer comments.
+def comments_section(+signed: Bool, +can_mod: Bool, +pid: String, +count: String, +last: String, rows: List<&2, List<&2, String>>) -> List<&2, Seg>:
+  Con{T{"<section class=\"comments\" id=\"comments\"><h2>Comments</h2>" ++ (comment_form(signed, pid) ++ ("<div id=\"thread\" data-post=\"" ++ (e(pid) ++ ("\" data-last=\"" ++ (e(last) ++ "\">")))))}, List.append(&2, Seg, comment_segs(rows, signed, can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), None{}), Con{T{"</div></section>"}, Nil{}})}
 
 # The reply page: the comment replied to (its body spliced after the first
 # text), and a form. info: [post id, author id, author, date, deleted].

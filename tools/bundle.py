@@ -23,7 +23,7 @@ print(f"bundled editor: {len(js)} bytes -> {dest}")
 # are cached forever, so any change to any asset changes every URL.
 import hashlib
 h = hashlib.sha256()
-for p in [dest, os.path.join(root, "src/web/app.css"), os.path.join(root, "src/web/passkey.js")]:
+for p in [dest, os.path.join(root, "src/web/app.css"), os.path.join(root, "src/web/passkey.js"), os.path.join(root, "src/web/post.js")]:
     h.update(open(p, "rb").read())
 ver = h.hexdigest()[:12]
 os.makedirs(os.path.join(root, "src", "gen"), exist_ok=True)

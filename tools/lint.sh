@@ -46,5 +46,20 @@ hits=$(grep -rnE '\b(strcpy|strcat|sprintf|vsprintf|gets|strtok|atoi|atol|scanf|
 hits=$(grep -rn "sqlite3_prepare\|sqlite3_exec" src | grep -v "^src/c/db_core.c:" || true)
 [ -z "$hits" ] || rule "SQL outside src/c/db_core.c: $hits"
 
+# The Bend query ids (src/db.bend q_*) must match the C enum order.
+python3 - <<'PY' || rule "query ids differ between src/c/db_core.h and src/db.bend"
+import re, sys
+h = open("src/c/db_core.h").read()
+enum = h[h.index("Q_BLOG_BY_SLUG = 0"):h.index("Q_COUNT")]
+names = re.findall(r"^\s*(Q_[A-Z_]+)", enum, re.M)
+b = open("src/db.bend").read()
+ids = dict(re.findall(r"def (q_\w+)\(\) -> U32:\n\s+(\d+)", b))
+bad = [(n, i, ids.get(n.lower())) for i, n in enumerate(names) if n.lower() in ids and int(ids[n.lower()]) != i]
+missing = [n for n in names if n.lower() not in ids]
+if bad or missing:
+    print("mismatched:", bad, "missing in db.bend:", missing)
+    sys.exit(1)
+PY
+
 [ $fail -eq 0 ] && echo "lint: ok"
 exit $fail

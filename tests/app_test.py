@@ -581,6 +581,48 @@ def run(dbpath):
     check("tag pages paginate", "?page=2" in req("GET", "/t/many")[2] and req("GET", "/t/many?page=2")[2].count('class="excerpt"') == 2)
     check("page numbers are clamped", req("GET", "/b/bob-two?page=99999")[0] == 200 and req("GET", "/b/bob-two?page=0")[0] == 200)
 
+    # Without reloads: likes answer with the button, comments with an id;
+    # /live answers new comments at once, or when one is written.
+    import threading
+    st, _, frag, head = req("POST", f"/like/{tpid}", c, {"on": "1", "frag": "1"})
+    check("like with frag: the new button, no redirect", st == 200 and 'id="social"' in frag and "<html" not in frag and 'class="like on"' in frag, (st, frag[:200]))
+    st, _, text, _ = req("POST", f"/comment/{tpid}", b, {"body": "Live one", "frag": "1"})
+    check("comment with frag: its id", st == 200 and text.strip().isdigit(), (st, text))
+    live_id = int(text.strip())
+    st, _, frag, _ = req("GET", f"/live/{tpid}?after={live_id - 1}")
+    check("live: a newer comment is answered at once", st == 200 and f'id="c{live_id}"' in frag and "Live one" in frag and "<html" not in frag, (st, frag[:300]))
+    got = {}
+    def wait():
+        got["r"] = req("GET", f"/live/{tpid}?after={live_id}")
+    th = threading.Thread(target=wait)
+    t0 = time.time()
+    th.start()
+    time.sleep(0.5)
+    st, _, text, _ = req("POST", f"/comment/{tpid}", b, {"body": "Wakes the reader", "parent": str(live_id), "frag": "1"})
+    th.join(10)
+    r = got.get("r")
+    check("live: a waiting reader is woken by a new comment", r and r[0] == 200 and "Wakes the reader" in r[2] and f'data-parent="{live_id}"' in r[2] and time.time() - t0 < 5,
+          (r and r[0], time.time() - t0))
+    st, _, _, _ = req("GET", f"/live/{qd}?after=0")
+    check("live: not for a draft (404)", st == 404, st)
+    st, _, _, _ = req("GET", f"/live/{qd}?after=0", c)
+    check("live: not for an outsider (404)", st == 404, st)
+    # Long threads collapse: over 20 comments, top-level replies start closed.
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b, {"title": "Busy"})
+    bpid2 = loc.rsplit("/", 1)[1]
+    req("POST", loc, b, {"title": "Busy", "body": "b", "action": "publish"})
+    q = sqlite3.connect(dbpath)
+    now = int(time.time() * 1000)
+    first = q.execute("INSERT INTO comment(post_id, author_id, body_md, body_html, created_ms) VALUES (?, ?, 'root', '<p>root</p>', ?)", (bpid2, c_id, now)).lastrowid
+    for i in range(25):
+        q.execute("INSERT INTO comment(post_id, parent_id, author_id, body_md, body_html, created_ms) VALUES (?, ?, ?, 'r', '<p>r</p>', ?)", (bpid2, first if i < 3 else None, c_id, now))
+    q.commit()
+    q.close()
+    _, _, body, _ = req("GET", "/b/bob-s-great-blog/busy")
+    check("long thread: top-level replies collapsed", '<details class="replies"><summary>3 replies</summary>' in body, body[body.find(f'id="c{first}"'):][:600])
+    _, _, body, _ = req("GET", "/b/bob-s-great-blog/talk")
+    check("short thread: replies open", '<details class="replies"><summary>' not in body)
+
     # Security headers everywhere.
     _, _, _, head = req("GET", "/b/alice/first")
     check("CSP present", "Content-Security-Policy: default-src 'none'" in head)

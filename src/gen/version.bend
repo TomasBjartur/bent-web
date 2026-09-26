@@ -2,4 +2,4 @@
 import Base
 
 def asset_version() -> String:
-  "e2d256e21485"
+  "384f3320318e"

@@ -147,6 +147,11 @@ def upload(+token: String, p: Authz.Permit, bytes: String) -> IO(Result<&1, &1, 
 def image(sock: Socket, key: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
   import "./effects/db.c"
 
+# Waits for a comment on post newer than after: 1 there is one (at once if
+# already so), 0 timed out, 2 too many waiting (ask again later).
+def comment_wait(post: U32, after: U32, timeout_ms: U32) -> IO(U32):
+  import "./effects/db.c"
+
 # Does name have a TXT record reading exactly expect? (A blocking lookup
 # on a helper thread; false on any failure.)
 def dns_txt_has(name: String, expect: String) -> IO(Bool):
@@ -234,6 +239,12 @@ def q_blog_domain() -> U32:
 
 def q_blog_by_domain() -> U32:
   21
+
+def q_comments_after() -> U32:
+  22
+
+def q_last_comment() -> U32:
+  23
 
 def principal.go(anon: Bool, +who: U32) -> Spec.Principal:
   match anon:

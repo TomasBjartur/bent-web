@@ -186,6 +186,32 @@ def main():
         md = sqlite3.connect(dbpath).execute("SELECT body_md FROM post_body WHERE post_id = ?", (opid,)).fetchone()[0]
         check("saved again from the editor: unchanged", md == text, repr(md))
 
+        # The post page, live: B watches the published post; A's comment
+        # appears without a reload; B's like does not reload either.
+        eb.ws.call("Page.navigate", {"url": f"{BASE}/b/team/doc"})
+        time.sleep(1.5)
+        eb.js("window.__marker = 42")
+        http("POST", f"/comment/{pid}", a, {"body": "Hello from A, live"})
+        seen = False
+        for _ in range(40):
+            time.sleep(0.2)
+            if "Hello from A, live" in (eb.js("document.getElementById('thread').innerText") or ""):
+                seen = True
+                break
+        check("comment appears live, without a reload", seen and eb.js("window.__marker") == 42)
+        eb.js("document.querySelector('#social button').click()")
+        time.sleep(1.0)
+        check("like without a reload", eb.js("window.__marker") == 42 and "♥ 1" in (eb.js("document.getElementById('social').innerText") or ""),
+              eb.js("document.getElementById('social').outerHTML"))
+        eb.js("const t = document.querySelector('#comments textarea'); t.value = 'Typed by B'; document.querySelector('#comments form.cform button').click()")
+        seen = False
+        for _ in range(40):
+            time.sleep(0.2)
+            if "Typed by B" in (eb.js("document.getElementById('thread').innerText") or ""):
+                seen = True
+                break
+        check("own comment sent without a reload and shown", seen and eb.js("window.__marker") == 42 and eb.js("document.querySelector('#comments textarea').value") == "")
+
         # An outsider can neither read nor write the document.
         st, _, _ = http("GET", f"/edit/{pid}", c)
         check("outsider: editor 404", st == 404, st)

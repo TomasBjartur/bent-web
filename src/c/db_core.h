@@ -106,13 +106,16 @@ enum {
   Q_POSTS_BY_AUTHOR,    // a=user -> as Q_RECENT_PUBLIC  (published only)
   Q_SEARCH,             // text=FTS5 query -> as Q_RECENT_PUBLIC  (published only, newest first)
   Q_POST_SOCIAL,        // a=post -> likes, liked by the session's user (0/1), comments  (published, or member)
-  Q_COMMENTS,           // a=post -> id, depth, author_id, author, date, deleted, mine (0/1), parent, handle
+  Q_COMMENTS,           // a=post -> id, depth, author_id, author, date, deleted, mine (0/1), parent, handle,
+                        //    replies (direct)
                         //    in thread order (published, or member)
   Q_COMMENT_INFO,       // a=comment -> post_id, author_id, author, date, deleted  (published, or member)
   Q_POST_TAGS,          // a=post -> tag  (published, or member)
   Q_POSTS_BY_TAG,       // text=tag -> as Q_RECENT_PUBLIC  (published only)
   Q_BLOG_DOMAIN,        // a=blog -> domain, token, verified (0/1)  (member only)
   Q_BLOG_BY_DOMAIN,     // text=host -> slug  (verified domains only)
+  Q_COMMENTS_AFTER,     // a=post, b=comment id -> as Q_COMMENTS (depth 0), newer than b, by id, at most 50
+  Q_LAST_COMMENT,       // a=post -> the newest comment's id, or 0
   Q_COUNT
 };
 

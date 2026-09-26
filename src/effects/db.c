@@ -26,6 +26,8 @@
 // (PRAGMA data_version).
 static uint64_t app_write_gen = 1;
 static void page_cache_drop(const char *k, u64 n);
+static void live_wake(uint32_t post);
+static void live_init(void);
 
 // SCHEDULED POSTS
 // ---------------
@@ -69,6 +71,7 @@ Term db_open_run(Env e, Term *f, IoWork *w) {
   free(path);
   if (r != 0) return io_fail(e, EIO, "cannot open the database");
   app_db_ready = 1;
+  live_init();
 #ifdef CID(tick)
   const char *t = getenv("BLOG_TICK_MS");
   if (t != NULL && t[0] >= '0' && t[0] <= '9') app_tick_ms = strtoull(t, NULL, 10) <= 60000ull ? strtoull(t, NULL, 10) : TICK_INTERVAL_MS;
@@ -196,6 +199,8 @@ Term apply_raw_run(Env e, Term *f, IoWork *w) {
     uint32_t id = 0;
     DbResult res = db_apply(&app_db, h, app_now_ms(), &x, &wr, &id);
     if (res == DB_OK && db_write_is_public(&x, &wr)) app_write_gen++;
+    // A new comment wakes whoever is waiting for this post's comments.
+    if (res == DB_OK && wr.kind == A_COMMENT && x.has_post) live_wake(x.post);
     // A like or comment changes only that post's page (cached for
     // signed-out visitors under "p0:<post id>").
     if (res == DB_OK && (wr.kind == A_LIKE_POST || wr.kind == A_COMMENT || wr.kind == A_DELETE_COMMENT) && x.has_post) {
@@ -306,6 +311,7 @@ static const char *page_reason(uint32_t s) {
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 409: return "Conflict";
+    case 204: return "No Content";
     case 413: return "Content Too Large";
     case 429: return "Too Many Requests";
     case 500: return "Internal Server Error";
@@ -572,6 +578,84 @@ Term image_run(Env e, Term *f, IoWork *w) {
 
 static void __attribute__((constructor)) image_use(void) {
   io_eff(CID(image), image_run, 0);
+}
+#endif
+
+// LIVE COMMENTS
+// -------------
+// comment_wait(post, after, timeout_ms): answers 1 as soon as the post has
+// a comment newer than `after` (at once if it already does), 0 at the
+// timeout, 2 at once if LIVE_MAX readers are already waiting (the page's
+// script then waits longer before asking again). A waiting request parks
+// on its own eventfd; writing a comment (apply_raw) writes to the eventfds
+// of that post's waiters. Each waiter costs an fd and a place in every
+// pass of the event loop (the runtime select()s over parked requests), so
+// the number is capped.
+#define LIVE_MAX 512u
+
+typedef struct {
+  int fd;  // -1: free
+  uint32_t post;
+} LiveWaiter;
+
+static LiveWaiter live[LIVE_MAX];
+static uint32_t live_used;
+
+static void live_init(void) {
+  for (uint32_t i = 0; i < LIVE_MAX; i++) live[i].fd = -1;
+}
+
+static void live_wake(uint32_t post) {
+  uint64_t one = 1;
+  for (uint32_t i = 0; i < LIVE_MAX && live_used > 0u; i++) {
+    if (live[i].fd >= 0 && live[i].post == post) {
+      ssize_t n = write(live[i].fd, &one, sizeof one);
+      (void)n;  // a full eventfd is already readable
+    }
+  }
+}
+
+#ifdef CID(comment_wait)
+#include <sys/eventfd.h>
+
+static Term comment_wait_more(Env e, IoWork *w) {
+  (void)e;
+  uint32_t slot = (uint32_t)w->made;
+  ASSERT(slot < LIVE_MAX && live[slot].fd >= 0);
+  uint64_t v = 0;
+  ssize_t n = read(live[slot].fd, &v, sizeof v);
+  close(live[slot].fd);
+  live[slot].fd = -1;
+  live_used--;
+  return (Term)(uint32_t)(n == (ssize_t)sizeof v && v > 0u ? 1u : 0u);
+}
+
+Term comment_wait_run(Env e, Term *f, IoWork *w) {
+  (void)e;
+  ASSERT(app_db_ready);
+  uint32_t post = (uint32_t)f[0], after = (uint32_t)f[1], timeout = (uint32_t)f[2];
+  sqlite3_stmt *st = app_db.q[Q_LAST_COMMENT];
+  sqlite3_bind_int64(st, 1, post);
+  uint32_t last = 0;
+  if (sqlite3_step(st) == SQLITE_ROW) last = (uint32_t)sqlite3_column_int64(st, 0);
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+  if (last > after) return (Term)1u;
+  if (live_used >= LIVE_MAX) return (Term)2u;
+  uint32_t slot = 0;
+  while (slot < LIVE_MAX && live[slot].fd >= 0) slot++;
+  ASSERT(slot < LIVE_MAX);
+  int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  if (fd < 0) return (Term)2u;
+  live[slot] = (LiveWaiter){fd, post};
+  live_used++;
+  w->made = (intptr_t)slot;
+  if (timeout > 60000u) timeout = 60000u;
+  return io_wait_on(w, fd, POLLIN, io_tick() + (u64)timeout * 1000000ull, comment_wait_more);
+}
+
+static void __attribute__((constructor)) comment_wait_use(void) {
+  io_eff(CID(comment_wait), comment_wait_run, 0);
 }
 #endif
 
@@ -851,7 +935,8 @@ static void __attribute__((constructor)) sync_page_use(void) {
 // ------
 // asset(sock, id): static files embedded at compile time, served as bytes
 // with immutable caching (pages link them with a ?v=<hash> query).
-// 0 the editor bundle, 1 the stylesheet, 2 the passkey script.
+// 0 the editor bundle, 1 the stylesheet, 2 the passkey script, 3 the post
+// page's script.
 
 #ifdef CID(asset)
 
@@ -864,6 +949,9 @@ static const char ASSET_CSS[] = {
 static const char ASSET_PASSKEY[] = {
 #embed "../src/web/passkey.js"
 };
+static const char ASSET_POST[] = {
+#embed "../src/web/post.js"
+};
 
 Term asset_run(Env e, Term *f, IoWork *w) {
   w->hand = (intptr_t)io_hand_v(f[0]);
@@ -874,6 +962,7 @@ Term asset_run(Env e, Term *f, IoWork *w) {
   if (id == 0u) { data = ASSET_EDITOR; len = sizeof ASSET_EDITOR; }
   else if (id == 1u) { data = ASSET_CSS; len = sizeof ASSET_CSS; type = "text/css; charset=utf-8"; }
   else if (id == 2u) { data = ASSET_PASSKEY; len = sizeof ASSET_PASSKEY; }
+  else if (id == 3u) { data = ASSET_POST; len = sizeof ASSET_POST; }
   uint32_t status = len > 0u ? 200u : 404u;
   char head[1024];
   int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s\r\n",

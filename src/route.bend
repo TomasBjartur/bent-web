@@ -44,6 +44,7 @@ type Route is Data:
   RComment{post: U32}
   RDeleteComment{comment: U32}
   RReply{comment: U32}
+  RLive{post: U32}
   RTag{tag: String}
   RUpload{post: U32}
   RImage{key: String}
@@ -118,6 +119,8 @@ def get2(k: Nat, +b: String) -> Route:
       RTag{b}
     case 8n:
       RImage{b}
+    case 9n:
+      RLive{id_of(b)}
     case _:
       RNotFound{}
 
@@ -142,7 +145,7 @@ def route_get(xs: List<&2, String>) -> Route:
         case Con{+b, u}:
           match u:
             case Nil{}:
-              get2(Nat.add(eq(a, "b"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "edit"), 3n), Nat.add(Nat.mul(eq(a, "s"), 4n), Nat.add(Nat.mul(eq(a, "u"), 5n), Nat.add(Nat.mul(eq(a, "reply"), 6n), Nat.add(Nat.mul(eq(a, "t"), 7n), Nat.mul(eq(a, "img"), 8n)))))))), b)
+              get2(Nat.add(eq(a, "b"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "edit"), 3n), Nat.add(Nat.mul(eq(a, "s"), 4n), Nat.add(Nat.mul(eq(a, "u"), 5n), Nat.add(Nat.mul(eq(a, "reply"), 6n), Nat.add(Nat.mul(eq(a, "t"), 7n), Nat.add(Nat.mul(eq(a, "img"), 8n), Nat.mul(eq(a, "live"), 9n))))))))), b)
             case Con{+c, v}:
               match v:
                 case Nil{}:

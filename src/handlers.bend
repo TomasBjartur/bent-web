@@ -219,8 +219,9 @@ def h_post4(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +n
       do IO<Unit>:
         +social : List<&2, List<&2, String>> <- Db.query(Db.q_post_social(), pid, 0, "", token)
         tags : List<&2, List<&2, String>> <- Db.query(Db.q_post_tags(), pid, 0, "", token)
+        last : List<&2, List<&2, String>> <- Db.query(Db.q_last_comment(), pid, 0, "", token)
         comments : List<&2, List<&2, String>> <- Db.query(Db.q_comments(), pid, 0, "", token)
-        h_post5(Bool.not(signed(who)), s, token, pid, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.tag_chips(tags) ++ Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), comments), Con{Pages.T{Pages.layout_bottom()}, Nil{}})}}}, ""))
+        h_post5(Bool.not(signed(who)), s, token, pid, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.tag_chips(tags) ++ Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), first_col(last, 0n), comments), Con{Pages.T{Pages.post_script() ++ Pages.layout_bottom()}, Nil{}})}}}, ""))
 
 def h_post3(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +notice: Bool, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
@@ -275,7 +276,46 @@ def h_upload(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> 
     f : Spec.Facts <- Db.facts(who, 0, pid)
     h_upload2(s, token, who, body, Authz.authorize(f, Spec.UploadImage{pid}))
 
+def h_live6(s: Socket, +token: String, +pg: Pages.Page) -> IO(Unit):
+  do IO<Unit>:
+    x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, Pages.page_texts(pg), Pages.page_bodies(pg), token, "", "")
+    done(x)
+
 # TAG PAGES (cached): /t/<tag>.
+# LIVE COMMENTS: GET /live/<post>?after=N (the page's script). Waits up to
+# 25 s for a comment newer than N, then answers the new ones as HTML, each
+# with its parent's id; 204 if none; 429 if too many are waiting. Only for
+# readers of the post (404 otherwise).
+def h_live5(k: Nat, s: Socket, +token: String, +who: U32, +pid: U32, +can_mod: Bool, +after: U32) -> IO(Unit):
+  match k:
+    case 1n:
+      do IO<Unit>:
+        rows : List<&2, List<&2, String>> <- Db.query(Db.q_comments_after(), pid, after, "", token)
+        h_live6(s, token, Pages.page_of(Pages.live_segs(rows, signed(who), can_mod), ""))
+    case 2n:
+      send_text(s, token, 429, "busy\n")
+    case _:
+      send_text(s, token, 204, "")
+
+def h_live3(s: Socket, +token: String, +who: U32, +pid: U32, +can_mod: Bool, +after: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match m:
+    case None{}:
+      send_text(s, token, 404, "not found\n")
+    case Some{p}:
+      do IO<Unit>:
+        +code : U32 <- Db.comment_wait(pid, after, 25000)
+        h_live5(U32.to_nat(code), s, token, who, pid, can_mod, after)
+
+# COLLABORATIVE EDITING
+# ---------------------
+def form_num(+xs: List<&2, Text.Field>, +key: String) -> U32:
+  Maybe.default(&2, U32, U32.read(Maybe.default(&2, String, Text.form_raw(xs, key), "")), 0)
+
+def h_live(s: Socket, +token: String, +who: U32, +pid: U32, +query: String) -> IO(Unit):
+  do IO<Unit>:
+    +f : Spec.Facts <- Db.facts(who, 0, pid)
+    h_live3(s, token, who, pid, is_some_permit(Authz.authorize(f, Spec.EditPost{pid})), form_num(form(query), "after"), Authz.authorize(f, Spec.ReadPost{pid}))
+
 # LIKES AND COMMENTS
 # ------------------
 # Each ends on the post's page (at an anchor); the post's address comes
@@ -300,27 +340,41 @@ def engage_done(s: Socket, +token: String, +who: U32, +pid: U32, +anchor: String
       (code, msg) = err
       fail(s, token, who, apply_status(code))
 
-def h_like2(s: Socket, +token: String, +who: U32, +pid: U32, +on: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+# frag (from the page's script): answer with the new like button, not a
+# redirect, so the page does not reload.
+def liked(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+  match frag:
+    case False{}:
+      engage_done(s, token, who, pid, "#social", r)
+    case True{}:
+      do IO<Unit>:
+        social : List<&2, List<&2, String>> <- Db.query(Db.q_post_social(), pid, 0, "", token)
+        send(s, token, 200, Pages.social_bar(True{}, U32.show(pid), first_row(social)))
+
+def h_like2(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +on: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
     case None{}:
       fail(s, token, who, 403)
     case Some{p}:
       do IO<Unit>:
         r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, on, Db.no_data())
-        engage_done(s, token, who, pid, "#social", r)
+        liked(frag, s, token, who, pid, r)
 
-def h_like.go(signed: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +on: U32) -> IO(Unit):
+def h_like.go(signed: Bool, frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +on: U32) -> IO(Unit):
   match signed:
     case False{}:
       redirect(s, token, "/login", "")
     case True{}:
       do IO<Unit>:
         f : Spec.Facts <- Db.facts(who, 0, pid)
-        h_like2(s, token, who, pid, on, Authz.authorize(f, Spec.LikePost{pid}))
+        h_like2(frag, s, token, who, pid, on, Authz.authorize(f, Spec.LikePost{pid}))
+
+def wants_frag(+xs: List<&2, Text.Field>) -> Bool:
+  String.eq(Maybe.default(&2, String, Text.form_raw(xs, "frag"), ""), "1")
 
 # POST /like/<post>: on=1 likes, on=0 unlikes.
 def h_like(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO(Unit):
-  h_like.go(signed(who), s, token, who, pid, Bool.to_u32(String.eq(Maybe.default(&2, String, Text.form_raw(form(body), "on"), ""), "1")))
+  h_like.go(signed(who), wants_frag(form(body)), s, token, who, pid, Bool.to_u32(String.eq(Maybe.default(&2, String, Text.form_raw(form(body), "on"), ""), "1")))
 
 def comment_fail(slow: Bool, s: Socket, +token: String, +who: U32, +code: U32) -> IO(Unit):
   match slow:
@@ -329,44 +383,48 @@ def comment_fail(slow: Bool, s: Socket, +token: String, +who: U32, +code: U32) -
     case False{}:
       fail(s, token, who, apply_status(code))
 
+def comment_ok(frag: Bool, s: Socket, +token: String, +pid: U32, +id: U32) -> IO(Unit):
+  match frag:
+    case True{}:
+      send_text(s, token, 200, U32.show(id) ++ "\n")
+    case False{}:
+      to_post(s, token, pid, "#c" ++ U32.show(id))
+
 # A new comment ends at its own anchor; too many too fast is 429.
-def comment_done(s: Socket, +token: String, +who: U32, +pid: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+# frag (from the page's script): a short text answer; the live update
+# shows the new comment.
+def comment_done(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
   match r:
     case Done{+id}:
-      to_post(s, token, pid, "#c" ++ U32.show(id))
+      comment_ok(frag, s, token, pid, id)
     case Fail{err}:
       (+code, msg) = err
       comment_fail(U32.is_eq(code, 3), s, token, who, code)
 
-def h_comment3(s: Socket, +token: String, +who: U32, +pid: U32, +parent: U32, +b: Text.Body, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+def h_comment3(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +parent: U32, +b: Text.Body, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
     case None{}:
       fail(s, token, who, 403)
     case Some{p}:
       do IO<Unit>:
         r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, parent, Db.comment_data(b))
-        comment_done(s, token, who, pid, r)
+        comment_done(frag, s, token, who, pid, r)
 
-def h_comment2(s: Socket, +token: String, +who: U32, +pid: U32, +parent: U32, m: Maybe<&2, Text.Body>) -> IO(Unit):
+def h_comment2(frag: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +parent: U32, m: Maybe<&2, Text.Body>) -> IO(Unit):
   match m:
     case None{}:
       fail(s, token, who, 400)
     case Some{+b}:
       do IO<Unit>:
         f : Spec.Facts <- Db.facts(who, 0, pid)
-        h_comment3(s, token, who, pid, parent, b, Authz.authorize(f, Spec.CommentPost{pid}))
-
-# COLLABORATIVE EDITING
-# ---------------------
-def form_num(+xs: List<&2, Text.Field>, +key: String) -> U32:
-  Maybe.default(&2, U32, U32.read(Maybe.default(&2, String, Text.form_raw(xs, key), "")), 0)
+        h_comment3(frag, s, token, who, pid, parent, b, Authz.authorize(f, Spec.CommentPost{pid}))
 
 def h_comment.go(signed: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>) -> IO(Unit):
   match signed:
     case False{}:
       redirect(s, token, "/login", "")
     case True{}:
-      h_comment2(s, token, who, pid, form_num(xs, "parent"), Text.form_comment(xs, "body"))
+      h_comment2(wants_frag(xs), s, token, who, pid, form_num(xs, "parent"), Text.form_comment(xs, "body"))
 
 # POST /comment/<post>: body, and parent (a comment id) for a reply.
 def h_comment(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO(Unit):
@@ -1082,6 +1140,8 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
       h_search(s, token, who, query)
     case Route.RReply{+id}:
       h_reply(s, token, who, id)
+    case Route.RLive{+id}:
+      h_live(s, token, who, id, query)
     case Route.RTag{+t}:
       h_tag(s, token, who, t, query)
     case Route.RImage{+k}:
@@ -1107,7 +1167,7 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
     case Route.REdit{+id}:
       h_edit(s, token, who, id)
     case Route.RStatic{+name}:
-      h_static(U32.to_nat((Bool.to_u32(String.eq(name, "editor.js")) + ((2 * Bool.to_u32(String.eq(name, "app.css"))) + (3 * Bool.to_u32(String.eq(name, "passkey.js")))) : U32)), s, token, who)
+      h_static(U32.to_nat((Bool.to_u32(String.eq(name, "editor.js")) + ((2 * Bool.to_u32(String.eq(name, "app.css"))) + ((3 * Bool.to_u32(String.eq(name, "passkey.js"))) + (4 * Bool.to_u32(String.eq(name, "post.js"))))) : U32)), s, token, who)
     case Route.RSignupPage{}:
       Auth.h_signup_page(s, token, who)
     case Route.RLoginPage{}:

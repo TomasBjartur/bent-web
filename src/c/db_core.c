@@ -197,10 +197,17 @@ static const char *const DB_Q[Q_COUNT] = {
                   "ON c.parent_id = t.id WHERE t.depth < 50 ORDER BY 3 LIMIT 300) "
                   "SELECT c.id, t.depth, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted, "
                   "EXISTS (SELECT 1 FROM session s WHERE s.user_id = c.author_id AND s.token_hash = ?8 AND s.expires_ms > ?9), "
-                  "coalesce(c.parent_id, 0), coalesce(u.handle, '') "
+                  "coalesce(c.parent_id, 0), coalesce(u.handle, ''), (SELECT count(*) FROM comment r WHERE r.parent_id = c.id) "
                   "FROM t CROSS JOIN comment c ON c.id = t.id LEFT JOIN user u ON u.id = c.author_id "
                   "WHERE EXISTS (SELECT 1 FROM post p WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")) "
                   "ORDER BY t.path LIMIT 300"),
+  [Q_COMMENTS_AFTER] = ("SELECT c.id, 0, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted, "
+                        "EXISTS (SELECT 1 FROM session s WHERE s.user_id = c.author_id AND s.token_hash = ?8 AND s.expires_ms > ?9), "
+                        "coalesce(c.parent_id, 0), coalesce(u.handle, ''), 0 "
+                        "FROM comment c LEFT JOIN user u ON u.id = c.author_id WHERE c.post_id = ?1 AND c.id > ?2 "
+                        "AND EXISTS (SELECT 1 FROM post p WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")) "
+                        "ORDER BY c.id LIMIT 50"),
+  [Q_LAST_COMMENT] = "SELECT coalesce(max(id), 0) FROM comment WHERE post_id = ?1",
   [Q_COMMENT_INFO] = ("SELECT c.post_id, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted "
                       "FROM comment c JOIN post p ON p.id = c.post_id LEFT JOIN user u ON u.id = c.author_id "
                       "WHERE c.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
