@@ -158,6 +158,14 @@ server while it was still migrating (it now waits for `/healthz`).
   was 4% slower than from the left: the first text of each run is free
   from the left, and most runs are one or two texts.
 
+### Worker processes
+
+With `BLOG_WORKERS=2` (docs/FINDINGS.md), on this 2-core VM with the load
+generator competing for the same cores (so not pinned, and indicative
+only): 1 worker 712-897 req/s, 2 workers **1109-1166 req/s**, post p50
+44 -> 27 ms, no errors. A machine with more cores (and the load generator
+elsewhere) is the real test.
+
 ## What limits it now
 
 - **Rendering through Bend Strings**: ~40% of the time is Bend building
@@ -170,8 +178,8 @@ server while it was still migrating (it now waits for `/healthz`).
 - **SQLite** (~30%): the comment thread query (a recursive CTE per post
   page) and one body lookup per comment; search (FTS5) is 2.5% of
   requests and ~8% of the time.
-- **One core.** The server has one event loop; the machine has two cores,
-  one used by the load generator (in production, one used by Caddy).
+- **Cores.** Worker processes use more than one now; this VM has two,
+  shared with the load generator (in production, with Caddy).
 - **Custom domains** redirect other paths to the main host, so live
   comments and "More comments" do not work on a custom domain yet.
 - **One thread of 300+ replies** is cut at 300 rows (the next page starts

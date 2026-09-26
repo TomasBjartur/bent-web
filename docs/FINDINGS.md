@@ -4,6 +4,62 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-26: Worker processes, and what Bend's parallelism is for
+
+**Bend's parallelism does not serve requests (measured).** Bend 2
+parallelizes *parallel calls* inside one pure computation (fork-join
+across cores, or the GPU with `!`). Request handlers are separate
+computations (`IO.spawn` per connection), and the event loop interleaves
+them: with `--threads 2` the server stays one OS thread at <=100% of a
+core and serves the same requests per second as `--threads 1`. The
+guide's "each runs its pure code (in parallel, on every core) up to its
+next effect" reads as if spawned computations ran in parallel; they do
+not (an upstream question). Parallel calls could help very large renders
+(a novel's blocks), not many small requests.
+
+**So: worker processes** (`BLOG_WORKERS`, src/effects/net.c `workers`). A
+supervisor migrates the database once, makes one listening socket and a
+shared memory mapping, forks the workers, and exits (so systemd restarts
+everything) if any worker ends. Workers accept from that one socket, so
+an idle worker takes the next connection and a stalled one takes none
+(SO_REUSEPORT would hash connections onto a stalled worker, and let a
+stray server on the same port take traffic; it is gone). On this 2-core
+VM, with the load generator on the same cores: 1 worker 712-897 req/s, 2
+workers 1109-1166 req/s, post p50 44 -> 27 ms.
+
+What has to agree across processes, and how (proved: nothing; tested:
+tests/workers_test.py, 4 workers, mutation-tested):
+- **Cached pages** stay per process; staleness is shared: the write
+  generations and a version per post (a hash slot) live in the shared
+  mapping. Breaking this (per-process counters) makes 30 of 40 reads
+  stale after an edit.
+- **Live comments**: a waiter is woken at once by its own process, and
+  looks at the post's shared comment version every 0.5 s otherwise.
+- **SQLite**: each worker has its own connection; writes serialize on
+  SQLite's lock (busy_timeout 2 s, which blocks that worker's loop while
+  it waits: writes are ~0.5 ms, saves ~6 ms).
+
+Found on the way:
+- **The runtime shares a pipe across fork.** Helper threads hand finished
+  work back through a pipe the runtime opens at startup; after a fork all
+  workers shared it, and one worker took another's finished search (a
+  pointer into the other process: "memory fault"). Each worker now opens
+  its own (runtime internals, Bend 2.0.29; a rename breaks the build).
+- **Workers raced to migrate a new database** ("duplicate column"): the
+  supervisor migrates before forking.
+- **A page could be cached as fresh after a write it missed**, already
+  with one process: the stamp was taken when the page was stored, so a
+  write landing while the page was being made (other requests run between
+  effects) was stamped as seen. Now the stamp is taken when the page is
+  found missing, before anything is read, and kept per socket.
+
+Also: every page query on the event loop now stops after 250 ms (logged;
+it answers no rows), and a query over 20 ms is logged. The stop path is
+not exercised by a test (no query is that slow); it is SQLite's progress
+handler, checked by reading.
+
+---
+
 ## 2026-09-26: Profiling: strict evaluation and appends
 
 The first profile of the server (`perf`, DWARF call stacks) under the

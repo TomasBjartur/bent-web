@@ -6,6 +6,8 @@ After=network.target
 EnvironmentFile=%h/bent/env
 ExecStart=%h/bent/server
 WorkingDirectory=%h/bent-data
+# With BLOG_WORKERS, any worker ending stops the supervisor (and so all);
+# systemd restarts the unit, and stopping it kills every process in it.
 Restart=always
 RestartSec=2
 # Sandboxing that works without root (user units).

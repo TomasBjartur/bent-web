@@ -487,6 +487,19 @@ static int32_t db_migrate(Db *db) {
   return 0;
 }
 
+static uint64_t db_mono_ns(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+
+// SQLite calls this every 1000 steps of its VM: nonzero stops the statement.
+static int db_progress(void *arg) {
+  const Db *db = arg;
+  ASSERT(db != NULL);
+  return db->deadline_ns != 0u && db_mono_ns() > db->deadline_ns;
+}
+
 int32_t db_open(Db *db, const char *path) {
   ASSERT(db != NULL && path != NULL);
   memset(db, 0, sizeof *db);
@@ -513,6 +526,8 @@ int32_t db_open(Db *db, const char *path) {
   if (sqlite3_create_function(db->conn, "handle_of_name", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, NULL,
                               db_handle_fn, NULL, NULL) != SQLITE_OK) return -1;
   if (db_migrate(db) != 0) return -1;
+  db->deadline_ns = 0;
+  sqlite3_progress_handler(db->conn, 1000, db_progress, db);
   for (uint32_t i = 0; i < ST_COUNT; i++) {
     ASSERT(DB_SQL[i] != NULL);
     if (sqlite3_prepare_v3(db->conn, DB_SQL[i], -1, SQLITE_PREPARE_PERSISTENT, &db->st[i], NULL) != SQLITE_OK) {
@@ -996,8 +1011,19 @@ static int32_t db_query_st(sqlite3_stmt *st, uint32_t a, uint32_t b, DbText text
 int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
                  const uint8_t token_hash[32], uint64_t now_ms, DbRowFn fn, void *ctx) {
   if (q >= Q_COUNT) return -1;
+  ASSERT(db->deadline_ns == 0u);
+  uint64_t t0 = db_mono_ns();
+  db->deadline_ns = t0 + (uint64_t)DB_QUERY_BUDGET_MS * 1000000ull;
   int end = 0;
-  return db_query_st(db->q[q], a, b, text, token_hash, now_ms, fn, ctx, &end);
+  int32_t n = db_query_st(db->q[q], a, b, text, token_hash, now_ms, fn, ctx, &end);
+  db->deadline_ns = 0;
+  uint64_t ms = (db_mono_ns() - t0) / 1000000ull;
+  if (end == SQLITE_INTERRUPT) {
+    fprintf(stderr, "query %u stopped after %llu ms\n", q, (unsigned long long)ms);
+    return -1;
+  }
+  if (ms >= DB_QUERY_SLOW_MS) fprintf(stderr, "slow query %u: %llu ms (%d rows)\n", q, (unsigned long long)ms, n);
+  return n;
 }
 
 // READERS: read-only connections for queries run on a helper thread (see

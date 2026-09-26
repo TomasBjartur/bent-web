@@ -163,7 +163,16 @@ typedef struct {
   sqlite3 *conn;
   sqlite3_stmt *st[ST_COUNT];
   sqlite3_stmt *q[Q_COUNT];
+  uint64_t deadline_ns;  // while db_query runs: when SQLite stops it (0: none)
 } Db;
+
+// db_query runs on the event loop: one slow query would hold every other
+// request. It is stopped after DB_QUERY_BUDGET_MS (answering -1), and one
+// slower than DB_QUERY_SLOW_MS is logged (stderr: the journal). Every query
+// is by id or by an index with a LIMIT and takes well under a millisecond;
+// search, whose cost depends on the input, runs off the loop (DbReader).
+#define DB_QUERY_BUDGET_MS 250u
+#define DB_QUERY_SLOW_MS 20u
 
 // Runs read query q. Returns the number of rows (at most DB_ROWS_MAX), or
 // -1 on error.

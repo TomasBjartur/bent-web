@@ -15,21 +15,23 @@
 // Spliced into the Bend program's C source after the runtime; includes the
 // cores by paths relative to build/.
 #include "../src/effects/app_common.h"
+#include "../src/effects/app_shared.h"
 
 // WRITE GENERATION
 // ----------------
-// Bumped by every successful apply_raw: every write that can change a
+// Moved by every successful apply_raw: every write that can change a
 // public page goes through it (src/db.bend's apply; tools/lint.sh). The
-// page cache below serves an entry only if it was stored at the current
-// generation, so a publish, unpublish, edit or delete is visible at once.
-// One process owns the database; several would need a shared counter
-// (PRAGMA data_version).
-static uint64_t app_write_gen = 1;
-// Post pages (keys "p0:<id>") are valid at app_post_gen: a write to one post
-// drops only that post's page, and only blog-wide changes (a blog's title,
-// a blog's deletion, scheduled publishing) move this.
-static uint64_t app_post_gen = 1;
-static void page_cache_drop(const char *k, u64 n);
+// page cache below serves an entry only if nothing it depends on moved
+// since, so a publish, unpublish, edit or delete is visible at once, in
+// every worker process (the counters are in app_shared.h):
+// - write_gen: feeds, search, RSS (any public write);
+// - post_gen: every post page (blog-wide writes: a blog's title or
+//   deletion, scheduled publishing);
+// - post_ver[post]: one post's page (a write to the post, its likes or
+//   comments).
+static void app_post_moved(uint32_t post) {
+  atomic_fetch_add(&app_shared->post_ver[app_post_slot(post)], 1u);
+}
 static void live_wake(uint32_t post);
 static void live_init(void);
 
@@ -53,8 +55,8 @@ Term tick_run(Env e, Term *f, IoWork *w) {
   if (now >= app_next_tick) {
     app_next_tick = now + app_tick_ms;
     if (db_publish_due(&app_db, now) > 0) {
-      app_write_gen++;
-      app_post_gen++;
+      atomic_fetch_add(&app_shared->write_gen, 1u);
+      atomic_fetch_add(&app_shared->post_gen, 1u);
     }
   }
   return term_pak(CID(Unit), 0);
@@ -212,18 +214,17 @@ Term apply_raw_run(Env e, Term *f, IoWork *w) {
                   {slug, (uint32_t)n1}, {title, (uint32_t)n2}, {md, (uint32_t)n3}, {html, (uint32_t)n4}};
     uint32_t id = 0;
     DbResult res = db_apply(&app_db, h, app_now_ms(), &x, &wr, &id);
-    if (res == DB_OK && db_write_is_public(&x, &wr)) app_write_gen++;
-    if (res == DB_OK && db_write_is_blog_wide(&wr)) app_post_gen++;
-    // A new comment wakes whoever is waiting for this post's comments.
-    if (res == DB_OK && wr.kind == A_COMMENT && x.has_post) live_wake(x.post);
+    if (res == DB_OK && db_write_is_public(&x, &wr)) atomic_fetch_add(&app_shared->write_gen, 1u);
+    if (res == DB_OK && db_write_is_blog_wide(&wr)) atomic_fetch_add(&app_shared->post_gen, 1u);
     // A like, a comment, or an edit, publication or deletion of a post
     // changes only that post's page (cached for signed-out visitors under
     // "p0:<post id>").
-    if (res == DB_OK && db_write_is_post_page(&wr) && x.has_post) {
-      char k[32];
-      int kn = snprintf(k, sizeof k, "p0:%u", x.post);
-      ASSERT(kn > 0 && (size_t)kn < sizeof k);
-      page_cache_drop(k, (u64)kn);
+    if (res == DB_OK && db_write_is_post_page(&wr) && x.has_post) app_post_moved(x.post);
+    // A new comment wakes whoever is waiting for this post's comments: in
+    // this process at once, in the others at their next look (live below).
+    if (res == DB_OK && wr.kind == A_COMMENT && x.has_post) {
+      atomic_fetch_add(&app_shared->comment_ver[app_post_slot(x.post)], 1u);
+      live_wake(x.post);
     }
     r = res == DB_OK ? io_done(e, (Term)id) : io_fail(e, (uint32_t)res, NULL);
   }
@@ -870,14 +871,19 @@ static void __attribute__((constructor)) image_use(void) {
 // timeout, 2 at once if LIVE_MAX readers are already waiting (the page's
 // script then waits longer before asking again). A waiting request parks
 // on its own eventfd; writing a comment (apply_raw) writes to the eventfds
-// of that post's waiters. Each waiter costs an fd and a place in every
-// pass of the event loop (the runtime select()s over parked requests), so
-// the number is capped.
+// of that post's waiters in this process, and moves the post's shared
+// comment version, which waiters in other worker processes look at every
+// LIVE_LOOK_MS. Each waiter costs an fd and a place in every pass of the
+// event loop (the runtime select()s over parked requests), so the number
+// is capped.
 #define LIVE_MAX 512u
+#define LIVE_LOOK_MS 500u
 
 typedef struct {
   int fd;  // -1: free
   uint32_t post;
+  uint32_t ver;  // the post's comment version when it began waiting
+  u64 end;       // io_tick() deadline
 } LiveWaiter;
 
 static LiveWaiter live[LIVE_MAX];
@@ -900,22 +906,37 @@ static void live_wake(uint32_t post) {
 #ifdef CID(comment_wait)
 #include <sys/eventfd.h>
 
+// The next wake-up: the deadline, or with other worker processes the next
+// look at the shared version, if sooner.
+static u64 live_next(const LiveWaiter *l) {
+  ASSERT(l->fd >= 0);
+  u64 look = io_tick() + (u64)LIVE_LOOK_MS * 1000000ull;
+  return app_workers > 1u && look < l->end ? look : l->end;
+}
+
 static Term comment_wait_more(Env e, IoWork *w) {
   (void)e;
   uint32_t slot = (uint32_t)w->made;
   ASSERT(slot < LIVE_MAX && live[slot].fd >= 0);
+  LiveWaiter *l = &live[slot];
   uint64_t v = 0;
-  ssize_t n = read(live[slot].fd, &v, sizeof v);
-  close(live[slot].fd);
-  live[slot].fd = -1;
+  ssize_t n = read(l->fd, &v, sizeof v);
+  int woke = n == (ssize_t)sizeof v && v > 0u;
+  int moved = atomic_load(&app_shared->comment_ver[app_post_slot(l->post)]) != l->ver;
+  if (!woke && !moved && io_tick() < l->end) return io_wait_on(w, l->fd, POLLIN, live_next(l), comment_wait_more);
+  close(l->fd);
+  l->fd = -1;
   live_used--;
-  return (Term)(uint32_t)(n == (ssize_t)sizeof v && v > 0u ? 1u : 0u);
+  return (Term)(uint32_t)(woke || moved ? 1u : 0u);
 }
 
 Term comment_wait_run(Env e, Term *f, IoWork *w) {
   (void)e;
   ASSERT(app_db_ready);
   uint32_t post = (uint32_t)f[0], after = (uint32_t)f[1], timeout = (uint32_t)f[2];
+  // Read before the database, so a comment committed after the read below
+  // moves it (and is not missed).
+  uint32_t ver = atomic_load(&app_shared->comment_ver[app_post_slot(post)]);
   sqlite3_stmt *st = app_db.q[Q_LAST_COMMENT];
   sqlite3_bind_int64(st, 1, post);
   uint32_t last = 0;
@@ -929,11 +950,11 @@ Term comment_wait_run(Env e, Term *f, IoWork *w) {
   ASSERT(slot < LIVE_MAX);
   int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
   if (fd < 0) return (Term)2u;
-  live[slot] = (LiveWaiter){fd, post};
+  if (timeout > 60000u) timeout = 60000u;
+  live[slot] = (LiveWaiter){fd, post, ver, io_tick() + (u64)timeout * 1000000ull};
   live_used++;
   w->made = (intptr_t)slot;
-  if (timeout > 60000u) timeout = 60000u;
-  return io_wait_on(w, fd, POLLIN, io_tick() + (u64)timeout * 1000000ull, comment_wait_more);
+  return io_wait_on(w, fd, POLLIN, live_next(&live[slot]), comment_wait_more);
 }
 
 static void __attribute__((constructor)) comment_wait_use(void) {
@@ -1026,9 +1047,9 @@ static void __attribute__((constructor)) dns_txt_has_use(void) {
 // with the same key. Handlers put everything a page depends on into its
 // key (the path, and whether someone is signed in: the header differs);
 // pages that depend on who is asking (drafts, Edit links, dashboards) are
-// never cached. Entries are valid only at the generation they were stored
-// at: app_write_gen for feeds, app_post_gen for post pages (which a write
-// to one post drops one by one instead).
+// never cached. An entry is valid while its stamp (PageStamp: the shared
+// write counters it depends on, read when the page was found missing)
+// still holds.
 // Direct-mapped: a key's slot is its hash; a new entry replaces the old.
 // Two direct-mapped tables: 4096 slots of at most 64 KiB (256 MiB of
 // address space) and, for long pages such as a post with hundreds of
@@ -1041,8 +1062,17 @@ static void __attribute__((constructor)) dns_txt_has_use(void) {
 #define PAGE_CACHE_BIG_BYTES (1024u * 1024u)
 _Static_assert(PAGE_CACHE_BYTES < PAGE_CACHE_BIG_BYTES, "big slots hold bigger pages");
 
+// What an entry depends on, read when the page was found missing (before
+// the handler read anything for it): valid while it still equals the
+// current stamp. Stamping at store time instead would cache a page as
+// fresh when a write landed while it was being made.
 typedef struct {
-  uint64_t gen;  // 0: empty
+  uint64_t gen;  // write_gen, or post_gen for a post page; 0: none
+  uint32_t ver;  // post_ver of the post, for a post page
+} PageStamp;
+
+typedef struct {
+  PageStamp stamp;  // gen 0: empty
   uint32_t key_len, len, ctype;
   char key[PAGE_CACHE_KEY_MAX];
 } PageCacheHead;
@@ -1067,30 +1097,45 @@ static uint32_t page_cache_hash(const char *k, u64 n) {
   return h;
 }
 
-// The generation a key's entry must have: post pages have their own.
-static uint64_t page_cache_gen(const char *k, u64 n) {
-  ASSERT(app_write_gen > 0u && app_post_gen > 0u);
-  return n > 3u && memcmp(k, "p0:", 3) == 0 ? app_post_gen : app_write_gen;
+// The current stamp for a key: a post page ("p0:<id>") depends on
+// post_gen and its post's version, anything else on write_gen.
+static PageStamp page_stamp_now(const char *k, u64 n) {
+  ASSERT(n > 0u && n <= PAGE_CACHE_KEY_MAX);
+  if (n > 3u && memcmp(k, "p0:", 3) == 0) {
+    uint32_t post = 0;
+    for (u64 i = 3; i < n && k[i] >= '0' && k[i] <= '9'; i++) post = post * 10u + (uint32_t)(k[i] - '0');
+    PageStamp s = {atomic_load(&app_shared->post_gen), atomic_load(&app_shared->post_ver[app_post_slot(post)])};
+    ASSERT(s.gen > 0u);
+    return s;
+  }
+  PageStamp s = {atomic_load(&app_shared->write_gen), 0};
+  ASSERT(s.gen > 0u);
+  return s;
 }
 
-static int page_cache_is(const PageCacheHead *h, const char *k, u64 n, uint64_t gen) {
+static int page_cache_is(const PageCacheHead *h, const char *k, u64 n, PageStamp now) {
   ASSERT(n > 0u && n <= PAGE_CACHE_KEY_MAX);
-  return h->gen == gen && h->key_len == n && memcmp(h->key, k, n) == 0;
+  return h->stamp.gen == now.gen && h->stamp.ver == now.ver && h->key_len == n && memcmp(h->key, k, n) == 0;
 }
+
+// The stamp taken when a socket's page was found missing (cached_run), for
+// its page_cache_put. Sockets are fds; one past the table is not cached.
+#define PAGE_STAMP_FDS 65536u
+static PageStamp page_stamps[PAGE_STAMP_FDS];
 
 // The entry for key (valid now), or NULL; bytes gets its body.
 static const PageCacheHead *page_cache_find(const char *k, u64 n, const char **bytes) {
   ASSERT(n > 0u && n <= PAGE_CACHE_KEY_MAX);
   uint32_t h = page_cache_hash(k, n);
-  uint64_t gen = page_cache_gen(k, n);
+  PageStamp now = page_stamp_now(k, n);
   PageCacheSlot *c = &page_cache[h % PAGE_CACHE_SLOTS];
-  if (page_cache_is(&c->h, k, n, gen)) {
+  if (page_cache_is(&c->h, k, n, now)) {
     ASSERT(c->h.len <= PAGE_CACHE_BYTES);
     *bytes = c->bytes;
     return &c->h;
   }
   PageCacheBigSlot *b = &page_cache_big[h % PAGE_CACHE_BIG_SLOTS];
-  if (page_cache_is(&b->h, k, n, gen)) {
+  if (page_cache_is(&b->h, k, n, now)) {
     ASSERT(b->h.len <= PAGE_CACHE_BIG_BYTES);
     *bytes = b->bytes;
     return &b->h;
@@ -1098,20 +1143,20 @@ static const PageCacheHead *page_cache_find(const char *k, u64 n, const char **b
   return NULL;
 }
 
-// Drops key's entry in both tables (a post's page after a write to it).
+// Drops key's entry in both tables.
 static void page_cache_drop(const char *k, u64 n) {
   if (n == 0u || n > PAGE_CACHE_KEY_MAX) return;
   uint32_t h = page_cache_hash(k, n);
   PageCacheHead *a = &page_cache[h % PAGE_CACHE_SLOTS].h;
   PageCacheHead *b = &page_cache_big[h % PAGE_CACHE_BIG_SLOTS].h;
-  if (a->key_len == n && memcmp(a->key, k, n) == 0) a->gen = 0;
-  if (b->key_len == n && memcmp(b->key, k, n) == 0) b->gen = 0;
+  if (a->key_len == n && memcmp(a->key, k, n) == 0) a->stamp.gen = 0;
+  if (b->key_len == n && memcmp(b->key, k, n) == 0) b->stamp.gen = 0;
 }
 
-// Stores body under key at its current generation, if it fits; the other
-// table's entry for the key (an older size) is dropped.
-static void page_cache_store(const char *k, u64 n, uint32_t ctype, const char *body, u64 len) {
-  if (n == 0u || n > PAGE_CACHE_KEY_MAX || len > PAGE_CACHE_BIG_BYTES) return;
+// Stores body under key with stamp, if it fits; the other table's entry
+// for the key (an older size) is dropped.
+static void page_cache_store(const char *k, u64 n, PageStamp stamp, uint32_t ctype, const char *body, u64 len) {
+  if (n == 0u || n > PAGE_CACHE_KEY_MAX || len > PAGE_CACHE_BIG_BYTES || stamp.gen == 0u) return;
   page_cache_drop(k, n);
   uint32_t h = page_cache_hash(k, n);
   PageCacheHead *head;
@@ -1130,8 +1175,8 @@ static void page_cache_store(const char *k, u64 n, uint32_t ctype, const char *b
   memcpy(dst, body, len);
   head->len = (uint32_t)len;
   head->ctype = ctype;
-  head->gen = page_cache_gen(k, n);
-  ASSERT(head->gen != 0u && head->len == len);
+  head->stamp = stamp;
+  ASSERT(head->stamp.gen != 0u && head->len == len);
 }
 
 // Sends body (200, no cookie, content type ctype) on w's socket; takes
@@ -1170,6 +1215,9 @@ Term cached_run(Env e, Term *f, IoWork *w) {
   int hit = 0;
   const char *bytes = NULL;
   const PageCacheHead *c = kn > 0u && kn <= PAGE_CACHE_KEY_MAX ? page_cache_find(key, kn, &bytes) : NULL;
+  if (w->hand >= 0 && (u64)w->hand < PAGE_STAMP_FDS) {
+    page_stamps[w->hand] = c == NULL && kn > 0u && kn <= PAGE_CACHE_KEY_MAX ? page_stamp_now(key, kn) : (PageStamp){0, 0};
+  }
   if (c != NULL) {
     ASSERT(bytes != NULL);
     PageOut body = {io_mem(malloc(c->len > 0u ? c->len : 1u)), 0, c->len > 0u ? c->len : 1u, 0};
@@ -1227,7 +1275,13 @@ Term page_cache_put_run(Env e, Term *f, IoWork *w) {
     free(body.buf);
     return io_tup(e, io_hand(w->hand), io_fail(e, 1, NULL));
   }
-  page_cache_store(key, kn, ctype, body.buf, body.len);
+  // Only with the stamp taken by this socket's cached (else not stored).
+  PageStamp stamp = {0, 0};
+  if (w->hand >= 0 && (u64)w->hand < PAGE_STAMP_FDS) {
+    stamp = page_stamps[w->hand];
+    page_stamps[w->hand] = (PageStamp){0, 0};
+  }
+  page_cache_store(key, kn, stamp, ctype, body.buf, body.len);
   free(key);
   return page_emit(e, w, ctype, &body);
 }

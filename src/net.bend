@@ -2,8 +2,15 @@
 # Strings from the network are raw bytes: one Char per byte (0..255).
 import Base
 
-# Listen on 127.0.0.1:port with SO_REUSEPORT (one process per core).
+# Listen on 127.0.0.1:port (the socket made by workers, if any).
 def listen(port: U32) -> IO(Result<&1, &1, U32 & String, Listener>):
+  import "./effects/net.c"
+
+# With BLOG_WORKERS=n (n > 1): migrates the database (at db), forks n worker
+# processes sharing the port and answers each its index; the calling
+# process supervises them and never answers (src/effects/net.c). Otherwise
+# answers 0. Must come before the database is opened.
+def workers(port: U32, db: String) -> IO(U32):
   import "./effects/net.c"
 
 # Read a request head (until CRLFCRLF), at most 8192 bytes, within

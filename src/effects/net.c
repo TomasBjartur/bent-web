@@ -15,6 +15,8 @@
 // It includes the pure core by a path relative to build/, where the
 // program's C source is generated.
 #include "../src/c/net_core.h"
+#include "../src/effects/app_common.h"
+#include "../src/effects/app_shared.h"
 
 // POOLS
 // -----
@@ -68,38 +70,148 @@ static u64 net_deadline(uint32_t timeout_ms) {
 // ------
 
 #ifdef CID(listen)
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/wait.h>
 
-// Loopback only: TLS and the public edge are Caddy's job. SO_REUSEPORT so
-// one process per core can share the port.
-Term net_listen_run(Env e, Term* f, IoWork* w) {
-  (void)w;
-  uint32_t port = (uint32_t)f[0];
-  if (port == 0u || port > 65535u) return io_fail(e, EINVAL, NULL);
+// A listening socket on 127.0.0.1:port (loopback only: TLS and the public
+// edge are Caddy's job), non-blocking. Answers the fd, or -errno. No
+// SO_REUSEPORT: worker processes share this one socket (see workers), and
+// a stray second server on the port fails to start instead of silently
+// taking part of the traffic.
+static int net_listen_fd(uint32_t port) {
+  ASSERT(port > 0u && port <= 65535u);
   int fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) return io_fail(e, (uint32_t)errno, NULL);
+  if (fd < 0) return -errno;
   int one = 1;
-  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) < 0
-    || setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof one) < 0) {
-    uint32_t code = (uint32_t)errno;
-    close(fd);
-    return io_fail(e, code, NULL);
-  }
   struct sockaddr_in at;
   memset(&at, 0, sizeof at);
   at.sin_family = AF_INET;
   at.sin_port = htons((uint16_t)port);
   at.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (bind(fd, (struct sockaddr*)&at, sizeof at) < 0 || listen(fd, 1024) < 0
-    || fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) < 0) {
-    uint32_t code = (uint32_t)errno;
+  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) < 0 || bind(fd, (struct sockaddr*)&at, sizeof at) < 0
+    || listen(fd, 1024) < 0 || fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) < 0) {
+    int code = errno;
     close(fd);
-    return io_fail(e, code, NULL);
+    return -code;
   }
+  ASSERT(fd >= 0);
+  return fd;
+}
+
+// The socket made by workers (once), else a new one.
+Term net_listen_run(Env e, Term* f, IoWork* w) {
+  (void)w;
+  uint32_t port = (uint32_t)f[0];
+  if (port == 0u || port > 65535u) return io_fail(e, EINVAL, NULL);
+  int fd = app_listen_fd >= 0 ? app_listen_fd : net_listen_fd(port);
+  app_listen_fd = -1;
+  if (fd < 0) return io_fail(e, (uint32_t)-fd, NULL);
   return io_done(e, io_hand(fd));
 }
 
 static void __attribute__((constructor)) net_listen_use(void) {
   io_eff(CID(listen), net_listen_run, 0);
+}
+
+// WORKERS
+// -------
+// workers(port, db): with BLOG_WORKERS=n (2..APP_WORKERS_MAX), migrates the
+// database once (opened and closed again: workers racing to migrate a new
+// file collided), makes the shared state (app_shared.h) and the listening
+// socket, then forks n workers and
+// answers each its index; this process stays behind as their supervisor
+// and never answers: when any worker ends, it stops the others and exits
+// (non-zero), and systemd restarts the service. A worker ends with its
+// supervisor (PR_SET_PDEATHSIG). Must run first, before the database is
+// opened or any thread exists (neither survives a fork). With one worker,
+// answers 0 and nothing changes.
+//
+// All workers accept from one socket: a connection goes to whichever is
+// free, so one stalled by a slow request takes no new ones.
+static void net_supervise(const pid_t* kids, uint32_t n) {
+  ASSERT(n >= 2u && n <= APP_WORKERS_MAX);
+  int status = 0;
+  pid_t gone = -1;
+  for (;;) {  // until a worker ends: the supervisor has nothing else to do
+    gone = waitpid(-1, &status, 0);
+    if (gone > 0 || errno != EINTR) break;
+  }
+  for (uint32_t i = 0; i < n; i++) {
+    if (kids[i] != gone) kill(kids[i], SIGTERM);
+  }
+  fprintf(stderr, "worker %d ended (status %d): stopping\n", (int)gone, status);
+  exit(1);
+}
+
+// The runtime's helper threads hand finished work (io_work) back to the
+// event loop through a pipe it opens at startup (io_wake_fd, Bend 2.0.29
+// runtime internals: a rename breaks this build, loudly). After a fork
+// every worker would share it, and one could take another's finished work
+// (a pointer into the other's memory: it crashed). Each worker opens its
+// own before any helper thread exists.
+static void net_own_wake_pipe(void) {
+  close(io_wake_fd[0]);
+  close(io_wake_fd[1]);
+  if (pipe(io_wake_fd) != 0 || fcntl(io_wake_fd[0], F_SETFL, O_NONBLOCK) != 0) {
+    perror("workers: wake pipe");
+    _exit(1);
+  }
+  ASSERT(io_wake_fd[0] >= 0 && io_wake_fd[1] >= 0);
+}
+
+Term net_workers_run(Env e, Term* f, IoWork* w) {
+  (void)w;
+  uint32_t port = (uint32_t)f[0];
+  const char* v = getenv("BLOG_WORKERS");
+  uint32_t n = v != NULL && v[0] >= '1' && v[0] <= '9' ? (uint32_t)strtoul(v, NULL, 10) : 1u;
+  if (n <= 1u || port == 0u || port > 65535u) return (Term)0u;
+  if (n > APP_WORKERS_MAX) n = APP_WORKERS_MAX;
+  u64 pn = 0;
+  char* path = io_cstr(e, f[1], &pn);
+  Db once;
+  int32_t migrated = db_open(&once, path);
+  if (migrated == 0) db_close(&once);
+  free(path);
+  if (migrated != 0) {
+    fprintf(stderr, "workers: cannot open the database\n");
+    exit(1);
+  }
+  AppShared* sh = mmap(NULL, sizeof *sh, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  int fd = net_listen_fd(port);
+  if (sh == MAP_FAILED || fd < 0) {
+    fprintf(stderr, "workers: cannot start (%s)\n", sh == MAP_FAILED ? "shared memory" : strerror(-fd));
+    exit(1);
+  }
+  atomic_store(&sh->write_gen, 1u);
+  atomic_store(&sh->post_gen, 1u);
+  app_shared = sh;
+  app_listen_fd = fd;
+  app_workers = n;
+  pid_t me = getpid();
+  pid_t kids[APP_WORKERS_MAX];
+  for (uint32_t i = 0; i < n; i++) {
+    pid_t k = fork();
+    if (k < 0) {
+      perror("workers: fork");
+      for (uint32_t j = 0; j < i; j++) kill(kids[j], SIGTERM);
+      exit(1);
+    }
+    if (k == 0) {
+      if (prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 || getppid() != me) _exit(1);
+      net_own_wake_pipe();
+      return (Term)i;
+    }
+    kids[i] = k;
+  }
+  close(fd);
+  net_supervise(kids, n);
+  return (Term)0u;  // not reached
+}
+
+static void __attribute__((constructor)) net_workers_use(void) {
+  io_eff(CID(workers), net_workers_run, 0);
 }
 
 #endif

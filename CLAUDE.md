@@ -142,8 +142,11 @@ result.
 - Numbers: Nat up to 2^48, U32, F32. No U64. F32 has no proofs.
 - No TLS, HTTP, JSON or regex libraries.
 - Handle types must come from Base (a SQLite handle reuses an existing one).
-- One event loop per process; `TCP.listen` has no `SO_REUSEPORT`.
-  Blocking C work goes through `io_work` (costly handoff; short reads inline).
+- One event loop per process; spawned computations (one per request) are
+  interleaved on it, not run in parallel (measured): Bend's parallel calls
+  only split one pure computation. We run worker processes instead
+  (`BLOG_WORKERS`, src/effects/net.c). Blocking C work goes through
+  `io_work` (helper threads; each worker opens its own wake pipe).
 - No bytes type: TCP effects take and return `String`.
 - No tactics or proof search: proofs are written by hand.
 - The compiler is young and not fully audited. Report bugs upstream.
@@ -180,8 +183,11 @@ result.
   tags, scheduled posts, image uploads, custom domains (DNS-verified).
 - Load test with 100k posts and mixed traffic: `docs/LOAD.md`
   (`tests/load/`).
-- Next: multi-process serving (sharding decision), novel-length documents
-  (blocks), deterministic simulation, red team.
+- Perf rounds (docs/LOAD.md): profiled; ~1.1 ms CPU per request; comment
+  pages; search off the event loop; worker processes (`BLOG_WORKERS`,
+  2 in production).
+- Next: novel-length documents (blocks), deterministic simulation, red
+  team; sharding only if one machine is not enough.
 
 ## Checks (run all before committing)
 
@@ -198,6 +204,9 @@ result.
 - `node tests/fugue_diff.mjs 300 <seed>` (browser CRDT vs the Bend
   reference `build/crdt_ref`, built with `bend tests/crdt_ref.bend -o build/crdt_ref`)
 - with a server running: `tests/server_test.py`, `tests/fuzz_server.py`
+- `python3 tests/workers_test.py` (4 worker processes: shared cache
+  staleness, live comments, supervision); also run `app_test` and
+  `collab_test` with `BLOG_WORKERS=2`
 - load (optional, ~15 min): `tests/load/make_data.py DB` once, then
   `tests/load/run.py DB`
 - `spike/` holds throwaway measurement code (not C_STYLE-compliant).
