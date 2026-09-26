@@ -164,6 +164,14 @@ h2 { font-size: 1.35rem; margin: 40px 0 12px; }
 .body pre code { background: none; padding: 0; font-size: 0.88em; }
 .article footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 
+/* TAGS */
+
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 32px; }
+a.tag { font-size: 0.85rem; padding: 4px 10px; border-radius: 999px; background: var(--code-bg); color: var(--muted); text-decoration: none; }
+a.tag:hover { color: var(--fg); }
+.write input.tags { border: 0; border-bottom: 1px dashed var(--line); border-radius: 0; background: transparent; padding: 6px 0; margin-top: 10px; font-size: 0.95rem; color: var(--muted); box-shadow: none; }
+.write input.tags:focus { border-bottom-color: var(--accent); color: var(--fg); }
+
 /* LIKES AND COMMENTS */
 
 .social { display: flex; gap: 8px; align-items: center; margin: 40px 0 0; }

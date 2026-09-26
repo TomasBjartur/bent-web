@@ -66,6 +66,8 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_CRED_NEW] = "INSERT INTO credential(id, user_id, x, y, sign_count, created_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
   [ST_CRED_COUNT] = ("UPDATE credential SET sign_count = ?2 WHERE id = ?1 AND "
                      "(sign_count < ?2 OR (sign_count = 0 AND ?2 = 0))"),
+  [ST_TAGS_CLEAR] = "DELETE FROM post_tag WHERE post_id = ?1",
+  [ST_TAG_ADD] = "INSERT OR IGNORE INTO post_tag(post_id, tag) VALUES (?1, ?2)",
   [ST_LIKE_ADD] = "INSERT OR IGNORE INTO post_like(post_id, user_id, created_ms) VALUES (?1, ?2, ?3)",
   [ST_LIKE_DEL] = "DELETE FROM post_like WHERE post_id = ?1 AND user_id = ?2",
   [ST_COMMENT_RECENT] = "SELECT count(*) FROM comment WHERE author_id = ?1 AND created_ms > ?2",
@@ -165,6 +167,10 @@ static const char *const DB_Q[Q_COUNT] = {
   [Q_COMMENT_INFO] = ("SELECT c.post_id, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted "
                       "FROM comment c JOIN post p ON p.id = c.post_id LEFT JOIN user u ON u.id = c.author_id "
                       "WHERE c.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
+  [Q_POST_TAGS] = ("SELECT t.tag FROM post_tag t JOIN post p ON p.id = t.post_id WHERE t.post_id = ?1 "
+                   "AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ") ORDER BY t.rowid LIMIT 5"),
+  [Q_POSTS_BY_TAG] = ("SELECT " FEED_COLS " FROM post_tag t JOIN post p ON p.id = t.post_id JOIN blog b ON b.id = p.blog_id "
+                      "WHERE t.tag = ?3 AND p.published = 1 ORDER BY p.published_ms DESC LIMIT 100"),
   [Q_POSTS_BY_AUTHOR] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id "
                          "WHERE p.author_id = ?1 AND p.published = 1 ORDER BY p.published_ms DESC LIMIT 100"),
 };
@@ -208,6 +214,11 @@ static const char *const DB_MIGRATIONS[] = {
   "CREATE INDEX comment_post ON comment(post_id, parent_id);"
   "CREATE INDEX comment_parent ON comment(parent_id);"
   "CREATE INDEX comment_author_time ON comment(author_id, created_ms);",
+  // v5: tags (in the order given; rowid keeps it).
+  "CREATE TABLE post_tag (post_id INTEGER NOT NULL REFERENCES post(id) ON DELETE CASCADE,"
+  " tag TEXT NOT NULL CHECK (length(tag) BETWEEN 1 AND 32 AND tag NOT GLOB '*[^a-z0-9-]*'),"
+  " UNIQUE (post_id, tag));"
+  "CREATE INDEX post_tag_tag ON post_tag(tag, post_id);",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 
@@ -474,6 +485,33 @@ static DbResult db_publish_rename(Db *db, uint32_t post, DbText slug) {
   return DB_OK;
 }
 
+// Replaces a post's tags with those in tags ("a,b,c"; "" for none). Each
+// must be 1..TAG_BYTES_MAX of a-z 0-9 '-' and there may be at most
+// TAGS_MAX, else DB_DENIED (Bend's Text.tags_of never makes such a list).
+static DbResult db_set_tags(Db *db, uint32_t post, DbText tags) {
+  sqlite3_stmt *st = db->st[ST_TAGS_CLEAR];
+  sqlite3_bind_int64(st, 1, post);
+  DbResult r = db_rc(db_exec(st));
+  if (r != DB_OK) return r;
+  uint32_t start = 0, count = 0;
+  for (uint32_t i = 0; i <= tags.len && tags.len > 0u; i++) {
+    if (i < tags.len && tags.ptr[i] != ',') {
+      char ch = tags.ptr[i];
+      int ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+      if (!ok) return DB_DENIED;
+      continue;
+    }
+    uint32_t n = i - start;
+    if (n == 0u || n > TAG_BYTES_MAX || ++count > TAGS_MAX) return DB_DENIED;
+    st = db->st[ST_TAG_ADD];
+    sqlite3_bind_int64(st, 1, post);
+    sqlite3_bind_text(st, 2, tags.ptr + start, (int)n, SQLITE_STATIC);
+    if ((r = db_rc(db_exec(st))) != DB_OK) return r;
+    start = i + 1u;
+  }
+  return DB_OK;
+}
+
 // Performs the write. Called inside the transaction after the checks.
 static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *w, uint32_t *new_id) {
   sqlite3_stmt *st;
@@ -529,7 +567,8 @@ static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *
       bind_text(st, 3, w->body_md);
       bind_text(st, 4, w->body_html);
       sqlite3_bind_int64(st, 5, (sqlite3_int64)now_ms);
-      return db_rc(db_exec(st));
+      if ((r = db_rc(db_exec(st))) != DB_OK) return r;
+      return w->flag != 0u ? db_set_tags(db, w->target, w->slug) : DB_OK;
     case A_PUBLISH_POST:
       if (w->flag != 0u && (r = db_publish_rename(db, w->target, w->slug)) != DB_OK) return r;
       st = db->st[ST_POST_PUBLISH];

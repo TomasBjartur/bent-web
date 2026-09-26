@@ -229,8 +229,9 @@ def h_post4(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +n
     case Con{+r, t}:
       do IO<Unit>:
         +social : List<&2, List<&2, String>> <- Db.query(Db.q_post_social(), pid, 0, "", token)
+        tags : List<&2, List<&2, String>> <- Db.query(Db.q_post_tags(), pid, 0, "", token)
         comments : List<&2, List<&2, String>> <- Db.query(Db.q_comments(), pid, 0, "", token)
-        h_post5(s, token, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), comments), Con{Pages.T{Pages.layout_bottom()}, Nil{}})}}}, ""))
+        h_post5(s, token, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.tag_chips(tags) ++ Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), comments), Con{Pages.T{Pages.layout_bottom()}, Nil{}})}}}, ""))
 
 def h_post3(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +notice: Bool, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
@@ -245,6 +246,17 @@ def h_post2(s: Socket, +token: String, +who: U32, +pid: U32, +notice: Bool) -> I
   do IO<Unit>:
     +f : Spec.Facts <- Db.facts(who, 0, pid)
     h_post3(s, token, who, pid, is_some_permit(Authz.authorize(f, Spec.EditPost{pid})), notice, Authz.authorize(f, Spec.ReadPost{pid}))
+
+# TAG PAGES (cached): /t/<tag>.
+def h_tag2(s: Socket, +token: String, +who: U32, +tag: String) -> IO(Unit):
+  do IO<Unit>:
+    rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_tag(), 0, 0, tag, token)
+    cache_send(s, cache_key("t", who, tag), Pages.layout("#" ++ tag, signed(who), Pages.tag_page(tag, rows)))
+
+def h_tag(s: Socket, +token: String, +who: U32, +tag: String) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("t", who, tag))
+    cached_or(r, s2 => h_tag2(s2, token, who, tag))
 
 # LIKES AND COMMENTS
 # ------------------
@@ -456,7 +468,8 @@ def h_edit3(s: Socket, +token: String, +who: U32, +pid: U32, +rows: List<&2, Lis
     case Con{+r, t}:
       do IO<Unit>:
         +rh : String <- Auth.random_hex(4)
-        send(s, token, 200, Pages.edit_page(U32.show(pid), U32.show(rep_of(rh)), r))
+        tags : List<&2, List<&2, String>> <- Db.query(Db.q_post_tags(), pid, 0, "", token)
+        send(s, token, 200, Pages.edit_page(U32.show(pid), U32.show(rep_of(rh)), r, Pages.tag_list(tags)))
 
 def h_edit2(s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
@@ -684,21 +697,36 @@ def h_save3(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, r: R
     case False{}:
       write_done(s, token, who, "/edit/" ++ U32.show(pid), r)
 
-def h_save.run(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>, d: Db.WData) -> IO(Unit):
+def h_save.run(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>, +flag: U32, d: Db.WData) -> IO(Unit):
   match m:
     case None{}:
       fail(s, token, who, 403)
     case Some{p}:
       do IO<Unit>:
-        r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, 0, d)
+        r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, flag, d)
         h_save3(publish, s, token, who, pid, r)
 
-def h_save2(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, title: Maybe<&2, Text.Title>, body: Maybe<&2, Text.Body>) -> IO(Unit):
+# With a tags field, the save also sets the post's tags (flag 1).
+def save_flag(+tags: Maybe<&2, String>) -> U32:
+  match tags:
+    case None{}:
+      0
+    case Some{t}:
+      1
+
+def save_data(ti: Text.Title, +bo: Text.Body, +tags: Maybe<&2, String>) -> Db.WData:
+  match tags:
+    case None{}:
+      Db.post_data(ti, bo)
+    case Some{+t}:
+      Db.post_tags_data(ti, bo, Text.tags_of(t))
+
+def h_save2(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, title: Maybe<&2, Text.Title>, body: Maybe<&2, Text.Body>, +tags: Maybe<&2, String>) -> IO(Unit):
   match title body:
     case Some{ti} Some{+bo}:
       do IO<Unit>:
         f : Spec.Facts <- Db.facts(who, 0, pid)
-        h_save.run(publish, s, token, who, pid, Authz.authorize(f, Spec.EditPost{pid}), Db.post_data(ti, bo))
+        h_save.run(publish, s, token, who, pid, Authz.authorize(f, Spec.EditPost{pid}), save_flag(tags), save_data(ti, bo, tags))
     case _ _:
       fail(s, token, who, 400)
 
@@ -715,9 +743,9 @@ def wants_publish(+xs: List<&2, Text.Field>) -> Bool:
 def h_save.pick(none: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>, +wire: String) -> IO(Unit):
   match none:
     case True{}:
-      h_save2(wants_publish(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.form_body(xs, "body"))
+      h_save2(wants_publish(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.form_body(xs, "body"), Text.decode_of(Text.form_get(xs, "tags")))
     case False{}:
-      h_save2(wants_publish(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.body_of(Some{ops_text(Crdt.decode(wire))}))
+      h_save2(wants_publish(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.body_of(Some{ops_text(Crdt.decode(wire))}), Text.decode_of(Text.form_get(xs, "tags")))
 
 def h_save.go(s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>) -> IO(Unit):
   do IO<Unit>:
@@ -833,6 +861,8 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
       h_search(s, token, who, query)
     case Route.RReply{+id}:
       h_reply(s, token, who, id)
+    case Route.RTag{+t}:
+      h_tag(s, token, who, t)
     case Route.RBlogFeed{+b}:
       h_blog_feed(s, token, origin, b)
     case Route.RHome{}:

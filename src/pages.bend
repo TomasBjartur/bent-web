@@ -370,11 +370,40 @@ def unpublish(published: Bool, +id: String) -> String:
     case False{}:
       ""
 
+# Tag rows as the editor's field text: "a, b, c".
+def tag_list(rows: List<&2, List<&2, String>>) -> String:
+  match rows:
+    case Nil{}:
+      ""
+    case Con{r, t}:
+      match t:
+        case Nil{}:
+          col(r, 0n)
+        case Con{r2, t2}:
+          col(r, 0n) ++ (", " ++ tag_list(Con{r2, t2}))
+
+def tag_chip_items(rows: List<&2, List<&2, String>>) -> String:
+  match rows:
+    case Nil{}:
+      ""
+    case Con{+r, t}:
+      "<a class=\"tag\" href=\"/t/" ++ (e(col(r, 0n)) ++ ("\">#" ++ (e(col(r, 0n)) ++ ("</a>" ++ tag_chip_items(t)))))
+
+def tag_chips(rows: List<&2, List<&2, String>>) -> String:
+  match rows:
+    case Nil{}:
+      ""
+    case Con{r, t}:
+      "<div class=\"tags\">" ++ (tag_chip_items(Con{r, t}) ++ "</div>")
+
+def tag_page(+tag: String, rows: List<&2, List<&2, String>>) -> String:
+  "<header class=\"masthead\"><h1>#" ++ (e(tag) ++ ("</h1><p class=\"muted\">Posts tagged " ++ (e(tag) ++ ("</p></header>" ++ feed_or_empty(rows, "No posts with this tag yet.")))))
+
 # md: [body markdown, title, published, blog slug, post slug]. The HTML
 # parser drops one newline right after <textarea>, so one is put there for
 # it to drop: a text that starts with a newline keeps it.
-def edit_page(+id: String, +rep: String, +md: List<&2, String>) -> String:
-  head("Editing: " ++ col(md, 1n)) ++ ("<header class=\"editor-bar\"><div class=\"wrap wide\"><a class=\"btn quiet\" href=\"/dash/" ++ (e(col(md, 3n)) ++ ("\" aria-label=\"Back to the blog\">←</a><span id=\"sync-status\" class=\"status\" role=\"status\">Saved</span>" ++ (preview_link(String.eq(col(md, 2n), "1"), col(md, 3n), col(md, 4n)) ++ (unpublish(String.eq(col(md, 2n), "1"), id) ++ (publish_buttons(String.eq(col(md, 2n), "1")) ++ ("</div></header><main id=\"main\"><form id=\"post-form\" method=\"post\" action=\"/edit/" ++ (e(id) ++ ("\" class=\"wrap write editor\"><textarea class=\"title\" name=\"title\" rows=\"1\" required maxlength=\"200\" placeholder=\"Title\" aria-label=\"Title\">&#10;" ++ (e(col(md, 1n)) ++ ("</textarea><textarea id=\"editor\" class=\"text\" name=\"body\" placeholder=\"Tell your story…\" aria-label=\"Text\" data-published=\"" ++ (e(col(md, 2n)) ++ ("\" data-post=\"" ++ (e(id) ++ ("\" data-rep=\"" ++ (e(rep) ++ ("\">&#10;" ++ (e(col(md, 0n)) ++ ("</textarea><p class=\"help\">Markdown: <code>## Heading</code> <code>**bold**</code> <code>*italic*</code> <code>[link](https://…)</code> <code>- list</code> <code>&gt; quote</code>. Your text syncs as you type; Ctrl+S or ⌘S renders it.</p></form><div class=\"wrap danger-zone\"><form method=\"post\" action=\"/edit/" ++ (e(id) ++ ("/delete\" data-confirm=\"Delete this post? This cannot be undone.\"><button class=\"danger\">Delete post</button></form></div></main><script type=\"module\" src=\"" ++ (asset("editor.js") ++ "\"></script></body></html>\n"))))))))))))))))))))))
+def edit_page(+id: String, +rep: String, +md: List<&2, String>, +tags: String) -> String:
+  head("Editing: " ++ col(md, 1n)) ++ ("<header class=\"editor-bar\"><div class=\"wrap wide\"><a class=\"btn quiet\" href=\"/dash/" ++ (e(col(md, 3n)) ++ ("\" aria-label=\"Back to the blog\">←</a><span id=\"sync-status\" class=\"status\" role=\"status\">Saved</span>" ++ (preview_link(String.eq(col(md, 2n), "1"), col(md, 3n), col(md, 4n)) ++ (unpublish(String.eq(col(md, 2n), "1"), id) ++ (publish_buttons(String.eq(col(md, 2n), "1")) ++ ("</div></header><main id=\"main\"><form id=\"post-form\" method=\"post\" action=\"/edit/" ++ (e(id) ++ ("\" class=\"wrap write editor\"><textarea class=\"title\" name=\"title\" rows=\"1\" required maxlength=\"200\" placeholder=\"Title\" aria-label=\"Title\">&#10;" ++ (e(col(md, 1n)) ++ ("</textarea><input class=\"tags\" name=\"tags\" maxlength=\"300\" placeholder=\"Tags, separated by commas\" aria-label=\"Tags\" value=\"" ++ (e(tags) ++ ("\"><textarea id=\"editor\" class=\"text\" name=\"body\" placeholder=\"Tell your story…\" aria-label=\"Text\" data-published=\"" ++ (e(col(md, 2n)) ++ ("\" data-post=\"" ++ (e(id) ++ ("\" data-rep=\"" ++ (e(rep) ++ ("\">&#10;" ++ (e(col(md, 0n)) ++ ("</textarea><p class=\"help\">Markdown: <code>## Heading</code> <code>**bold**</code> <code>*italic*</code> <code>[link](https://…)</code> <code>- list</code> <code>&gt; quote</code>. Your text syncs as you type; Ctrl+S or ⌘S renders it.</p></form><div class=\"wrap danger-zone\"><form method=\"post\" action=\"/edit/" ++ (e(id) ++ ("/delete\" data-confirm=\"Delete this post? This cannot be undone.\"><button class=\"danger\">Delete post</button></form></div></main><script type=\"module\" src=\"" ++ (asset("editor.js") ++ "\"></script></body></html>\n"))))))))))))))))))))))))
 
 # AUTHOR PAGE
 # -----------

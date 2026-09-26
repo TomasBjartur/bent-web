@@ -411,6 +411,24 @@ def run(dbpath):
     codes = [req("POST", f"/comment/{tpid}", c, {"body": f"spam {i}"})[0] for i in range(6)]
     check("comment rate limit: 429", 429 in codes and codes.count(303) <= 4, codes)
 
+    # Tags: normalized on save, shown on the post, a page per tag.
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b, {"title": "Tagged"})
+    tgid = loc.rsplit("/", 1)[1]
+    req("POST", loc, b, {"title": "Tagged", "body": "t", "tags": "Machine Learning, rust, Rust, <b>x</b>", "action": "publish"})
+    _, _, body, _ = req("GET", "/b/bob-s-great-blog/tagged")
+    check("tags on the post", 'href="/t/machine-learning">#machine-learning' in body and 'href="/t/rust"' in body and 'href="/t/b-x-b"' in body, body[body.find('class="tags"'):][:400])
+    check("tag page lists the post", "Tagged" in req("GET", "/t/rust")[2])
+    check("unknown tag: empty page", "No posts with this tag" in req("GET", "/t/nothing-here")[2])
+    _, _, body, _ = req("GET", f"/edit/{tgid}", b)
+    check("editor shows the tags", 'value="machine-learning, rust, b-x-b"' in body, body[body.find('name="tags"'):][:200])
+    req("POST", f"/edit/{tgid}", b, {"title": "Tagged", "body": "t", "tags": "", "action": "publish"})
+    check("tags cleared, tag page fresh", "Tagged" not in req("GET", "/t/rust")[2])
+    req("POST", f"/edit/{tgid}", b, {"title": "Tagged", "body": "t2", "action": "publish"})
+    check("a save without a tags field keeps tags as they are", "Tagged" not in req("GET", "/t/rust")[2])
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b, {"title": "Draft tagged"})
+    req("POST", loc, b, {"title": "Draft tagged", "body": "t", "tags": "rust"})
+    check("drafts never on tag pages", "Draft tagged" not in req("GET", "/t/rust")[2])
+
     # Security headers everywhere.
     _, _, _, head = req("GET", "/b/alice/first")
     check("CSP present", "Content-Security-Policy: default-src 'none'" in head)

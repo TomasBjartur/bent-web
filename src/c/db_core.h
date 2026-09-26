@@ -69,7 +69,8 @@ typedef struct {
   uint32_t user;     // A_ADD_AUTHOR, A_REMOVE_AUTHOR
   uint32_t flag;     // A_PUBLISH_POST: 1 publish, 0 unpublish
   DbText slug;       // A_CREATE_BLOG, A_CREATE_POST; A_PUBLISH_POST: the address
-                     // for a never-published draft (see db_publish_rename)
+                     // for a never-published draft (see db_publish_rename);
+                     // A_EDIT_POST with flag 1: the tags, "a,b,c" (see db_set_tags)
   DbText title;      // A_CREATE_BLOG, A_EDIT_BLOG, A_CREATE_POST, A_EDIT_POST
   DbText body_md;    // A_EDIT_POST
   DbText body_html;  // A_EDIT_POST
@@ -102,6 +103,8 @@ enum {
   Q_COMMENTS,           // a=post -> id, depth, author_id, author, date, deleted, mine (0/1), parent
                         //    in thread order (published, or member)
   Q_COMMENT_INFO,       // a=comment -> post_id, author_id, author, date, deleted  (published, or member)
+  Q_POST_TAGS,          // a=post -> tag  (published, or member)
+  Q_POSTS_BY_TAG,       // text=tag -> as Q_RECENT_PUBLIC  (published only)
   Q_COUNT
 };
 
@@ -112,6 +115,10 @@ enum {
 #define COMMENT_RATE_MAX 5u
 #define COMMENT_RATE_WINDOW_MS 60000ull
 #define POST_COMMENTS_MAX 5000u
+
+// TAGS: at most TAGS_MAX per post, each 1..TAG_BYTES_MAX of a-z 0-9 '-'.
+#define TAGS_MAX 5u
+#define TAG_BYTES_MAX 32u
 #define DB_COLS_MAX 10u
 
 // Called once per row; cols[i] is UTF-8 text of length lens[i].
@@ -127,7 +134,7 @@ enum {
   ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
   ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
   ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT, ST_SLUG_TAKEN, ST_POST_RENAME,
-  ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
+  ST_TAGS_CLEAR, ST_TAG_ADD, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
   ST_COUNT
 };
 

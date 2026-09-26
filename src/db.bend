@@ -128,6 +128,12 @@ def q_comments() -> U32:
 def q_comment_info() -> U32:
   17
 
+def q_post_tags() -> U32:
+  18
+
+def q_posts_by_tag() -> U32:
+  19
+
 def principal.go(anon: Bool, +who: U32) -> Spec.Principal:
   match anon:
     case True{}:
@@ -230,6 +236,11 @@ def comment_body(+id: U32) -> U32:
 def post_data(t: Text.Title, +b: Text.Body) -> WData:
   WData{"", Text.Title.text(t), Text.Body.text(b), Some{Md.render_body(b)}}
 
+# A save that also sets the tags (apply's flag 1): "a,b,c" from
+# Text.tags_of.
+def post_tags_data(t: Text.Title, +b: Text.Body, +tags: String) -> WData:
+  WData{tags, Text.Title.text(t), Text.Body.text(b), Some{Md.render_body(b)}}
+
 def html_of(m: Maybe<&2, Md.Rendered>) -> String:
   match m:
     case None{}:
@@ -252,7 +263,7 @@ def act_of(a: Spec.Action, +flag: U32) -> Act:
     case Spec.CreatePost{b}:
       Act{5, b, 0, 0}
     case Spec.EditPost{p}:
-      Act{6, p, 0, 0}
+      Act{6, p, 0, flag}
     case Spec.PublishPost{p}:
       Act{7, p, 0, flag}
     case Spec.DeletePost{p}:

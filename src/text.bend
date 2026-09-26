@@ -678,3 +678,65 @@ def comment_of(m: Maybe<&2, Body>) -> Maybe<&2, Body>:
 
 def form_comment(+xs: List<&2, Field>, +key: String) -> Maybe<&2, Body>:
   comment_of(form_body(xs, key))
+
+# TAGS
+# ----
+# The editor's tag field: comma-separated names, each made into a slug of
+# at most 32 characters ("Machine Learning" -> machine-learning); empty
+# ones and repeats dropped, at most 5. Joined with ",". The write checks
+# each again (src/c/db_core.c, and the table's CHECK).
+def tag_of(s: String) -> String:
+  String.reverse(drop_dash(String.reverse(String.take(String.reverse(slugify.go(s, False{}, SNil{})), 32n))))
+
+def tags.has(+t: String, xs: List<&2, String>) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{+x, r}:
+      Bool.or(String.eq(x, t), tags.has(t, r))
+
+def tags.keep(ok: Bool, +t: String, +xs: List<&2, String>) -> List<&2, String>:
+  match ok:
+    case True{}:
+      List.append(&2, String, xs, Con{t, Nil{}})
+    case False{}:
+      xs
+
+def tags.add(+t: String, +xs: List<&2, String>) -> List<&2, String>:
+  tags.keep(Bool.and(Bool.not(String.is_empty(t)), Bool.and(Bool.not(tags.has(t, xs)), Nat.is_lt(List.length(&2, String, xs), 5n))), t, xs)
+
+def tags.cut(comma: Bool, +cur: String, +xs: List<&2, String>) -> List<&2, String>:
+  match comma:
+    case True{}:
+      tags.add(tag_of(String.reverse(cur)), xs)
+    case False{}:
+      xs
+
+def tags.cur(comma: Bool, +h: Char, cur: String) -> String:
+  match comma:
+    case True{}:
+      SNil{}
+    case False{}:
+      SCon{h, cur}
+
+# cur: the name being read, reversed.
+def tags.go(s: String, +cur: String, +xs: List<&2, String>) -> List<&2, String>:
+  match s:
+    case SNil{}:
+      tags.add(tag_of(String.reverse(cur)), xs)
+    case SCon{+h, t}:
+      tags.go(t, tags.cur(U32.is_eq(Char.to_u32(h), 44), h, cur), tags.cut(U32.is_eq(Char.to_u32(h), 44), cur, xs))
+
+def tags.join(xs: List<&2, String>) -> String:
+  match xs:
+    case Nil{}:
+      ""
+    case Con{x, r}:
+      match r:
+        case Nil{}:
+          x
+        case Con{y, z}:
+          x ++ ("," ++ tags.join(Con{y, z}))
+
+def tags_of(s: String) -> String:
+  tags.join(tags.go(s, SNil{}, Nil{}))
