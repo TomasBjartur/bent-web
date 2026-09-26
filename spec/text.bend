@@ -43,10 +43,12 @@ def all_body_chars(s: String) -> Bool:
 def title_ok(+s: String) -> Bool:
   Bool.and(Bool.not(String.is_empty(s)), Bool.and(Nat.is_le(String.length(s), 200n), all_line_chars(s)))
 
-# A post body: body characters only. (Its length is bounded by the request
-# body limit, 1 MiB, and by the schema.)
+# A post body: at most 1 MiB characters (the request limit; a U32 bound: a
+# Nat literal this large overflows the checker), body characters only.
+# Novel-length posts (several MB) need the block-based editor (see
+# CLAUDE.md), not a larger limit here.
 def body_ok(+s: String) -> Bool:
-  all_body_chars(s)
+  Bool.and(U32.is_le(U32.from_nat(String.length(s)), 1048576), all_body_chars(s))
 
 # A slug: 1..64 of a-z 0-9 and '-'.
 def slug_char(+c: Char) -> Bool:

@@ -8,13 +8,15 @@ import Base
 import ../spec/authz.bend as Spec
 import ./authz.bend as Authz
 import ./text.bend as Text
+import ./markdown.bend as Md
 
 # EFFECTS
 # -------
 
-# The data a write carries besides its action.
+# The data a write carries besides its action. The stored HTML of a post
+# can only be a Rendered: spec/markup.bend's serialization of some Node.
 type WData is Data:
-  WData{slug: String, title: String, body_md: String, body_html: String}
+  WData{slug: String, title: String, body_md: String, body_html: Maybe<&2, Md.Rendered>}
 
 # [kind, target, user, flag] for an action (flag: 1 publish; 0 otherwise).
 type Act is Data:
@@ -160,16 +162,23 @@ def who_code(p: Spec.Principal) -> U32:
       id
 
 def no_data() -> WData:
-  WData{"", "", "", ""}
+  WData{"", "", "", None{}}
 
 def blog_data(s: Text.Slug, t: Text.Title) -> WData:
-  WData{Text.Slug.text(s), Text.Title.text(t), "", ""}
+  WData{Text.Slug.text(s), Text.Title.text(t), "", None{}}
 
 def title_data(t: Text.Title) -> WData:
-  WData{"", Text.Title.text(t), "", ""}
+  WData{"", Text.Title.text(t), "", None{}}
 
-def post_data(t: Text.Title, b: Text.Body, html: String) -> WData:
-  WData{"", Text.Title.text(t), Text.Body.text(b), html}
+def post_data(t: Text.Title, +b: Text.Body) -> WData:
+  WData{"", Text.Title.text(t), Text.Body.text(b), Some{Md.render_body(b)}}
+
+def html_of(m: Maybe<&2, Md.Rendered>) -> String:
+  match m:
+    case None{}:
+      ""
+    case Some{r}:
+      Md.Rendered.html(r)
 
 def act_of(a: Spec.Action, +flag: U32) -> Act:
   match a:
@@ -212,7 +221,7 @@ def apply_go(+token: String, f: Spec.Facts, a: Act, d: WData) -> IO(Result<&1, &
         case Act{kind, target, user, flag}:
           match d:
             case WData{slug, title, md, html}:
-              apply_post(token, who_code(who), blog, role_code(role), post, kind, target, user, flag, slug, title, md, html)
+              apply_post(token, who_code(who), blog, role_code(role), post, kind, target, user, flag, slug, title, md, html_of(html))
 
 # Performs the write a Permit allows. flag: 1 to publish, 0 to unpublish
 # (only read for PublishPost). Answers the new id, or fails with a code:

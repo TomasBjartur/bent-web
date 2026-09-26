@@ -26,7 +26,7 @@
 #define BODY_TIMEOUT_MS 30000u
 
 // Largest response (head + body) this server sends.
-#define RESPONSE_BYTES_MAX (4u * 1024u * 1024u)
+#define RESPONSE_BYTES_MAX (10u * 1024u * 1024u)
 
 _Static_assert(HEAD_BYTES_MAX >= 4u, "a head needs room for CRLFCRLF");
 _Static_assert(BODY_BYTES_MAX < (UINT32_MAX / 2u), "body sizes fit u32 math");

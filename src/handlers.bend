@@ -269,7 +269,7 @@ def h_save2(s: Socket, +token: String, +who: U32, +pid: U32, title: Maybe<&2, Te
     case Some{ti} Some{+bo}:
       do IO<Unit>:
         f : Spec.Facts <- Db.facts(who, 0, pid)
-        write(s, token, who, Authz.authorize(f, Spec.EditPost{pid}), 0, Db.post_data(ti, bo, Pages.render(Text.Body.text(bo))), "/edit/" ++ U32.show(pid))
+        write(s, token, who, Authz.authorize(f, Spec.EditPost{pid}), 0, Db.post_data(ti, bo), "/edit/" ++ U32.show(pid))
     case _ _:
       fail(s, token, who, 400)
 

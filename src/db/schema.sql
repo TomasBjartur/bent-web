@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS post (
               CHECK (length(slug) BETWEEN 1 AND 64 AND slug NOT GLOB '*[^a-z0-9-]*'),
   title       TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
   body_md     TEXT NOT NULL CHECK (length(body_md) <= 1048576),
-  body_html   TEXT NOT NULL CHECK (length(body_html) <= 4194304),
+  body_html   TEXT NOT NULL CHECK (length(body_html) <= 8388608),
   published   INTEGER NOT NULL CHECK (published IN (0, 1)),
   created_ms  INTEGER NOT NULL,
   updated_ms  INTEGER NOT NULL,

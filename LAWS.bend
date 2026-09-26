@@ -22,24 +22,26 @@ import ./spec/csrf.bend as CsrfSpec
 import ./src/route.bend as Route
 import ./spec/webauthn.bend as WSpec
 import ./src/webauthn.bend as WA
+import ./spec/markup.bend as Markup
+import ./src/markdown.bend as Md
 
 # HTML ESCAPING
 # -------------
 
 # LAW: escaping never produces an unsafe character. Whatever the user typed,
-# Html.esc emits no < > " ' and no control characters (so it cannot open a
+# the escaper emits no < > " ' and no control characters (so it cannot open a
 # tag, close an attribute, or forge an internal marker), provided what it is
 # prepended to was already safe.
 law html_esc_safe:
   for s: String
   for -rest: String
   for hr: {HtmlSpec.safe_str(rest) == True{} : Bool}
-  {HtmlSpec.safe_str(Html.esc(s, rest)) == True{} : Bool}
+  {HtmlSpec.safe_str(HtmlSpec.esc(s, rest)) == True{} : Bool}
 
 # LAW: in particular, escaping a string on its own is safe.
 law html_esc_safe_alone:
   for s: String
-  {HtmlSpec.safe_str(Html.esc(s, "")) == True{} : Bool}
+  {HtmlSpec.safe_str(HtmlSpec.esc(s, "")) == True{} : Bool}
 
 # HTTP REQUESTS
 # -------------
@@ -423,3 +425,24 @@ law webauthn_no_cross_origin_reg:
   for +o: String
   for +a: WSpec.Auth
   {WSpec.register_ok(WSpec.Expect{origin, rp}, WSpec.Client{k, ch, o, True{}}, a) == False{} : Bool}
+
+# POST BODIES
+# -----------
+
+def rendered_html(r: Md.Rendered) -> String:
+  match r:
+    case Md.Rendered{n, h, pf}:
+      h
+
+def rendered_node(r: Md.Rendered) -> Markup.Node:
+  match r:
+    case Md.Rendered{n, h, pf}:
+      n
+
+# LAW: every Rendered (the only thing the database write accepts as a
+# post's HTML) is exactly spec/markup.bend's serialization of a Node. So a
+# stored post can only contain escaped text, the allowlisted tags, and
+# links that passed url_ok.
+law markup_rendered:
+  for r: Md.Rendered
+  {rendered_html(r) == Markup.html(rendered_node(r), "") : String}

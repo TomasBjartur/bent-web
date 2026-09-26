@@ -158,18 +158,3 @@ def dash_blog(+slug: String, title: String, +is_owner: Bool, posts: List<&2, Lis
 # ------
 def edit_page(+id: String, title: String, md: String) -> String:
   "<p class=\"crumb\"><a href=\"/dash\">Dashboard</a></p><form method=\"post\" action=\"/edit/" ++ (e(id) ++ ("\" class=\"editor\"><label>Title <input name=\"title\" required maxlength=\"200\" value=\"" ++ (e(title) ++ ("\"></label><label>Text <textarea name=\"body\" rows=\"20\">" ++ (e(md) ++ ("</textarea></label><button>Save</button></form><div class=\"row\"><form method=\"post\" action=\"/edit/" ++ (e(id) ++ ("/publish\"><button>Publish</button></form><form method=\"post\" action=\"/edit/" ++ (e(id) ++ ("/unpublish\"><button>Unpublish</button></form><form method=\"post\" action=\"/edit/" ++ (e(id) ++ "/delete\"><button>Delete</button></form></div>")))))))))))
-
-# BODY RENDERING
-# --------------
-# Plain text for now: paragraphs split on blank lines, lines joined with
-# <br>. Everything escaped. (A Markdown renderer with its own safety law
-# replaces this later.)
-def render_paras(ps: List<&2, String>) -> String:
-  match ps:
-    case Nil{}:
-      ""
-    case Con{p, t}:
-      "<p>" ++ (Html.esc(p, "") ++ ("</p>" ++ render_paras(t)))
-
-def render(+s: String) -> String:
-  render_paras(String.lines(s))

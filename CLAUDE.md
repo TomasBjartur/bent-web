@@ -106,6 +106,14 @@ too slow, and keep each C effect small.
 
 ## Editor
 
+**Requirement: novel-length posts** (up to ~1M words, ~6 MB of Markdown).
+Bend strings cost ~16–32 bytes per character and rendering takes ~0.4 ms
+per KB on the single event loop, so a novel must never be one Bend String:
+documents are sequences of blocks, synced as small CRDT operations,
+rendered and cached per block, and spliced from C when served. Until then,
+one save is capped at 1 MiB.
+
+
 Multi-user, local-first. Text CRDT: **Fugue**. Content is Markdown, not rich
 text (rich-text CRDTs roughly double the proof work). The merge is written and
 proved in Bend. If Bend's JS output is too slow for typing, a hand-written JS
