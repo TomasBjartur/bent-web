@@ -367,8 +367,8 @@ static Term page_run(Env e, Term *f, IoWork *w) {
     ln = 0;
   }
   char head[2048];
-  int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s",
-                    status, reason, page_ctypes[ctype], (unsigned long long)body.len, NET_SECURITY_HEADERS);
+  int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s",
+                    status, reason, page_ctypes[ctype], (unsigned long long)body.len, NET_SECURITY_HEADERS, NET_NO_STORE);
   ASSERT(hn > 0 && (size_t)hn < sizeof head);
   if (cn == TOKEN_HEX) {
     hn += snprintf(head + hn, sizeof head - (size_t)hn,
@@ -432,8 +432,8 @@ Term sync_page_run(Env e, Term *f, IoWork *w) {
   uint32_t status = r == DB_OK && !body.overflow ? 200u : r == DB_CONFLICT ? 409u : r == DB_DENIED || r == DB_STALE ? 403u : 500u;
   if (status != 200u) body.len = 0;
   char head[1024];
-  int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %llu\r\nConnection: close\r\n%s\r\n",
-                    status, page_reason(status), (unsigned long long)body.len, NET_SECURITY_HEADERS);
+  int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s\r\n",
+                    status, page_reason(status), (unsigned long long)body.len, NET_SECURITY_HEADERS, NET_NO_STORE);
   ASSERT(hn > 0 && (size_t)hn < sizeof head);
   u64 total = (u64)hn + body.len;
   char *out = io_mem(malloc(total));
@@ -456,24 +456,36 @@ static void __attribute__((constructor)) sync_page_use(void) {
 
 // ASSETS
 // ------
-// asset(sock, id): static files embedded at compile time, served as bytes.
-// 0: the editor bundle (build/web/editor.bundle.js, from tools/bundle.py).
+// asset(sock, id): static files embedded at compile time, served as bytes
+// with immutable caching (pages link them with a ?v=<hash> query).
+// 0 the editor bundle, 1 the stylesheet, 2 the passkey script.
 
 #ifdef CID(asset)
 
 static const char ASSET_EDITOR[] = {
 #embed "web/editor.bundle.js"
 };
+static const char ASSET_CSS[] = {
+#embed "../src/web/app.css"
+};
+static const char ASSET_PASSKEY[] = {
+#embed "../src/web/passkey.js"
+};
 
 Term asset_run(Env e, Term *f, IoWork *w) {
   w->hand = (intptr_t)io_hand_v(f[0]);
   uint32_t id = (uint32_t)f[1];
-  const char *data = id == 0u ? ASSET_EDITOR : "";
-  u64 len = id == 0u ? sizeof ASSET_EDITOR : 0u;
-  uint32_t status = id == 0u ? 200u : 404u;
+  const char *data = "";
+  u64 len = 0;
+  const char *type = "text/javascript; charset=utf-8";
+  if (id == 0u) { data = ASSET_EDITOR; len = sizeof ASSET_EDITOR; }
+  else if (id == 1u) { data = ASSET_CSS; len = sizeof ASSET_CSS; type = "text/css; charset=utf-8"; }
+  else if (id == 2u) { data = ASSET_PASSKEY; len = sizeof ASSET_PASSKEY; }
+  uint32_t status = len > 0u ? 200u : 404u;
   char head[1024];
-  int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: text/javascript; charset=utf-8\r\nContent-Length: %llu\r\nConnection: close\r\n%s\r\n",
-                    status, page_reason(status), (unsigned long long)len, NET_SECURITY_HEADERS);
+  int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s\r\n",
+                    status, page_reason(status), type, (unsigned long long)len, NET_SECURITY_HEADERS,
+                    status == 200u ? NET_IMMUTABLE : NET_NO_STORE);
   ASSERT(hn > 0 && (size_t)hn < sizeof head);
   char *out = io_mem(malloc((u64)hn + len));
   memcpy(out, head, (size_t)hn);

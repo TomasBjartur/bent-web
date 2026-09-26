@@ -18,19 +18,33 @@ import ./LAWS.bend as Laws
 
 # Each encoding branch emits a fixed entity (whose characters compute to
 # safe) in front of x, or just x.
-def enc_apos_ok(b: Bool, -x: String, hx: {HtmlSpec.safe_str(x) == True{} : Bool}) -> {HtmlSpec.safe_str(HtmlSpec.enc_apos(b, x)) == True{} : Bool}:
+def enc_tab_ok(b: Bool, -x: String, hx: {HtmlSpec.safe_str(x) == True{} : Bool}) -> {HtmlSpec.safe_str(HtmlSpec.enc_tab(b, x)) == True{} : Bool}:
   match b:
     case True{}:
       hx
     case False{}:
       hx
 
+def enc_nl_ok(b: Bool, +h: Char, -x: String, hx: {HtmlSpec.safe_str(x) == True{} : Bool}) -> {HtmlSpec.safe_str(HtmlSpec.enc_nl(b, h, x)) == True{} : Bool}:
+  match b:
+    case True{}:
+      hx
+    case False{}:
+      enc_tab_ok(U32.is_eq(Char.to_u32(h), 9), x, hx)
+
+def enc_apos_ok(b: Bool, +h: Char, -x: String, hx: {HtmlSpec.safe_str(x) == True{} : Bool}) -> {HtmlSpec.safe_str(HtmlSpec.enc_apos(b, h, x)) == True{} : Bool}:
+  match b:
+    case True{}:
+      hx
+    case False{}:
+      enc_nl_ok(U32.is_eq(Char.to_u32(h), 10), h, x, hx)
+
 def enc_quot_ok(b: Bool, +h: Char, -x: String, hx: {HtmlSpec.safe_str(x) == True{} : Bool}) -> {HtmlSpec.safe_str(HtmlSpec.enc_quot(b, h, x)) == True{} : Bool}:
   match b:
     case True{}:
       hx
     case False{}:
-      enc_apos_ok(Char.is_eq(h, '\''), x, hx)
+      enc_apos_ok(Char.is_eq(h, '\''), h, x, hx)
 
 def enc_amp_ok(b: Bool, +h: Char, -x: String, hx: {HtmlSpec.safe_str(x) == True{} : Bool}) -> {HtmlSpec.safe_str(HtmlSpec.enc_amp(b, h, x)) == True{} : Bool}:
   match b:

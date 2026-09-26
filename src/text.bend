@@ -8,6 +8,7 @@
 # the refinement check runs on its output.
 import Base
 import ../spec/text.bend as Spec
+import ../spec/http.bend as Http
 
 # REFINED VALUES
 # --------------
@@ -512,3 +513,72 @@ def form_name(+xs: List<&2, Field>, +key: String) -> Maybe<&2, Name>:
 # A raw form value (bytes), only if present exactly once.
 def form_raw(+xs: List<&2, Field>, +key: String) -> Maybe<&2, String>:
   form_get(xs, key)
+
+# SLUGS FROM TITLES
+# -----------------
+# An address made from a title, for forms that leave it empty: ASCII
+# letters (lowered) and digits kept, every run of anything else one dash,
+# at most 64 characters, no dash at either end; "post" if nothing is left.
+# The result still goes through mk_slug, so this needs no proof.
+def slug_map(+c: Char) -> U32:
+  +x = Char.to_u32(c)
+  ((Bool.to_u32(Bool.or(Http.in_range(x, 97, 122), Http.in_range(x, 48, 57))) * x) + (Bool.to_u32(Http.in_range(x, 65, 90)) * (x + 32)) : U32)
+
+def slugify.dash(acc: String) -> String:
+  match acc:
+    case SNil{}:
+      SNil{}
+    case SCon{h, t}:
+      SCon{Char.from_u32(45), SCon{h, t}}
+
+def slugify.push(dash: Bool, +x: U32, acc: String) -> String:
+  match dash:
+    case True{}:
+      SCon{Char.from_u32(x), slugify.dash(acc)}
+    case False{}:
+      SCon{Char.from_u32(x), acc}
+
+def slugify.add(sep: Bool, +x: U32, dash: Bool, acc: String) -> String:
+  match sep:
+    case True{}:
+      acc
+    case False{}:
+      slugify.push(dash, x, acc)
+
+# acc holds the slug so far, reversed; dash: a separator is pending.
+def slugify.go(s: String, dash: Bool, acc: String) -> String:
+  match s:
+    case SNil{}:
+      acc
+    case SCon{+h, t}:
+      slugify.go(t, U32.is_eq(slug_map(h), 0), slugify.add(U32.is_eq(slug_map(h), 0), slug_map(h), dash, acc))
+
+# Runs of separators are one dash and there is none in front, so only a
+# cut at 64 can leave one at the end (reversed: in front).
+def drop_dash(+r: String) -> String:
+  String.drop(r, U32.to_nat(Bool.to_u32(String.starts_with(r, "-"))))
+
+def or_else.go(b: Bool, +s: String, d: String) -> String:
+  match b:
+    case True{}:
+      d
+    case False{}:
+      s
+
+def or_else(+s: String, d: String) -> String:
+  or_else.go(String.is_empty(s), s, d)
+
+def slugify(s: String) -> String:
+  or_else(String.reverse(drop_dash(String.reverse(String.take(String.reverse(slugify.go(s, False{}, SNil{})), 64n)))), "post")
+
+def form_slug_or.go(empty: Bool, +raw: String, +title: String) -> Maybe<&2, Slug>:
+  match empty:
+    case True{}:
+      mk_slug(slugify(title))
+    case False{}:
+      mk_slug(raw)
+
+# The form's address field, or one made from its title field if empty.
+def form_slug_or(+xs: List<&2, Field>, +key: String, +title_key: String) -> Maybe<&2, Slug>:
+  +raw = Maybe.default(&2, String, form_get(xs, key), "")
+  form_slug_or.go(String.is_empty(raw), raw, Maybe.default(&2, String, decode_of(form_get(xs, title_key)), ""))

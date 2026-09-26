@@ -36,10 +36,11 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_BLOG_TITLE] = "UPDATE blog SET title = ?2 WHERE id = ?1",
   [ST_BLOG_DELETE] = "DELETE FROM blog WHERE id = ?1",
   [ST_MEMBER_DELETE] = "DELETE FROM member WHERE blog_id = ?1 AND user_id = ?2 AND role = 2",
-  [ST_POST_NEW] = ("INSERT INTO post(blog_id, slug, title, body_md, body_html, published, created_ms, updated_ms) "
-                   "VALUES (?1, ?2, ?3, '', '', 0, ?4, ?4)"),
+  [ST_POST_NEW] = ("INSERT INTO post(blog_id, slug, title, body_md, body_html, published, created_ms, updated_ms, author_id) "
+                   "VALUES (?1, ?2, ?3, '', '', 0, ?4, ?4, ?5)"),
   [ST_POST_EDIT] = "UPDATE post SET title = ?2, body_md = ?3, body_html = ?4, updated_ms = ?5 WHERE id = ?1",
-  [ST_POST_PUBLISH] = "UPDATE post SET published = ?2, updated_ms = ?3 WHERE id = ?1",
+  [ST_POST_PUBLISH] = ("UPDATE post SET published = ?2, updated_ms = ?3, "
+                       "published_ms = CASE WHEN ?2 = 1 THEN coalesce(published_ms, ?3) ELSE published_ms END WHERE id = ?1"),
   [ST_POST_DELETE] = "DELETE FROM post WHERE id = ?1",
   [ST_SESSION_DELETE] = "DELETE FROM session WHERE token_hash = ?1",
   [ST_OP_NEW] = ("INSERT OR IGNORE INTO op(post_id, ctr, rep, kind, pctr, prep, side, ch) "
@@ -69,28 +70,79 @@ static const char *const DB_SQL[ST_COUNT] = {
   "EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id " \
   "WHERE m.blog_id = " blog " AND s.token_hash = ?8 AND s.expires_ms > ?9)"
 
+// Shared SQL pieces for what the pages show about a post p of blog b.
+#define POST_AUTHOR "coalesce((SELECT name FROM user WHERE id = coalesce(p.author_id, b.owner_id)), '')"
+#define POST_DATE "strftime('%Y-%m-%d', coalesce(p.published_ms, p.updated_ms) / 1000, 'unixepoch')"
+#define POST_EXCERPT \
+  "substr(trim(replace(replace(replace(replace(replace(replace(p.body_md, char(13), ''), char(10), ' '), '#', ''), '*', ''), '>', ''), '`', '')), 1, 240)"
+#define POST_MINUTES "max(1, (length(p.body_md) + 999) / 1100)"
+
 static const char *const DB_Q[Q_COUNT] = {
-  [Q_BLOG_BY_SLUG] = "SELECT id, title, slug FROM blog WHERE slug = ?3",
+  [Q_BLOG_BY_SLUG] = ("SELECT b.id, b.title, b.slug, coalesce((SELECT name FROM user WHERE id = b.owner_id), '') "
+                      "FROM blog b WHERE b.slug = ?3"),
   [Q_POST_ID] = "SELECT id FROM post WHERE blog_id = ?1 AND slug = ?3",
-  [Q_POSTS_PUBLIC] = ("SELECT id, slug, title, updated_ms FROM post WHERE blog_id = ?1 AND published = 1 "
-                      "ORDER BY updated_ms DESC LIMIT 100"),
-  [Q_RECENT_PUBLIC] = ("SELECT b.slug, p.slug, p.title, b.title FROM post p JOIN blog b ON b.id = p.blog_id "
-                       "WHERE p.published = 1 ORDER BY p.updated_ms DESC LIMIT 30"),
-  [Q_POST_VIEW] = ("SELECT p.slug, p.title, p.published, b.slug, b.title FROM post p JOIN blog b ON b.id = p.blog_id "
+  [Q_POSTS_PUBLIC] = ("SELECT p.slug, p.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES " "
+                      "FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.blog_id = ?1 AND p.published = 1 "
+                      "ORDER BY p.published_ms DESC LIMIT 100"),
+  [Q_RECENT_PUBLIC] = ("SELECT b.slug, p.slug, p.title, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES " "
+                       "FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.published = 1 "
+                       "ORDER BY p.published_ms DESC LIMIT 30"),
+  [Q_POST_VIEW] = ("SELECT p.slug, p.title, p.published, b.slug, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_MINUTES " "
+                   "FROM post p JOIN blog b ON b.id = p.blog_id "
                    "WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
-  [Q_MY_BLOGS] = ("SELECT b.id, b.slug, b.title, m.role FROM blog b JOIN member m ON m.blog_id = b.id "
+  [Q_MY_BLOGS] = ("SELECT b.id, b.slug, b.title, m.role, "
+                  "(SELECT count(*) FROM post WHERE blog_id = b.id AND published = 1), "
+                  "(SELECT count(*) FROM post WHERE blog_id = b.id AND published = 0) "
+                  "FROM blog b JOIN member m ON m.blog_id = b.id "
                   "JOIN session s ON s.user_id = m.user_id WHERE s.token_hash = ?8 AND s.expires_ms > ?9 "
                   "ORDER BY b.title LIMIT 100"),
-  [Q_POSTS_MEMBER] = ("SELECT id, slug, title, published, updated_ms FROM post WHERE blog_id = ?1 AND "
-                      MEMBER_OF("?1") " ORDER BY updated_ms DESC LIMIT 100"),
-  [Q_POST_MD] = ("SELECT p.body_md, p.title FROM post p WHERE p.id = ?1 AND " MEMBER_OF("p.blog_id")),
+  [Q_POSTS_MEMBER] = ("SELECT p.id, p.slug, p.title, p.published, strftime('%Y-%m-%d', p.updated_ms / 1000, 'unixepoch'), "
+                      POST_AUTHOR " FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.blog_id = ?1 AND "
+                      MEMBER_OF("?1") " ORDER BY p.updated_ms DESC LIMIT 100"),
+  [Q_POST_MD] = ("SELECT p.body_md, p.title, p.published, b.slug, p.slug FROM post p JOIN blog b ON b.id = p.blog_id "
+                 "WHERE p.id = ?1 AND " MEMBER_OF("p.blog_id")),
   [Q_USER_BY_EMAIL] = "SELECT id FROM user WHERE email = ?3",
-  [Q_OPS] = ("SELECT coalesce(group_concat(ctr || '.' || rep || '.' || kind || '.' || pctr || '.' || prep || '.' || side || '.' || ch || ';', ''), '') "
-              "FROM (SELECT * FROM op o WHERE o.post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)") " ORDER BY o.seq)"),
-  [Q_OP_COUNT] = ("SELECT count(*) FROM op WHERE post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)")),
   [Q_AUTHORS] = ("SELECT u.id, u.name, u.email, m.role FROM member m JOIN user u ON u.id = m.user_id "
                  "WHERE m.blog_id = ?1 AND " MEMBER_OF("?1") " ORDER BY m.role, u.name LIMIT 100"),
+  [Q_OPS] = ("SELECT coalesce(group_concat(ctr || '.' || rep || '.' || kind || '.' || pctr || '.' || prep || '.' || side || '.' || ch || ';', ''), '') "
+             "FROM (SELECT * FROM op o WHERE o.post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)") " ORDER BY o.seq)"),
+  [Q_OP_COUNT] = ("SELECT count(*) FROM op WHERE post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)")),
 };
+
+// Schema migrations, in order; PRAGMA user_version counts those applied.
+// Each runs in its own transaction. Never edit one that has shipped.
+static const char *const DB_MIGRATIONS[] = {
+  // v1: post authors, and when a post was first published (feeds sort by
+  // it, so editing an old post does not move it to the top).
+  "ALTER TABLE post ADD COLUMN author_id INTEGER REFERENCES user(id);"
+  "ALTER TABLE post ADD COLUMN published_ms INTEGER;"
+  "UPDATE post SET published_ms = updated_ms WHERE published = 1;"
+  "CREATE INDEX IF NOT EXISTS post_feed ON post(published, published_ms DESC);"
+  "CREATE INDEX IF NOT EXISTS post_blog_feed ON post(blog_id, published, published_ms DESC);",
+};
+#define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
+
+static int32_t db_migrate(Db *db) {
+  sqlite3_stmt *st;
+  if (sqlite3_prepare_v2(db->conn, "PRAGMA user_version", -1, &st, NULL) != SQLITE_OK) return -1;
+  int64_t v = sqlite3_step(st) == SQLITE_ROW ? sqlite3_column_int64(st, 0) : -1;
+  sqlite3_finalize(st);
+  if (v < 0 || (uint64_t)v > DB_MIGRATION_COUNT) return -1;
+  for (uint64_t i = (uint64_t)v; i < DB_MIGRATION_COUNT; i++) {
+    char set[64];
+    int n = snprintf(set, sizeof set, "PRAGMA user_version = %llu;", (unsigned long long)(i + 1u));
+    ASSERT(n > 0 && (size_t)n < sizeof set);
+    if (sqlite3_exec(db->conn, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_exec(db->conn, DB_MIGRATIONS[i], NULL, NULL, NULL) != SQLITE_OK ||
+        sqlite3_exec(db->conn, set, NULL, NULL, NULL) != SQLITE_OK) {
+      fprintf(stderr, "db_migrate: migration %llu: %s\n", (unsigned long long)(i + 1u), sqlite3_errmsg(db->conn));
+      sqlite3_exec(db->conn, "ROLLBACK", NULL, NULL, NULL);
+      return -1;
+    }
+    if (sqlite3_exec(db->conn, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) return -1;
+  }
+  return 0;
+}
 
 int32_t db_open(Db *db, const char *path) {
   ASSERT(db != NULL && path != NULL);
@@ -110,6 +162,7 @@ int32_t db_open(Db *db, const char *path) {
     "PRAGMA optimize = 0x10002;";
   if (sqlite3_exec(db->conn, pragmas, NULL, NULL, NULL) != SQLITE_OK) return -1;
   if (sqlite3_exec(db->conn, DB_SCHEMA, NULL, NULL, NULL) != SQLITE_OK) return -1;
+  if (db_migrate(db) != 0) return -1;
   for (uint32_t i = 0; i < ST_COUNT; i++) {
     ASSERT(DB_SQL[i] != NULL);
     if (sqlite3_prepare_v3(db->conn, DB_SQL[i], -1, SQLITE_PREPARE_PERSISTENT, &db->st[i], NULL) != SQLITE_OK) {
@@ -340,6 +393,7 @@ static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *
       bind_text(st, 2, w->slug);
       bind_text(st, 3, w->title);
       sqlite3_bind_int64(st, 4, (sqlite3_int64)now_ms);
+      sqlite3_bind_int64(st, 5, f->who);
       if ((r = db_rc(db_exec(st))) != DB_OK) return r;
       *new_id = (uint32_t)sqlite3_last_insert_rowid(db->conn);
       return DB_OK;

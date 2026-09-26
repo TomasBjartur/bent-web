@@ -313,8 +313,8 @@ Term net_respond_run(Env e, Term* f, IoWork* w) {
   }
   char head[1024];
   int hn = snprintf(head, sizeof head,
-    "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s\r\n",
-    status, reason, net_ctypes[ctype], (unsigned long long)body_len, NET_SECURITY_HEADERS);
+    "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s\r\n",
+    status, reason, net_ctypes[ctype], (unsigned long long)body_len, NET_SECURITY_HEADERS, NET_NO_STORE);
   ASSERT(hn > 0 && (size_t)hn < sizeof head);
   u64 total = (u64)hn + body_len;
   char* out = io_mem(malloc(total));

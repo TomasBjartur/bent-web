@@ -11,7 +11,11 @@ static const char NET_SECURITY_HEADERS[] =
   "X-Content-Type-Options: nosniff\r\n"
   "Referrer-Policy: same-origin\r\n"
   "Cross-Origin-Opener-Policy: same-origin\r\n"
-  "Cross-Origin-Resource-Policy: same-origin\r\n"
-  "Cache-Control: no-store\r\n";
+  "Cross-Origin-Resource-Policy: same-origin\r\n";
+
+// Pages are never cached (they depend on the session); assets are served
+// under versioned URLs and cached forever.
+static const char NET_NO_STORE[] = "Cache-Control: no-store\r\n";
+static const char NET_IMMUTABLE[] = "Cache-Control: public, max-age=31536000, immutable\r\n";
 
 #endif

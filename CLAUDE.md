@@ -168,14 +168,19 @@ result.
 - Phase 3 (content): done. Markdown with a structural safety law; the
   local-first collaborative editor (Fugue CRDT, proved merge laws, same
   code compiled to C and JS, offline-capable), tested in two real browsers.
-- Next: novel-length documents (blocks), the performance comparison
-  against a React/Next baseline, deterministic simulation, red team.
+- Benchmark against Next.js/React: done (`docs/PERF.md`).
+- Deployed at https://slopstack.tomasbjartur.com (`deploy/`).
+- UI pass: done. One hand-written stylesheet (`src/web/app.css`), no
+  framework, no web fonts; Substack-style post pages and LessWrong-style
+  feed; assets versioned and cached immutably; schema migrations
+  (`DB_MIGRATIONS`, PRAGMA user_version).
+- Next: novel-length documents (blocks), deterministic simulation, red team.
 
 ## Checks (run all before committing)
 
 - `bend PROOF.bend` (also run by `./build.sh`)
 - `tools/lint.sh`
-- `bend tests/http_test.bend`, `bend tests/text_test.bend`
+- every `bend tests/*_test.bend`
 - `tests/c/build.sh` (unit + sanitizers, fuzz, CBMC; needs `CBMC=`)
 - `./build.sh && python3 tests/app_test.py`
 - `python3 tests/passkey_test.py` (software authenticator, 64 attack/flow tests)

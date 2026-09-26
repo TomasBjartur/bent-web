@@ -119,23 +119,26 @@ def col(r: List<&2, String>, n: Nat) -> String:
 # PAGES
 # -----
 def signup_page() -> String:
-  "<h1>Create an account</h1><p>We email you a link to confirm your address. Then you create a passkey: no password, ever.</p><form method=\"post\" action=\"/signup\"><label>Email <input name=\"email\" type=\"email\" required maxlength=\"254\" autocomplete=\"email\"></label><label>Name <input name=\"name\" required maxlength=\"64\" autocomplete=\"name\"></label><button>Email me a link</button></form><p><a href=\"/login\">I already have an account</a></p>"
+  "<div class=\"center card\"><h1>Start writing</h1><p class=\"muted\">No password to remember: next, your device creates a passkey (fingerprint, face or PIN).</p><form method=\"post\" action=\"/signup\" class=\"stack\"><label>Your name <span class=\"hint\">Shown on your posts.</span><input name=\"name\" required maxlength=\"64\" autocomplete=\"name\"></label><label>Email <span class=\"hint\">Only for getting back in if you lose your device.</span><input name=\"email\" type=\"email\" required maxlength=\"254\" autocomplete=\"email\"></label><button class=\"primary big\">Continue</button></form><p class=\"meta\">Already have an account? <a href=\"/login\">Log in</a></p></div>"
 
 def sent_page() -> String:
-  "<h1>Check your email</h1><p>If that address can be used, a link is on its way. It works once, for 30 minutes.</p>"
+  "<div class=\"center card\"><h1>Check your email</h1><p class=\"muted\">If that address can be used, a link is on its way. It works once, for 30 minutes.</p></div>"
+
+def script(+name: String) -> String:
+  "<script src=\"" ++ (Pages.asset(name) ++ "\"></script>")
 
 def login_page() -> String:
-  "<h1>Log in</h1><p><button id=\"passkey-login\">Log in with a passkey</button></p><p id=\"passkey-status\" class=\"crumb\"></p><h2>Lost your passkey?</h2><form method=\"post\" action=\"/recover\"><label>Email <input name=\"email\" type=\"email\" required maxlength=\"254\" autocomplete=\"email\"></label><button>Email me a link</button></form><p><a href=\"/signup\">Create an account</a></p><script src=\"/s/passkey.js\"></script>"
+  "<div class=\"center card stack\"><h1>Welcome back</h1><button id=\"passkey-login\" class=\"primary big\">Log in with a passkey</button><p id=\"passkey-status\" class=\"meta\" role=\"status\"></p><details><summary>Lost your passkey?</summary><form method=\"post\" action=\"/recover\" class=\"stack\"><label>Email <input name=\"email\" type=\"email\" required maxlength=\"254\" autocomplete=\"email\"></label><div><button>Email me a link</button></div></form></details><p class=\"meta\">New here? <a href=\"/signup\">Create an account</a></p></div>" ++ script("passkey.js")
 
 def verify_title(b: Bool) -> String:
   match b:
     case True{}:
-      "Finish creating your account"
+      "One last step"
     case False{}:
       "Add a new passkey"
 
 def verify_page(+token: String, +email: String, +purpose: String) -> String:
-  "<h1>" ++ (verify_title(String.eq(purpose, "1")) ++ ("</h1><p>For <strong>" ++ (e(email) ++ ("</strong>. Your device will ask you to confirm with a fingerprint, face or PIN.</p><p><button id=\"passkey-register\" data-token=\"" ++ (e(token) ++ "\">Create a passkey</button></p><p id=\"passkey-status\" class=\"crumb\"></p><script src=\"/s/passkey.js\"></script>")))))
+  "<div class=\"center card stack\"><h1>" ++ (verify_title(String.eq(purpose, "1")) ++ ("</h1><p class=\"muted\">Create a passkey for <strong>" ++ (e(email) ++ ("</strong>. Your device will ask for your fingerprint, face or PIN.</p><button id=\"passkey-register\" class=\"primary big\" data-token=\"" ++ (e(token) ++ ("\">Create a passkey</button><p id=\"passkey-status\" class=\"meta\" role=\"status\"></p></div>" ++ script("passkey.js")))))))
 
 # SIGN UP AND RECOVERY
 # --------------------
@@ -152,7 +155,7 @@ def h_signup_direct(s: Socket, +token: String, r: Result<&1, &1, U32 & String, S
         x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 303, 0, one(""), Nil{}, token, "", "/verify?t=" ++ t)
         done(x)
     case Fail{err}:
-      html(s, token, 409, False{}, "Not available", "<h1>That did not work</h1><p>This email may already have an account, or too many attempts were made. Try again later.</p>")
+      html(s, token, 409, False{}, "Not available", "<div class=\"center card\"><h1>That did not work</h1><p class=\"muted\">This email may already have an account (<a href=\"/login\">log in</a>), or too many attempts were made. Try again later.</p></div>")
 
 def h_signup3(b: Bool, s: Socket, +c: Conf, +token: String, +email: String, +name: String) -> IO(Unit):
   match b:
@@ -191,7 +194,7 @@ def h_recover(s: Socket, +c: Conf, +token: String, +body: String) -> IO(Unit):
 def h_verify2(s: Socket, +token: String, +t: String, info: List<&2, String>) -> IO(Unit):
   match info:
     case Nil{}:
-      html(s, token, 404, False{}, "Link expired", "<h1>This link has expired or was already used</h1><p><a href=\"/login\">Ask for a new one</a></p>")
+      html(s, token, 404, False{}, "Link expired", "<div class=\"center card\"><h1>This link has expired</h1><p class=\"muted\">Links work once, for 30 minutes.</p><p><a class=\"btn\" href=\"/login\">Ask for a new one</a></p></div>")
     case Con{+p, +rest}:
       html(s, token, 200, False{}, "Create a passkey", verify_page(t, col(rest, 0n), p))
 
@@ -348,5 +351,3 @@ def h_login(s: Socket, +c: Conf, +token: String, +body: String) -> IO(Unit):
 
 # THE BROWSER SIDE
 # ----------------
-def passkey_js() -> String:
-  "'use strict';\n(() => {\nconst enc = (buf) => { const b = new Uint8Array(buf); let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''); };\nconst dec = (s) => { const t = atob(s.replace(/-/g, '+').replace(/_/g, '/')); const b = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) b[i] = t.charCodeAt(i); return b; };\nconst post = (url, data) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(data), credentials: 'same-origin' });\nconst status = (msg) => { const el = document.getElementById('passkey-status'); if (el) el.textContent = msg; };\nconst finish = async (res) => { if (res.ok) { location.assign(await res.text()); } else { status('That did not work. Please try again.'); } };\nconst reg = document.getElementById('passkey-register');\nif (reg) reg.addEventListener('click', async () => {\n  try {\n    const t = reg.dataset.token;\n    const r = await post('/passkey/register/options', { t });\n    if (!r.ok) { status('This link has expired. Ask for a new one.'); return; }\n    const o = await r.json();\n    const cred = await navigator.credentials.create({ publicKey: { challenge: dec(o.challenge), rp: { id: o.rpId, name: o.rpName }, user: { id: dec(o.userId), name: o.userName, displayName: o.userDisplay }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }], authenticatorSelection: { residentKey: 'required', userVerification: 'required' }, attestation: 'none', timeout: 120000 } });\n    await finish(await post('/passkey/register', { t, cd: enc(cred.response.clientDataJSON), att: enc(cred.response.attestationObject) }));\n  } catch (err) { status('Cancelled or not supported on this device.'); }\n});\nconst login = document.getElementById('passkey-login');\nif (login) login.addEventListener('click', async () => {\n  try {\n    const r = await post('/passkey/login/options', {});\n    const o = await r.json();\n    const cred = await navigator.credentials.get({ publicKey: { challenge: dec(o.challenge), rpId: o.rpId, userVerification: 'required', timeout: 120000 } });\n    await finish(await post('/passkey/login', { id: enc(cred.rawId), cd: enc(cred.response.clientDataJSON), ad: enc(cred.response.authenticatorData), sig: enc(cred.response.signature) }));\n  } catch (err) { status('Cancelled or not supported on this device.'); }\n});\n})();\n"

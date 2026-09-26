@@ -11,7 +11,6 @@ import ./db.bend as Db
 import ./pages.bend as Pages
 import ./route.bend as Route
 import ./text.bend as Text
-import ./static.bend as Static
 import ./auth.bend as Auth
 import ./crdt.bend as Crdt
 import ./bytes.bend as B
@@ -86,7 +85,7 @@ def blog_rows(+token: String, +slug: String) -> IO(List<&2, List<&2, String>>):
 def h_home(s: Socket, +token: String, +who: U32) -> IO(Unit):
   do IO<Unit>:
     rows : List<&2, List<&2, String>> <- Db.query(Db.q_recent_public(), 0, 0, "", token)
-    send(s, token, 200, Pages.layout("bent", signed(who), Pages.home_page(rows)))
+    send(s, token, 200, Pages.layout("Home", signed(who), Pages.home_page(rows, signed(who))))
 
 def h_blog2(s: Socket, +token: String, +who: U32, +blog: List<&2, List<&2, String>>) -> IO(Unit):
   match blog:
@@ -95,36 +94,44 @@ def h_blog2(s: Socket, +token: String, +who: U32, +blog: List<&2, List<&2, Strin
     case Con{+r, t}:
       do IO<Unit>:
         rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_public(), num(Pages.col(r, 0n)), 0, "", token)
-        send(s, token, 200, Pages.layout(Pages.col(r, 1n), signed(who), Pages.blog_page(Pages.col(r, 2n), Pages.col(r, 1n), rows)))
+        send(s, token, 200, Pages.layout(Pages.col(r, 1n), signed(who), Pages.blog_page(Pages.col(r, 2n), Pages.col(r, 1n), Pages.col(r, 3n), rows)))
 
 def h_blog(s: Socket, +token: String, +who: U32, +slug: String) -> IO(Unit):
   do IO<Unit>:
     blog : List<&2, List<&2, String>> <- blog_rows(token, slug)
     h_blog2(s, token, who, blog)
 
+def is_some_permit(m: Maybe<&2, Authz.Permit>) -> Bool:
+  match m:
+    case None{}:
+      False{}
+    case Some{p}:
+      True{}
+
 # The post page: the stored body is spliced in by C (with its own floor).
-def h_post4(s: Socket, +token: String, +who: U32, +pid: U32, +view: List<&2, List<&2, String>>) -> IO(Unit):
+# Members see an Edit link (only if they could open the editor).
+def h_post4(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +view: List<&2, List<&2, String>>) -> IO(Unit):
   match view:
     case Nil{}:
       fail(s, token, who, 404)
     case Con{+r, t}:
       do IO<Unit>:
-        x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, two(Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(Pages.col(r, 3n), Pages.col(r, 4n), Pages.col(r, 1n), String.eq(Pages.col(r, 2n), "0")), Pages.post_after() ++ Pages.layout_bottom()), Con{pid, Nil{}}, token, "", "")
+        x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, two(Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit), Pages.post_after(r) ++ Pages.layout_bottom()), Con{pid, Nil{}}, token, "", "")
         done(x)
 
-def h_post3(s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+def h_post3(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
     case None{}:
       fail(s, token, who, 404)
     case Some{p}:
       do IO<Unit>:
         view : List<&2, List<&2, String>> <- Db.query(Db.q_post_view(), pid, 0, "", token)
-        h_post4(s, token, who, pid, view)
+        h_post4(s, token, who, pid, can_edit, view)
 
 def h_post2(s: Socket, +token: String, +who: U32, +pid: U32) -> IO(Unit):
   do IO<Unit>:
-    f : Spec.Facts <- Db.facts(who, 0, pid)
-    h_post3(s, token, who, pid, Authz.authorize(f, Spec.ReadPost{pid}))
+    +f : Spec.Facts <- Db.facts(who, 0, pid)
+    h_post3(s, token, who, pid, is_some_permit(Authz.authorize(f, Spec.EditPost{pid})), Authz.authorize(f, Spec.ReadPost{pid}))
 
 def h_post(s: Socket, +token: String, +who: U32, +bslug: String, +pslug: String) -> IO(Unit):
   do IO<Unit>:
@@ -137,7 +144,7 @@ def h_dash2(b: Bool, s: Socket, +token: String, +who: U32) -> IO(Unit):
     case True{}:
       do IO<Unit>:
         rows : List<&2, List<&2, String>> <- Db.query(Db.q_my_blogs(), 0, 0, "", token)
-        send(s, token, 200, Pages.layout("Dashboard", True{}, Pages.dash_page(rows)))
+        send(s, token, 200, Pages.layout_wide("Your blogs", True{}, Pages.dash_page(rows)))
     case False{}:
       redirect(s, token, "/login", "")
 
@@ -157,7 +164,7 @@ def h_dash_blog3(s: Socket, +token: String, +who: U32, +blog: U32, +slug: String
       do IO<Unit>:
         posts : List<&2, List<&2, String>> <- Db.query(Db.q_posts_member(), blog, 0, "", token)
         authors : List<&2, List<&2, String>> <- Db.query(Db.q_authors(), blog, 0, "", token)
-        send(s, token, 200, Pages.layout(title, True{}, Pages.dash_blog(slug, title, Spec.is_owner(facts_role(f)), posts, authors)))
+        send(s, token, 200, Pages.layout_wide(title, True{}, Pages.dash_blog(slug, title, Spec.is_owner(facts_role(f)), posts, authors)))
 
 def h_dash_blog2.go(s: Socket, +token: String, +who: U32, +slug: String, +id: U32, +title: String) -> IO(Unit):
   do IO<Unit>:
@@ -184,7 +191,7 @@ def h_edit3(s: Socket, +token: String, +who: U32, +pid: U32, +rows: List<&2, Lis
     case Con{+r, t}:
       do IO<Unit>:
         +rh : String <- Auth.random_hex(4)
-        send(s, token, 200, Pages.layout("Edit: " ++ Pages.col(r, 1n), True{}, Pages.edit_page(U32.show(pid), U32.show(rep_of(rh)), Pages.col(r, 1n), Pages.col(r, 0n))))
+        send(s, token, 200, Pages.edit_page(U32.show(pid), U32.show(rep_of(rh)), r))
 
 def h_edit2(s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
@@ -252,7 +259,7 @@ def h_create_blog2(s: Socket, +token: String, +who: U32, slug: Maybe<&2, Text.Sl
 
 def h_create_blog(s: Socket, +token: String, +who: U32, +body: String) -> IO(Unit):
   +xs = form(body)
-  h_create_blog2(s, token, who, Text.form_slug(xs, "slug"), Text.form_title(xs, "title"))
+  h_create_blog2(s, token, who, Text.form_slug_or(xs, "slug", "title"), Text.form_title(xs, "title"))
 
 def h_create_post2(s: Socket, +token: String, +who: U32, +blog: U32, slug: Maybe<&2, Text.Slug>, title: Maybe<&2, Text.Title>) -> IO(Unit):
   match slug title:
@@ -266,18 +273,46 @@ def h_create_post2(s: Socket, +token: String, +who: U32, +blog: U32, slug: Maybe
 def h_create_post.go(s: Socket, +token: String, +who: U32, +bslug: String, +xs: List<&2, Text.Field>) -> IO(Unit):
   do IO<Unit>:
     blog : List<&2, List<&2, String>> <- blog_rows(token, bslug)
-    h_create_post2(s, token, who, num(first_col(blog, 0n)), Text.form_slug(xs, "slug"), Text.form_title(xs, "title"))
+    h_create_post2(s, token, who, num(first_col(blog, 0n)), Text.form_slug_or(xs, "slug", "title"), Text.form_title(xs, "title"))
 
 def h_create_post(s: Socket, +token: String, +who: U32, +bslug: String, +body: String) -> IO(Unit):
   +xs = form(body)
   h_create_post.go(s, token, who, bslug, xs)
 
-def h_save2(s: Socket, +token: String, +who: U32, +pid: U32, title: Maybe<&2, Text.Title>, body: Maybe<&2, Text.Body>) -> IO(Unit):
+def h_publish(s: Socket, +token: String, +who: U32, +pid: U32, +flag: U32) -> IO(Unit):
+  do IO<Unit>:
+    f : Spec.Facts <- Db.facts(who, 0, pid)
+    write(s, token, who, Authz.authorize(f, Spec.PublishPost{pid}), flag, Db.no_data(), "/edit/" ++ U32.show(pid))
+
+# After saving: publish too if that is what the button said. Publishing
+# needs its own Permit (PublishPost), checked on fresh facts.
+def h_save3(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+  match publish:
+    case True{}:
+      match r:
+        case Done{id}:
+          h_publish(s, token, who, pid, 1)
+        case Fail{err}:
+          (code, msg) = err
+          fail(s, token, who, apply_status(code))
+    case False{}:
+      write_done(s, token, who, "/edit/" ++ U32.show(pid), r)
+
+def h_save.run(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, m: Maybe<&2, Authz.Permit>, d: Db.WData) -> IO(Unit):
+  match m:
+    case None{}:
+      fail(s, token, who, 403)
+    case Some{p}:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, 0, d)
+        h_save3(publish, s, token, who, pid, r)
+
+def h_save2(publish: Bool, s: Socket, +token: String, +who: U32, +pid: U32, title: Maybe<&2, Text.Title>, body: Maybe<&2, Text.Body>) -> IO(Unit):
   match title body:
     case Some{ti} Some{+bo}:
       do IO<Unit>:
         f : Spec.Facts <- Db.facts(who, 0, pid)
-        write(s, token, who, Authz.authorize(f, Spec.EditPost{pid}), 0, Db.post_data(ti, bo), "/edit/" ++ U32.show(pid))
+        h_save.run(publish, s, token, who, pid, Authz.authorize(f, Spec.EditPost{pid}), Db.post_data(ti, bo))
     case _ _:
       fail(s, token, who, 400)
 
@@ -288,12 +323,15 @@ def ops_text(m: Maybe<&2, List<&2, Crdt.Op>>) -> String:
     case Some{+xs}:
       Crdt.text(xs)
 
+def wants_publish(+xs: List<&2, Text.Field>) -> Bool:
+  String.eq(Maybe.default(&2, String, Text.form_raw(xs, "action"), ""), "publish")
+
 def h_save.pick(none: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>, +wire: String) -> IO(Unit):
   match none:
     case True{}:
-      h_save2(s, token, who, pid, Text.form_title(xs, "title"), Text.form_body(xs, "body"))
+      h_save2(wants_publish(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.form_body(xs, "body"))
     case False{}:
-      h_save2(s, token, who, pid, Text.form_title(xs, "title"), Text.body_of(Some{ops_text(Crdt.decode(wire))}))
+      h_save2(wants_publish(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.body_of(Some{ops_text(Crdt.decode(wire))}))
 
 def h_save.go(s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>) -> IO(Unit):
   do IO<Unit>:
@@ -305,11 +343,6 @@ def h_save.go(s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Tex
 # the form (editing without JavaScript).
 def h_save(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO(Unit):
   h_save.go(s, token, who, pid, form(body))
-
-def h_publish(s: Socket, +token: String, +who: U32, +pid: U32, +flag: U32) -> IO(Unit):
-  do IO<Unit>:
-    f : Spec.Facts <- Db.facts(who, 0, pid)
-    write(s, token, who, Authz.authorize(f, Spec.PublishPost{pid}), flag, Db.no_data(), "/edit/" ++ U32.show(pid))
 
 def h_delete(s: Socket, +token: String, +who: U32, +pid: U32) -> IO(Unit):
   do IO<Unit>:
@@ -359,22 +392,16 @@ def h_logout(s: Socket, +token: String) -> IO(Unit):
     Db.session_end(token)
     redirect(s, token, "/", "-")
 
+# Static assets are compiled into the server (src/effects/db.c): 0 the
+# editor, 1 the stylesheet, 2 the passkey script.
 def h_static(k: Nat, s: Socket, +token: String, +who: U32) -> IO(Unit):
   match k:
-    case 1n:
-      do IO<Unit>:
-        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 4, one(Static.app_css()), Nil{}, token, "", "")
-        done(r)
-    case 2n:
-      do IO<Unit>:
-        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 5, one(Auth.passkey_js()), Nil{}, token, "", "")
-        done(r)
-    case 3n:
-      do IO<Unit>:
-        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.asset(s, 0)
-        done(r)
-    case _:
+    case 0n:
       fail(s, token, who, 404)
+    case 1n+id:
+      do IO<Unit>:
+        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.asset(s, U32.from_nat(id))
+        done(r)
 
 # COLLABORATIVE EDITING
 # ---------------------
@@ -434,7 +461,7 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String) -
     case Route.REdit{+id}:
       h_edit(s, token, who, id)
     case Route.RStatic{+name}:
-      h_static(Nat.add(U32.to_nat(Bool.to_u32(String.eq(name, "app.css"))), Nat.add(Nat.mul(U32.to_nat(Bool.to_u32(String.eq(name, "passkey.js"))), 2n), Nat.mul(U32.to_nat(Bool.to_u32(String.eq(name, "editor.js"))), 3n))), s, token, who)
+      h_static(U32.to_nat((Bool.to_u32(String.eq(name, "editor.js")) + ((2 * Bool.to_u32(String.eq(name, "app.css"))) + (3 * Bool.to_u32(String.eq(name, "passkey.js")))) : U32)), s, token, who)
     case Route.RSignupPage{}:
       Auth.h_signup_page(s, token, who)
     case Route.RLoginPage{}:

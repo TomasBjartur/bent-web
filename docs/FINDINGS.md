@@ -4,6 +4,42 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-26: The UI pass, and a data-loss bug it found
+
+**Design.** One stylesheet written by hand (11.7 KB, 3.4 KB gzipped),
+system fonts only, light and dark from `prefers-color-scheme`. Pages still
+ship no JavaScript except the editor and the passkey pages. Assets are
+compiled into the server and served at `/s/<name>?v=<hash>` with
+`Cache-Control: immutable`, so the stylesheet costs one request per
+visitor per release; pages are `no-store`.
+
+**Usability.** Addresses (slugs) are made from titles when left empty
+(`Text.slugify`, the result still refined by `mk_slug`). Publish saves
+and publishes in one step, needing both an EditPost and a PublishPost
+permit. Members see an Edit link on posts. The editor has an auto-growing
+title and text, Ctrl/Cmd+S, a leave-page warning while edits are unsent,
+confirmation for delete and unpublish, and a coloured sync status.
+
+**Bug: newlines lost when the editor opened an old post.** The escaper
+(proved never to emit a control character) did so by *dropping* them,
+newlines included. The editor's textarea is filled through it, so a post
+written without the editor (no CRDT operations yet) opened as one line,
+and the editor then seeded its operations from that text: saving would
+have flattened the post. The proof held; the spec was too coarse. Fix:
+the escaper now encodes newline and tab as `&#10;` and `&#9;` (the safety
+proof extended by two lemmas), and the textarea gets one sacrificial
+newline, which the HTML parser drops, so a leading blank line survives.
+Regression test in `tests/collab_test.py`. Lesson: a safety law says
+nothing about fidelity. A round-trip law (unescape(esc(s)) == s for
+text without other control characters) would have caught this; it is on
+the list.
+
+**Browser gotcha.** `form.requestSubmit()` called synchronously inside
+the same form's submit handler is silently ignored (the form is still
+"firing submission events"). The editor's flush-then-submit handler only
+awaited when there was something to send, so a save with nothing pending
+did nothing. Resubmitting from a new task fixes it.
+
 ## 2026-09-26: Phases 2–4: login, content, collaboration, the benchmark
 
 ### Passkeys (Phase 2)

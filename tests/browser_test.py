@@ -102,20 +102,20 @@ def run(dbpath):
     # Use the app as a real user: create a blog and a post, publish.
     go(BASE + "/dash")
     js("document.querySelector('input[name=slug]').value = 'eve';"
-       "document.querySelector('input[name=title]').value = 'Eve <writes>';"
+       "document.querySelector('[name=title]').value = 'Eve <writes>';"
        "document.querySelector('form[action=\"/blogs\"]').submit()")
     check("blog created", wait_path("/dash/eve"), js("location.href"))
     js("document.querySelector('input[name=slug]').value = 'hello';"
-       "document.querySelector('input[name=title]').value = 'Hello';"
+       "document.querySelector('[name=title]').value = 'Hello';"
        "document.querySelector('form[action=\"/dash/eve/posts\"]').submit()")
     time.sleep(0.8)
     check("post created, editor open", (js("location.pathname") or "").startswith("/edit/"), js("location.href"))
-    js("const t = document.querySelector('textarea'); t.value = 'First line\\n<img src=x onerror=alert(1)>';"
+    # Type, then press Publish: saves the text and publishes in one step.
+    js("const t = document.getElementById('editor'); t.value = 'First line\\n<img src=x onerror=alert(1)>';"
        "t.dispatchEvent(new Event('input', {bubbles: true}));"
-       "document.querySelector('form.editor').requestSubmit()")
-    time.sleep(0.8)
-    js("document.querySelector('form[action$=\"/publish\"]').submit()")
-    time.sleep(0.8)
+       "document.querySelector('button[value=publish]').click()")
+    time.sleep(1.5)
+    check("Publish button: now published", "Unpublish" in (js("document.body.innerText") or ""), js("document.body.innerText"))
     go(BASE + "/b/eve/hello")
     check("published post renders", "First line" in (js("document.body.innerText") or ""))
     check("XSS payload is inert text", js("document.querySelectorAll('img').length") == 0 and

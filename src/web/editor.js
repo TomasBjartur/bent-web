@@ -17,6 +17,12 @@ const DEBOUNCE_MS = 250;
 const ta = document.getElementById("editor");
 if (ta) start(ta);
 
+// Forms that need a second thought (delete, unpublish).
+document.addEventListener("submit", (ev) => {
+  const q = ev.target.dataset && ev.target.dataset.confirm;
+  if (q && !confirm(q)) ev.preventDefault();
+});
+
 function start(ta) {
   const post = ta.dataset.post;
   const rep = Number(ta.dataset.rep);
@@ -40,31 +46,91 @@ function start(ta) {
   restore();
 
   // Saving renders the post from the server's operations: send ours first.
+  // The button pressed (save or publish) is passed on.
   const form = ta.form;
+  const title = form && form.elements.namedItem("title");
+  const title0 = title ? title.value : "";
+  let leaving = false;
   if (form) {
     form.addEventListener("submit", async (ev) => {
       if (form.dataset.flushed === "1") return;
       ev.preventDefault();
+      const by = ev.submitter || null;
+      for (const b of form.elements) if (b.tagName === "BUTTON") b.disabled = true;
       local();
+      show("Saving…", "busy");
       for (let i = 0; i < 20 && (busy || batches.length); i++) {
         if (!busy) await sync();
         else await new Promise((r) => setTimeout(r, 100));
       }
+      for (const b of form.elements) if (b.tagName === "BUTTON") b.disabled = false;
       form.dataset.flushed = "1";
-      form.submit();
+      leaving = true;
+      // Outside this event: a submit requested while one is being
+      // dispatched is ignored (it would be if nothing had to be sent).
+      setTimeout(() => form.requestSubmit(by), 0);
     });
+    // Ctrl+S / Cmd+S: save (and re-render) without leaving the keyboard.
+    document.addEventListener("keydown", (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === "s") {
+        ev.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    // The title is one line that wraps: Enter goes to the text, and pasted
+    // line breaks become spaces (the server refuses control characters).
+    if (title) {
+      title.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          ta.focus();
+          ta.setSelectionRange(0, 0);
+        }
+      });
+      title.addEventListener("input", () => {
+        if (/[\r\n]/.test(title.value)) title.value = title.value.replace(/[\r\n]+/g, " ");
+        grow(title);
+      });
+    }
   }
+  // Unsent text, or a title not saved yet: ask before leaving.
+  window.addEventListener("beforeunload", (ev) => {
+    if (leaving) return;
+    if (batches.length || (title && title.value !== title0)) ev.preventDefault();
+  });
+
+  // Grow the textarea with its text, so the page scrolls, not a box.
+  // Browsers with CSS field-sizing do it themselves.
+  const grows = window.CSS && CSS.supports && CSS.supports("field-sizing", "content");
+  const growing = new Map();
+  function grow(el = ta) {
+    if (grows || growing.has(el)) return;
+    growing.set(el, requestAnimationFrame(() => {
+      growing.delete(el);
+      const y = window.scrollY;
+      el.style.height = "auto";
+      el.style.height = el.scrollHeight + "px";
+      window.scrollTo(0, y);
+    }));
+  }
+  grow();
+  if (title) grow(title);
 
   ta.addEventListener("input", () => {
     local();
+    grow();
+    show("Unsaved changes", "busy");
     schedule(DEBOUNCE_MS);
   });
   window.addEventListener("online", () => schedule(0));
   setInterval(() => schedule(0), SYNC_MS);
   schedule(0);
 
-  function show(msg) {
-    if (status) status.textContent = msg;
+  // cls: "" all saved, "busy" work pending, "off" not reaching the server.
+  function show(msg, cls) {
+    if (!status) return;
+    status.textContent = msg;
+    status.className = "status" + (cls ? " " + cls : "");
   }
 
   function cps(s) {
@@ -112,6 +178,7 @@ function start(ta) {
     const focused = document.activeElement === ta;
     ta.value = next;
     text = next;
+    grow();
     if (focused) {
       const arr = cps(next);
       ta.setSelectionRange(u16(arr, map(selA)), u16(arr, map(selB)));
@@ -132,7 +199,7 @@ function start(ta) {
     busy = true;
     inflight = batches.length;
     const body = new URLSearchParams({ since: String(since), ops: Doc.encode(pending()) });
-    show("Syncing…");
+    if (batches.length) show("Saving…", "busy");
     try {
       const res = await fetch(url, {
         method: "POST",
@@ -141,7 +208,7 @@ function start(ta) {
         credentials: "same-origin",
       });
       if (!res.ok) {
-        show(res.status === 403 ? "Not allowed (signed out?)" : "Could not save: " + res.status);
+        show(res.status === 403 ? "Not saved: are you logged out?" : "Could not save (" + res.status + ")", "off");
         return;
       }
       const reply = await res.text();
@@ -152,9 +219,9 @@ function start(ta) {
       if (got) remote(inflight ? got : got.concat(pending()));
       seed();
       save();
-      show(batches.length ? "Unsaved changes" : "Saved");
+      show(batches.length ? "Unsaved changes" : "Saved", batches.length ? "busy" : "");
     } catch (e) {
-      show("Offline: changes are kept on this device");
+      show("Offline: changes are kept on this device", "off");
     } finally {
       busy = false;
       if (batches.length) schedule(DEBOUNCE_MS);
@@ -171,6 +238,7 @@ function start(ta) {
       batches.push(doc.edit(1, 0, 0, initial));
       text = doc.text();
       ta.value = text;
+      grow();
       schedule(0);
     }
   }

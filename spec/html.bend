@@ -34,20 +34,36 @@ def plain(+c: Char) -> Bool:
   Bool.and(base_ok(c), U32.is_ne(Char.to_u32(c), 38))
 
 # Encoding of a character that is not plain: an entity for & < > " ',
-# nothing for anything else (control characters are dropped).
-def enc_apos(b: Bool, x: String) -> String:
+# a numeric reference for newline and tab (so text keeps its lines, in a
+# textarea or a <pre>), nothing for anything else (other control characters
+# are dropped).
+def enc_tab(b: Bool, x: String) -> String:
+  match b:
+    case True{}:
+      "&#9;" ++ x
+    case False{}:
+      x
+
+def enc_nl(b: Bool, +h: Char, x: String) -> String:
+  match b:
+    case True{}:
+      "&#10;" ++ x
+    case False{}:
+      enc_tab(U32.is_eq(Char.to_u32(h), 9), x)
+
+def enc_apos(b: Bool, +h: Char, x: String) -> String:
   match b:
     case True{}:
       "&#39;" ++ x
     case False{}:
-      x
+      enc_nl(U32.is_eq(Char.to_u32(h), 10), h, x)
 
 def enc_quot(b: Bool, +h: Char, x: String) -> String:
   match b:
     case True{}:
       "&quot;" ++ x
     case False{}:
-      enc_apos(Char.is_eq(h, '\''), x)
+      enc_apos(Char.is_eq(h, '\''), h, x)
 
 def enc_amp(b: Bool, +h: Char, x: String) -> String:
   match b:

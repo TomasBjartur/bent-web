@@ -171,6 +171,21 @@ def main():
         check("rendered from operations and published", st == 200 and "(offline)" in body and "world" in body, (st, body[:300]))
         check("markdown heading rendered", "<h2>" in body, body[:300])
 
+        # A post written without the editor (no operations yet) keeps its
+        # lines, tabs and a leading blank line when the editor opens it and
+        # seeds operations from it, and when it is saved again.
+        text = "\nFirst paragraph.\n\n## Heading\n\n\tindented & <tagged>\nlast"
+        _, loc, _ = http("POST", "/dash/team/posts", a, {"slug": "old", "title": "Old"})
+        opid = loc.rsplit("/", 1)[1]
+        http("POST", f"/edit/{opid}", a, {"title": "Old", "body": text})
+        ea.open(f"{BASE}/edit/{opid}")
+        check("editor shows a form-written post exactly", ea.text() == text, repr(ea.text()))
+        settle([ea])
+        ea.js("document.querySelector('form.editor').requestSubmit()")
+        time.sleep(1.5)
+        md = sqlite3.connect(dbpath).execute("SELECT body_md FROM post WHERE id = ?", (opid,)).fetchone()[0]
+        check("saved again from the editor: unchanged", md == text, repr(md))
+
         # An outsider can neither read nor write the document.
         st, _, _ = http("GET", f"/edit/{pid}", c)
         check("outsider: editor 404", st == 404, st)
