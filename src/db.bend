@@ -110,6 +110,12 @@ def q_ops() -> U32:
 def q_op_count() -> U32:
   11
 
+def q_author_public() -> U32:
+  12
+
+def q_posts_by_author() -> U32:
+  13
+
 def principal.go(anon: Bool, +who: U32) -> Spec.Principal:
   match anon:
     case True{}:
@@ -194,6 +200,11 @@ def blog_data(s: Text.Slug, t: Text.Title) -> WData:
 
 def title_data(t: Text.Title) -> WData:
   WData{"", Text.Title.text(t), "", None{}}
+
+# Publishing: the address a never-published draft takes (src/c/db_core.c,
+# db_publish_rename).
+def slug_data(s: Text.Slug) -> WData:
+  WData{Text.Slug.text(s), "", "", None{}}
 
 def post_data(t: Text.Title, +b: Text.Body) -> WData:
   WData{"", Text.Title.text(t), Text.Body.text(b), Some{Md.render_body(b)}}

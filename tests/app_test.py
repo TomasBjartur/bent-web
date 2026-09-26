@@ -62,6 +62,9 @@ def main():
     finally:
         srv.terminate()
         srv.wait()
+        err = srv.stderr.read().decode("utf-8", "replace").strip()
+        if err:
+            print("server stderr:", err[-2000:])
     print(f"\n{fails} failure(s)")
     sys.exit(1 if fails else 0)
 
@@ -203,10 +206,10 @@ def run(dbpath):
     st, _, body, _ = req("GET", f"/edit/{ppid}", b)
     check("new post: Publish button", st == 200 and 'value="publish"' in body and "Unpublish" not in body, st)
     st, loc, _, _ = req("POST", f"/edit/{ppid}", b, {"title": "Hello, World", "body": "Words here.", "action": "publish"})
-    check("save and publish in one step", st == 303 and loc == f"/edit/{ppid}", (st, loc))
+    check("save and publish in one step, landing on the post", st == 303 and loc == "/b/bob-s-great-blog/hello-world?published=1", (st, loc))
     st, _, body, _ = req("GET", "/b/bob-s-great-blog/hello-world")
     check("published by the save", st == 200 and "Words here." in body and "Draft" not in body, st)
-    check("byline: author and reading time", "<strong>Bob</strong>" in body and "1 min read" in body, body[:600])
+    check("byline: linked author and reading time", f'<strong><a href="/u/{b_id}">Bob</a></strong>' in body and "1 min read" in body, body[:600])
     check("no Edit link for anonymous", f'href="/edit/{ppid}"' not in body)
     st, _, body, _ = req("GET", "/b/bob-s-great-blog/hello-world", b)
     check("Edit link for the author", f'href="/edit/{ppid}"' in body)
@@ -228,6 +231,55 @@ def run(dbpath):
     check("pages are not cached", "no-store" in head, head)
     st, _, _, _ = req("GET", "/s/nope.js")
     check("unknown asset 404", st == 404, st)
+
+    # Write: a new untitled draft in your only blog, which takes its
+    # address from its title when first published (never after).
+    req("POST", "/blogs", b, {"title": "Bob Two"})
+    st, loc, _, _ = req("POST", "/write", b)
+    check("Write with several blogs: to the dashboard", st == 303 and loc == "/dash", (st, loc))
+    st, loc, _, _ = req("POST", "/write", c)
+    check("Write with no blog: to the dashboard", st == 303 and loc == "/dash", (st, loc))
+    _, _, body, _ = req("GET", "/dash", c)
+    check("dashboard without a blog: welcome", "Welcome!" in body and "Create my blog" in body)
+    req("POST", "/blogs", c, {"title": "Mallory Writes"})
+    st, loc, _, _ = req("POST", "/write", c)
+    check("Write with one blog: a new draft in the editor", st == 303 and loc and loc.startswith("/edit/"), (st, loc))
+    dpid = loc.rsplit("/", 1)[1]
+    slug = db.execute("SELECT slug, title FROM post WHERE id = ?", (dpid,)).fetchall()[0]  # (fetchone would keep a read open)
+    check("draft: placeholder address, Untitled", slug[0].startswith("draft-") and slug[1] == "Untitled", slug)
+    st, loc2, _, _ = req("POST", "/write", c)
+    check("a second draft does not collide", st == 303 and loc2 != loc, (st, loc2))
+    st, loc, _, _ = req("POST", f"/edit/{dpid}", c, {"title": "Hello, World", "body": "m", "action": "publish"})
+    check("first publish: address from title", loc == "/b/mallory-writes/hello-world?published=1", loc)
+    _, _, body, _ = req("GET", "/b/mallory-writes/hello-world?published=1", c)
+    check("notice for the author", "Your post is live" in body)
+    _, _, body, _ = req("GET", "/b/mallory-writes/hello-world?published=1")
+    check("no notice for readers", "Your post is live" not in body and "Hello, World" in body)
+    req("POST", f"/edit/{dpid}/unpublish", c)
+    st, loc, _, _ = req("POST", f"/edit/{dpid}", c, {"title": "Renamed", "body": "m", "action": "publish"})
+    check("published address never changes", loc == "/b/mallory-writes/hello-world?published=1", loc)
+    st, loc, _, _ = req("POST", "/dash/mallory-writes/posts", c)
+    st, loc, _, _ = req("POST", loc, c, {"title": "Hello, World", "body": "again", "action": "publish"})
+    check("same title again: deduplicated address", loc == "/b/mallory-writes/hello-world-2?published=1", loc)
+    st, loc, _, _ = req("POST", "/write", None)
+    check("Write anonymously: no draft, off to log in", st == 303 and loc == "/dash", (st, loc))
+
+    # Author pages: only for people who have published.
+    st, _, body, _ = req("GET", f"/u/{c_id}")
+    check("author page lists their posts", st == 200 and "Mallory" in body and "hello-world-2" in body, st)
+    st, _, _, _ = req("GET", f"/u/{a_id}")
+    check("author page for Alice (published)", st == 200, st)
+    # (Also a regression test: another process writes after posts were
+    # viewed. The server once kept a read snapshot open after serving a
+    # post body, and every write after an outside write failed "locked".)
+    q = sqlite3.connect(dbpath)
+    uid = q.execute("INSERT INTO user(email, name, created_ms) VALUES ('quiet@example.com', 'Quiet', 1)").lastrowid
+    q.commit()
+    q.close()
+    st, _, body, _ = req("GET", f"/u/{uid}")
+    check("no author page for someone who never published", st == 404 and "Quiet" not in body, st)
+    st, _, _, _ = req("GET", "/u/abc")
+    check("author page: bad id 404", st == 404, st)
 
     # The feed cache: every write is visible at once, and signed-in and
     # anonymous visitors get their own header.

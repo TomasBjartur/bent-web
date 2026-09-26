@@ -35,6 +35,8 @@ type Route is Data:
   RLoginOptions{}
   RLogin{}
   RSync{post: U32}
+  RAuthor{user: U32}
+  RWrite{}
   RNotFound{}
 
 type Plan is Data:
@@ -89,6 +91,8 @@ def get2(k: Nat, +b: String) -> Route:
       REdit{id_of(b)}
     case 4n:
       RStatic{b}
+    case 5n:
+      RAuthor{id_of(b)}
     case _:
       RNotFound{}
 
@@ -110,7 +114,7 @@ def route_get(xs: List<&2, String>) -> Route:
         case Con{+b, u}:
           match u:
             case Nil{}:
-              get2(Nat.add(eq(a, "b"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "edit"), 3n), Nat.mul(eq(a, "s"), 4n)))), b)
+              get2(Nat.add(eq(a, "b"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "edit"), 3n), Nat.add(Nat.mul(eq(a, "s"), 4n), Nat.mul(eq(a, "u"), 5n))))), b)
             case Con{+c, v}:
               match v:
                 case Nil{}:
@@ -129,6 +133,8 @@ def post1(k: Nat) -> Route:
       RSignup{}
     case 4n:
       RRecover{}
+    case 5n:
+      RWrite{}
     case _:
       RNotFound{}
 
@@ -187,7 +193,7 @@ def route_post(xs: List<&2, String>) -> Route:
     case Con{+a, t}:
       match t:
         case Nil{}:
-          post1(Nat.add(eq(a, "blogs"), Nat.add(Nat.mul(eq(a, "logout"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.mul(eq(a, "recover"), 4n)))))
+          post1(Nat.add(eq(a, "blogs"), Nat.add(Nat.mul(eq(a, "logout"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.add(Nat.mul(eq(a, "recover"), 4n), Nat.mul(eq(a, "write"), 5n))))))
         case Con{+b, u}:
           match u:
             case Nil{}:

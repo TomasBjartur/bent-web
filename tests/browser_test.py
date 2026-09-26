@@ -99,27 +99,31 @@ def run(dbpath):
     js("document.getElementById('passkey-login').click()")
     check("passkey login redirected to /dash", wait_path("/dash"), js("location.href + ' ' + document.body.innerText"))
 
-    # Use the app as a real user: create a blog and a post, publish.
+    # Use the app as a real user: name a blog, press Write, type, Publish.
     go(BASE + "/dash")
-    js("document.querySelector('input[name=slug]').value = 'eve';"
-       "document.querySelector('[name=title]').value = 'Eve <writes>';"
-       "document.querySelector('form[action=\"/blogs\"]').submit()")
-    check("blog created", wait_path("/dash/eve"), js("location.href"))
-    js("document.querySelector('input[name=slug]').value = 'hello';"
-       "document.querySelector('[name=title]').value = 'Hello';"
-       "document.querySelector('form[action=\"/dash/eve/posts\"]').submit()")
+    check("new user is asked to name a blog", "Welcome" in (js("document.body.innerText") or ""), js("document.body.innerText"))
+    js("document.querySelector('[name=title]').value = 'Eve <writes>';"
+       "document.querySelector('form[action=\"/blogs\"] button').click()")
+    check("blog created, address from its name", wait_path("/dash/eve-writes"), js("location.href"))
+    js("[...document.querySelectorAll('header button')].find(b => b.innerText.trim() === 'Write').click()")
     time.sleep(0.8)
-    check("post created, editor open", (js("location.pathname") or "").startswith("/edit/"), js("location.href"))
-    # Type, then press Publish: saves the text and publishes in one step.
-    js("const t = document.getElementById('editor'); t.value = 'First line\\n<img src=x onerror=alert(1)>';"
+    check("Write opens the editor on a new draft", (js("location.pathname") or "").startswith("/edit/"), js("location.href"))
+    js("const ti = document.querySelector('[name=title]'); ti.value = 'Hello, world'; ti.dispatchEvent(new Event('input', {bubbles: true}));"
+       "const t = document.getElementById('editor'); t.value = 'First line\\n<img src=x onerror=alert(1)>';"
        "t.dispatchEvent(new Event('input', {bubbles: true}));"
        "document.querySelector('button[value=publish]').click()")
-    time.sleep(1.5)
-    check("Publish button: now published", "Unpublish" in (js("document.body.innerText") or ""), js("document.body.innerText"))
-    go(BASE + "/b/eve/hello")
-    check("published post renders", "First line" in (js("document.body.innerText") or ""))
+    check("Publish lands on the live post, address from its title", wait_path("/b/eve-writes/hello-world"), js("location.href"))
+    body = js("document.body.innerText") or ""
+    check("with a notice that it is live", "Your post is live" in body, body[:300])
+    check("published post renders", "First line" in body)
     check("XSS payload is inert text", js("document.querySelectorAll('img').length") == 0 and
-          "<img src=x onerror=alert(1)>" in (js("document.body.innerText") or ""))
+          "<img src=x onerror=alert(1)>" in body)
+    go(BASE + "/b/eve-writes/hello-world")
+    check("no notice on a plain visit", "Your post is live" not in (js("document.body.innerText") or ""))
+    js("document.querySelector('.byline a').click()")
+    time.sleep(0.8)
+    check("byline links to the author page", (js("location.pathname") or "").startswith("/u/") and "Hello, world" in (js("document.body.innerText") or ""),
+          js("location.href"))
 
     # Nothing was blocked by the CSP, and there were no console errors.
     errors = [e for e in ws.events if e.get("method") in ("Log.entryAdded", "Runtime.exceptionThrown")

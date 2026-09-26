@@ -27,11 +27,10 @@ def asset(+name: String) -> String:
 
 # LAYOUT
 # ------
-
 def nav(b: Bool) -> String:
   match b:
     case True{}:
-      "<a href=\"/\" class=\"hide-sm\">Home</a><a href=\"/dash\">Your blogs</a><form method=\"post\" action=\"/logout\"><button class=\"link\">Log out</button></form><a class=\"btn primary\" href=\"/dash\">Write</a>"
+      "<a href=\"/\" class=\"hide-sm\">Home</a><a href=\"/dash\">Your blogs</a><form method=\"post\" action=\"/logout\"><button class=\"link\">Log out</button></form><form method=\"post\" action=\"/write\"><button class=\"primary\">Write</button></form>"
     case False{}:
       "<a href=\"/login\">Log in</a><a class=\"btn primary\" href=\"/signup\">Start writing</a>"
 
@@ -65,7 +64,6 @@ def layout_wide(+title: String, signed_in: Bool, body: String) -> String:
 
 # DATES AND COUNTS
 # ----------------
-
 def month.go(k: Nat) -> String:
   match k:
     case 1n:
@@ -120,7 +118,6 @@ def plural(+n: String, one: String, many: String) -> String:
 
 # ERRORS
 # ------
-
 def error_kind(+status: U32) -> Nat:
   U32.to_nat((Bool.to_u32(U32.is_eq(status, 404)) + ((2 * Bool.to_u32(U32.is_eq(status, 403))) + ((3 * Bool.to_u32(U32.is_eq(status, 409))) + (4 * Bool.to_u32(U32.is_eq(status, 400))))) : U32))
 
@@ -161,9 +158,11 @@ def error_body(+status: U32) -> String:
 
 # FEEDS
 # -----
+def author_link(+id: String, +name: String) -> String:
+  "<a href=\"/u/" ++ (e(id) ++ ("\">" ++ (e(name) ++ "</a>")))
 
-def meta3(+a: String, +b: String, +c: String) -> String:
-  "<div class=\"meta\">" ++ (e(a) ++ ("<span class=\"dot\"></span>" ++ (date(b) ++ ("<span class=\"dot\"></span>" ++ (minutes(c) ++ "</div>")))))
+def meta3(+id: String, +a: String, +b: String, +c: String) -> String:
+  "<div class=\"meta\">" ++ (author_link(id, a) ++ ("<span class=\"dot\"></span>" ++ (date(b) ++ ("<span class=\"dot\"></span>" ++ (minutes(c) ++ "</div>")))))
 
 # Recent posts: [blog slug, post slug, title, blog title, author, date,
 # excerpt, minutes]. The excerpt is clipped to two lines by CSS.
@@ -172,7 +171,7 @@ def recent_items(rows: List<&2, List<&2, String>>) -> String:
     case Nil{}:
       ""
     case Con{+r, t}:
-      "<li><a class=\"pub\" href=\"/b/" ++ (e(col(r, 0n)) ++ ("\">" ++ (e(col(r, 3n)) ++ ("</a><h3><a href=\"/b/" ++ (e(col(r, 0n)) ++ ("/" ++ (e(col(r, 1n)) ++ ("\">" ++ (e(col(r, 2n)) ++ ("</a></h3><p class=\"excerpt\">" ++ (e(col(r, 6n)) ++ ("</p>" ++ (meta3(col(r, 4n), col(r, 5n), col(r, 7n)) ++ ("</li>" ++ recent_items(t)))))))))))))))
+      "<li><a class=\"pub\" href=\"/b/" ++ (e(col(r, 0n)) ++ ("\">" ++ (e(col(r, 3n)) ++ ("</a><h3><a href=\"/b/" ++ (e(col(r, 0n)) ++ ("/" ++ (e(col(r, 1n)) ++ ("\">" ++ (e(col(r, 2n)) ++ ("</a></h3><p class=\"excerpt\">" ++ (e(col(r, 6n)) ++ ("</p>" ++ (meta3(col(r, 8n), col(r, 4n), col(r, 5n), col(r, 7n)) ++ ("</li>" ++ recent_items(t)))))))))))))))
 
 def intro(signed: Bool) -> String:
   match signed:
@@ -197,7 +196,7 @@ def post_items(+bslug: String, rows: List<&2, List<&2, String>>) -> String:
     case Nil{}:
       ""
     case Con{+r, t}:
-      "<li><h3><a href=\"/b/" ++ (e(bslug) ++ ("/" ++ (e(col(r, 0n)) ++ ("\">" ++ (e(col(r, 1n)) ++ ("</a></h3><p class=\"excerpt\">" ++ (e(col(r, 4n)) ++ ("</p>" ++ (meta3(col(r, 2n), col(r, 3n), col(r, 5n)) ++ ("</li>" ++ post_items(bslug, t)))))))))))
+      "<li><h3><a href=\"/b/" ++ (e(bslug) ++ ("/" ++ (e(col(r, 0n)) ++ ("\">" ++ (e(col(r, 1n)) ++ ("</a></h3><p class=\"excerpt\">" ++ (e(col(r, 4n)) ++ ("</p>" ++ (meta3(col(r, 6n), col(r, 2n), col(r, 3n), col(r, 5n)) ++ ("</li>" ++ post_items(bslug, t)))))))))))
 
 def blog_feed(+slug: String, rows: List<&2, List<&2, String>>) -> String:
   match rows:
@@ -211,7 +210,6 @@ def blog_page(+slug: String, title: String, owner: String, rows: List<&2, List<&
 
 # POST (the stored body is spliced in between the two halves)
 # ----
-
 def draft_badge(b: Bool) -> String:
   match b:
     case True{}:
@@ -226,17 +224,23 @@ def edit_link(b: Bool, +id: String) -> String:
     case False{}:
       ""
 
+def published_notice(b: Bool, +id: String) -> String:
+  match b:
+    case True{}:
+      "<div class=\"notice live\" role=\"status\"><strong>Your post is live.</strong> This is its public page: share its address with your readers. <a href=\"/edit/" ++ (e(id) ++ "\">Keep editing</a></div>")
+    case False{}:
+      ""
+
 # view: [post slug, title, published, blog slug, blog title, author, date,
-# minutes].
-def post_before(+view: List<&2, String>, +id: String, can_edit: Bool) -> String:
-  "<article class=\"article\"><header><a class=\"pub\" href=\"/b/" ++ (e(col(view, 3n)) ++ ("\">" ++ (e(col(view, 4n)) ++ ("</a><h1>" ++ (e(col(view, 1n)) ++ ("</h1><div class=\"byline\"><strong>" ++ (e(col(view, 5n)) ++ ("</strong><span class=\"dot\"></span>" ++ (date(col(view, 6n)) ++ ("<span class=\"dot\"></span>" ++ (minutes(col(view, 7n)) ++ (draft_badge(String.eq(col(view, 2n), "0")) ++ (edit_link(can_edit, id) ++ "</div></header><div class=\"body\">")))))))))))))
+# minutes, author id]. notice: just published by this member.
+def post_before(+view: List<&2, String>, +id: String, can_edit: Bool, notice: Bool) -> String:
+  published_notice(notice, id) ++ "<article class=\"article\"><header><a class=\"pub\" href=\"/b/" ++ (e(col(view, 3n)) ++ ("\">" ++ (e(col(view, 4n)) ++ ("</a><h1>" ++ (e(col(view, 1n)) ++ ("</h1><div class=\"byline\"><strong>" ++ (author_link(col(view, 8n), col(view, 5n)) ++ ("</strong><span class=\"dot\"></span>" ++ (date(col(view, 6n)) ++ ("<span class=\"dot\"></span>" ++ (minutes(col(view, 7n)) ++ (draft_badge(String.eq(col(view, 2n), "0")) ++ (edit_link(can_edit, id) ++ "</div></header><div class=\"body\">")))))))))))))
 
 def post_after(+view: List<&2, String>) -> String:
   "</div><footer><a href=\"/b/" ++ (e(col(view, 3n)) ++ ("\">← More from " ++ (e(col(view, 4n)) ++ "</a><a href=\"/\">Recent posts</a></footer></article>")))
 
 # DASHBOARD
 # ---------
-
 def role_name.go(b: Bool) -> String:
   match b:
     case True{}:
@@ -247,13 +251,20 @@ def role_name.go(b: Bool) -> String:
 def role_name(+r: String) -> String:
   role_name.go(String.eq(r, "1"))
 
+# Creates an untitled draft and opens the editor.
+def new_post_button(+slug: String, label: String) -> String:
+  "<form method=\"post\" action=\"/dash/" ++ (e(slug) ++ ("/posts\"><button class=\"primary\">" ++ (label ++ "</button></form>")))
+
 # My blogs: [id, slug, title, role, published count, draft count].
 def blog_cards(rows: List<&2, List<&2, String>>) -> String:
   match rows:
     case Nil{}:
       ""
     case Con{+r, t}:
-      "<div class=\"card blogcard\"><h3><a href=\"/dash/" ++ (e(col(r, 1n)) ++ ("\">" ++ (e(col(r, 2n)) ++ ("</a></h3><div class=\"meta\">" ++ (role_name(col(r, 3n)) ++ ("<span class=\"dot\"></span>" ++ (plural(col(r, 4n), "post", "posts") ++ ("<span class=\"dot\"></span>" ++ (plural(col(r, 5n), "draft", "drafts") ++ ("</div><div class=\"row\"><a class=\"btn primary\" href=\"/dash/" ++ (e(col(r, 1n)) ++ ("#new\">New post</a><a class=\"btn\" href=\"/dash/" ++ (e(col(r, 1n)) ++ ("\">Manage</a></div></div>" ++ blog_cards(t)))))))))))))))
+      "<div class=\"card blogcard\"><h3><a href=\"/dash/" ++ (e(col(r, 1n)) ++ ("\">" ++ (e(col(r, 2n)) ++ ("</a></h3><div class=\"meta\">" ++ (role_name(col(r, 3n)) ++ ("<span class=\"dot\"></span>" ++ (plural(col(r, 4n), "post", "posts") ++ ("<span class=\"dot\"></span>" ++ (plural(col(r, 5n), "draft", "drafts") ++ ("</div><div class=\"row\">" ++ (new_post_button(col(r, 1n), "New post") ++ ("<a class=\"btn\" href=\"/dash/" ++ (e(col(r, 1n)) ++ ("\">Posts and authors</a></div></div>" ++ blog_cards(t)))))))))))))))
+
+def welcome() -> String:
+  "<div class=\"center card\"><h1>Welcome!</h1><p class=\"muted\">Name your blog, and you are ready to write. You can add co-authors later.</p><form method=\"post\" action=\"/blogs\" class=\"stack\"><label>Blog name <input name=\"title\" required maxlength=\"200\" placeholder=\"e.g. Field Notes\" autofocus></label><button class=\"primary big\">Create my blog</button></form></div>"
 
 def new_blog_form() -> String:
   "<form method=\"post\" action=\"/blogs\" class=\"card stack\"><h2>Start a new blog</h2><label>Name <input name=\"title\" required maxlength=\"200\" placeholder=\"The Weekly Thought\"></label><label>Address <span class=\"hint\">Optional: lowercase letters, digits and dashes. Made from the name if empty.</span><input name=\"slug\" maxlength=\"64\" pattern=\"[a-z0-9\\-]*\" placeholder=\"weekly-thought\"></label><div><button class=\"primary\">Create blog</button></div></form>"
@@ -261,9 +272,9 @@ def new_blog_form() -> String:
 def dash_page(rows: List<&2, List<&2, String>>) -> String:
   match rows:
     case Nil{}:
-      "<div class=\"dash-head\"><h1>Your blogs</h1></div><div class=\"empty\"><p>You don't have a blog yet. Name it below and start writing.</p></div><div class=\"center\">" ++ (new_blog_form() ++ "</div>")
+      welcome()
     case Con{r, t}:
-      "<div class=\"dash-head\"><h1>Your blogs</h1></div><div class=\"grid\">" ++ (blog_cards(Con{r, t}) ++ ("</div><div class=\"center\">" ++ (new_blog_form() ++ "</div>")))
+      "<div class=\"dash-head\"><h1>Your blogs</h1></div><div class=\"grid\">" ++ (blog_cards(Con{r, t}) ++ ("</div><details class=\"more\"><summary>Start another blog</summary><div class=\"center\">" ++ (new_blog_form() ++ "</div></details>")))
 
 def state_badge.go(b: Bool) -> String:
   match b:
@@ -274,6 +285,13 @@ def state_badge.go(b: Bool) -> String:
 
 def state_badge(+p: String) -> String:
   state_badge.go(String.eq(p, "1"))
+
+def preview_link(b: Bool, +bslug: String, +pslug: String) -> String:
+  match b:
+    case True{}:
+      "<a class=\"btn quiet view\" href=\"/b/" ++ (e(bslug) ++ ("/" ++ (e(pslug) ++ "\">View</a>")))
+    case False{}:
+      "<a class=\"btn quiet view\" href=\"/b/" ++ (e(bslug) ++ ("/" ++ (e(pslug) ++ "\" target=\"_blank\">Preview</a>")))
 
 def view_link(b: Bool, +bslug: String, +pslug: String) -> String:
   match b:
@@ -293,7 +311,7 @@ def member_post_rows(+bslug: String, rows: List<&2, List<&2, String>>) -> String
 def member_posts(+bslug: String, rows: List<&2, List<&2, String>>) -> String:
   match rows:
     case Nil{}:
-      "<div class=\"empty\"><p>No posts yet. Start one below.</p></div>"
+      "<div class=\"empty\"><p>Nothing here yet.</p>" ++ (new_post_button(bslug, "Write your first post") ++ "</div>")
     case Con{r, t}:
       "<table class=\"table\">" ++ (member_post_rows(bslug, Con{r, t}) ++ "</table>")
 
@@ -320,11 +338,10 @@ def owner_tools(b: Bool, +blog: String) -> String:
       ""
 
 def dash_blog(+slug: String, title: String, +is_owner: Bool, posts: List<&2, List<&2, String>>, authors: List<&2, List<&2, String>>) -> String:
-  "<p class=\"meta crumb\"><a href=\"/dash\">← Your blogs</a></p><div class=\"dash-head\"><h1>" ++ (e(title) ++ ("</h1><a class=\"btn\" href=\"/b/" ++ (e(slug) ++ ("\">View blog</a></div><div class=\"cols\"><section>" ++ (member_posts(slug, posts) ++ ("<form id=\"new\" method=\"post\" action=\"/dash/" ++ (e(slug) ++ ("/posts\" class=\"card stack\"><h2>New post</h2><label>Title <input name=\"title\" required maxlength=\"200\" placeholder=\"Untitled\"></label><label>Address <span class=\"hint\">Optional. Made from the title if empty.</span><input name=\"slug\" maxlength=\"64\" pattern=\"[a-z0-9\\-]*\"></label><div><button class=\"primary\">Start writing</button></div></form></section><aside><h2>Authors</h2><ul class=\"people\">" ++ (author_items(slug, is_owner, authors) ++ ("</ul>" ++ (owner_tools(is_owner, slug) ++ "</aside></div>")))))))))))
+  "<p class=\"meta crumb\"><a href=\"/dash\">← Your blogs</a></p><div class=\"dash-head\"><h1>" ++ (e(title) ++ ("</h1><div class=\"row\"><a class=\"btn\" href=\"/b/" ++ (e(slug) ++ ("\">View blog</a>" ++ (new_post_button(slug, "New post") ++ ("</div></div><div class=\"cols\"><section>" ++ (member_posts(slug, posts) ++ ("</section><aside><h2>Authors</h2><ul class=\"people\">" ++ (author_items(slug, is_owner, authors) ++ ("</ul>" ++ (owner_tools(is_owner, slug) ++ "</aside></div>")))))))))))
 
 # EDITOR
 # ------
-
 def publish_buttons(published: Bool) -> String:
   match published:
     case True{}:
@@ -343,4 +360,10 @@ def unpublish(published: Bool, +id: String) -> String:
 # parser drops one newline right after <textarea>, so one is put there for
 # it to drop: a text that starts with a newline keeps it.
 def edit_page(+id: String, +rep: String, +md: List<&2, String>) -> String:
-  head("Editing: " ++ col(md, 1n)) ++ ("<header class=\"editor-bar\"><div class=\"wrap wide\"><a class=\"btn quiet\" href=\"/dash/" ++ (e(col(md, 3n)) ++ ("\" aria-label=\"Back to the blog\">←</a><span id=\"sync-status\" class=\"status\" role=\"status\">Saved</span>" ++ (view_link(String.eq(col(md, 2n), "1"), col(md, 3n), col(md, 4n)) ++ (unpublish(String.eq(col(md, 2n), "1"), id) ++ (publish_buttons(String.eq(col(md, 2n), "1")) ++ ("</div></header><main id=\"main\"><form id=\"post-form\" method=\"post\" action=\"/edit/" ++ (e(id) ++ ("\" class=\"wrap write editor\"><textarea class=\"title\" name=\"title\" rows=\"1\" required maxlength=\"200\" placeholder=\"Title\" aria-label=\"Title\">&#10;" ++ (e(col(md, 1n)) ++ ("</textarea><textarea id=\"editor\" class=\"text\" name=\"body\" placeholder=\"Tell your story…\" aria-label=\"Text\" data-post=\"" ++ (e(id) ++ ("\" data-rep=\"" ++ (e(rep) ++ ("\">&#10;" ++ (e(col(md, 0n)) ++ ("</textarea><p class=\"help\">Markdown: <code>## Heading</code> <code>**bold**</code> <code>*italic*</code> <code>[link](https://…)</code> <code>- list</code> <code>&gt; quote</code>. Your text syncs as you type; Ctrl+S or ⌘S renders it.</p></form><div class=\"wrap danger-zone\"><form method=\"post\" action=\"/edit/" ++ (e(id) ++ ("/delete\" data-confirm=\"Delete this post? This cannot be undone.\"><button class=\"danger\">Delete post</button></form></div></main><script type=\"module\" src=\"" ++ (asset("editor.js") ++ "\"></script></body></html>\n"))))))))))))))))))))
+  head("Editing: " ++ col(md, 1n)) ++ ("<header class=\"editor-bar\"><div class=\"wrap wide\"><a class=\"btn quiet\" href=\"/dash/" ++ (e(col(md, 3n)) ++ ("\" aria-label=\"Back to the blog\">←</a><span id=\"sync-status\" class=\"status\" role=\"status\">Saved</span>" ++ (preview_link(String.eq(col(md, 2n), "1"), col(md, 3n), col(md, 4n)) ++ (unpublish(String.eq(col(md, 2n), "1"), id) ++ (publish_buttons(String.eq(col(md, 2n), "1")) ++ ("</div></header><main id=\"main\"><form id=\"post-form\" method=\"post\" action=\"/edit/" ++ (e(id) ++ ("\" class=\"wrap write editor\"><textarea class=\"title\" name=\"title\" rows=\"1\" required maxlength=\"200\" placeholder=\"Title\" aria-label=\"Title\">&#10;" ++ (e(col(md, 1n)) ++ ("</textarea><textarea id=\"editor\" class=\"text\" name=\"body\" placeholder=\"Tell your story…\" aria-label=\"Text\" data-published=\"" ++ (e(col(md, 2n)) ++ ("\" data-post=\"" ++ (e(id) ++ ("\" data-rep=\"" ++ (e(rep) ++ ("\">&#10;" ++ (e(col(md, 0n)) ++ ("</textarea><p class=\"help\">Markdown: <code>## Heading</code> <code>**bold**</code> <code>*italic*</code> <code>[link](https://…)</code> <code>- list</code> <code>&gt; quote</code>. Your text syncs as you type; Ctrl+S or ⌘S renders it.</p></form><div class=\"wrap danger-zone\"><form method=\"post\" action=\"/edit/" ++ (e(id) ++ ("/delete\" data-confirm=\"Delete this post? This cannot be undone.\"><button class=\"danger\">Delete post</button></form></div></main><script type=\"module\" src=\"" ++ (asset("editor.js") ++ "\"></script></body></html>\n"))))))))))))))))))))))
+
+# AUTHOR PAGE
+# -----------
+# rows: as recent_items.
+def author_page(+name: String, rows: List<&2, List<&2, String>>) -> String:
+  "<header class=\"masthead\"><h1>" ++ (e(name) ++ ("</h1><p class=\"muted\">Posts by " ++ (e(name) ++ ("</p></header>" ++ feed_or_empty(rows, "Nothing published yet.")))))

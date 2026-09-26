@@ -65,7 +65,8 @@ typedef struct {
   uint32_t target;   // blog id (blog actions) or post id (post actions)
   uint32_t user;     // A_ADD_AUTHOR, A_REMOVE_AUTHOR
   uint32_t flag;     // A_PUBLISH_POST: 1 publish, 0 unpublish
-  DbText slug;       // A_CREATE_BLOG, A_CREATE_POST
+  DbText slug;       // A_CREATE_BLOG, A_CREATE_POST; A_PUBLISH_POST: the address
+                     // for a never-published draft (see db_publish_rename)
   DbText title;      // A_CREATE_BLOG, A_EDIT_BLOG, A_CREATE_POST, A_EDIT_POST
   DbText body_md;    // A_EDIT_POST
   DbText body_html;  // A_EDIT_POST
@@ -76,26 +77,31 @@ typedef struct {
 // belong to a member of the blog. Parameters: a, b (integers), text, and
 // the caller's session token hash.
 enum {
-  Q_BLOG_BY_SLUG = 0,   // text=slug -> id, title, slug
+  Q_BLOG_BY_SLUG = 0,   // text=slug -> id, title, slug, owner name
   Q_POST_ID,            // a=blog, text=slug -> id  (any state; callers answer 404 unless allowed)
-  Q_POSTS_PUBLIC,       // a=blog -> id, slug, title, updated_ms  (published only)
-  Q_RECENT_PUBLIC,      // -> blog_slug, post_slug, post_title, blog_title  (published only)
-  Q_POST_VIEW,          // a=post -> slug, title, published, blog_slug, blog_title  (published, or member)
-  Q_MY_BLOGS,           // -> id, slug, title, role  (the session's user)
-  Q_POSTS_MEMBER,       // a=blog -> id, slug, title, published, updated_ms  (member only)
-  Q_POST_MD,            // a=post -> body_md, title  (member only)
+  Q_POSTS_PUBLIC,       // a=blog -> slug, title, author, date, excerpt, minutes, author_id  (published only)
+  Q_RECENT_PUBLIC,      // -> blog_slug, post_slug, title, blog_title, author, date, excerpt, minutes, author_id
+                        //    (published only)
+  Q_POST_VIEW,          // a=post -> slug, title, published, blog_slug, blog_title, author, date, minutes,
+                        //    author_id  (published, or member)
+  Q_MY_BLOGS,           // -> id, slug, title, role, published count, draft count  (the session's user)
+  Q_POSTS_MEMBER,       // a=blog -> id, slug, title, published, date, author  (member only)
+  Q_POST_MD,            // a=post -> body_md, title, published, blog_slug, post_slug  (member only)
   Q_USER_BY_EMAIL,      // text=email -> id
   Q_AUTHORS,            // a=blog -> user_id, name, email, role  (member only)
   Q_OPS,                // a=post -> ops as one wire text  (member only)
   Q_OP_COUNT,           // a=post -> number of ops  (member only)
+  Q_AUTHOR_PUBLIC,      // a=user -> name  (only if they have a published post)
+  Q_POSTS_BY_AUTHOR,    // a=user -> as Q_RECENT_PUBLIC  (published only)
   Q_COUNT
 };
 
 #define DB_ROWS_MAX 100u
-#define DB_COLS_MAX 8u
+#define DB_COLS_MAX 10u
 
 // Called once per row; cols[i] is UTF-8 text of length lens[i].
 typedef void (*DbRowFn)(void *ctx, uint32_t ncols, const char *const *cols, const uint32_t *lens);
+typedef void (*DbOutFn)(void *ctx, const char *p, uint32_t n);
 
 enum {
   ST_BEGIN = 0, ST_COMMIT, ST_ROLLBACK,
@@ -105,7 +111,7 @@ enum {
   ST_POST_NEW, ST_POST_EDIT, ST_POST_PUBLISH, ST_POST_DELETE, ST_BODY, ST_SESSION_DELETE,
   ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
   ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
-  ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT,
+  ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT, ST_SLUG_TAKEN, ST_POST_RENAME,
   ST_COUNT
 };
 
@@ -121,10 +127,12 @@ int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
                  const uint8_t token_hash[32], uint64_t now_ms, DbRowFn fn, void *ctx);
 
 // The stored HTML body of post, if published or if the session's user is a
-// member of its blog (the floor). Returns 1 and sets *html/*len (valid until
-// the next call), 0 if not allowed or absent, -1 on error.
+// member of its blog (the floor): passed to out, then the statement is
+// reset (a statement left stepping holds a read snapshot: other processes'
+// writes then make every write here fail, and checkpoints cannot finish).
+// Returns 1 if the body was passed, 0 if not allowed or absent, -1 on error.
 int32_t db_body(Db *db, uint32_t post, const uint8_t token_hash[32], uint64_t now_ms,
-                const char **html, uint32_t *len);
+                DbOutFn out, void *ctx);
 
 // Opens (creating if needed) the database at path and prepares every
 // statement. Returns 0 on success.
@@ -161,7 +169,6 @@ uint32_t db_user_new(Db *db, DbText email, DbText name, uint64_t now_ms);
 #define POST_OPS_MAX 4000000u       // operations per post
 #define SYNC_OUT_MAX (8u * 1024u * 1024u)
 
-typedef void (*DbOutFn)(void *ctx, const char *p, uint32_t n);
 
 // Syncs a post's operations in one IMMEDIATE transaction: re-checks the
 // facts as for an edit (the session's user is a member of the post's

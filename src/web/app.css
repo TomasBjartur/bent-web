@@ -186,6 +186,14 @@ details[open] summary { margin-bottom: 12px; }
 .add-author { margin-top: 20px; }
 aside h2 { margin-top: 0; }
 .notice { background: var(--accent-soft); border-radius: var(--radius); padding: 12px 14px; font-size: 0.9rem; }
+.notice.live { margin-bottom: 28px; border-left: 3px solid var(--ok); background: var(--surface); box-shadow: 0 0 0 1px var(--line); }
+.notice.live a { margin-left: 4px; font-weight: 600; }
+.dash-head .row form, .blogcard .row form { display: inline; }
+.empty form { display: inline-block; }
+details.more { margin-top: 40px; text-align: center; }
+details.more .center { text-align: left; }
+.meta a, .byline a { text-decoration: none; }
+.meta a:hover, .byline a:hover { text-decoration: underline; }
 
 /* DASHBOARD */
 
@@ -212,7 +220,7 @@ aside h2 { margin-top: 0; }
   position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line);
 }
 .editor-bar .wrap { display: flex; align-items: center; gap: 8px; height: 60px; }
-.editor-bar .status { color: var(--muted); font-size: 0.85rem; margin-right: auto; }
+.editor-bar .status { color: var(--muted); font-size: 0.85rem; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .editor-bar .status::before { content: "●"; margin-right: 6px; color: var(--ok); font-size: 0.7rem; vertical-align: 1px; }
 .editor-bar .status.busy::before { color: var(--accent); }
 .editor-bar .status.off::before { color: var(--danger); }

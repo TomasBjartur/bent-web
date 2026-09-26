@@ -23,6 +23,15 @@ static void sync_out(void *ctx, const char *p, uint32_t n) {
   }
 }
 
+static char body_buf[256];
+static uint32_t body_len;
+static void body_out(void *ctx, const char *p, uint32_t n) {
+  (void)ctx;
+  body_len = n < sizeof body_buf ? n : 0;
+  memcpy(body_buf, p, body_len);
+}
+#define BODY(post, hash, now) (body_len = 0, db_body(&db, (post), (hash), (now), body_out, NULL))
+
 static uint32_t rows_seen;
 static void count_row(void *ctx, uint32_t n, const char *const *c, const uint32_t *l) {
   (void)ctx; (void)n; (void)c; (void)l;
@@ -78,7 +87,6 @@ int main(void) {
 
   // Read floors: a draft is invisible to an outsider and to anonymous.
   uint8_t nobody[32] = {0};
-  const char *html; uint32_t hlen;
   CHECK(q_rows(Q_POST_VIEW, post, b.hash) == 1);
   CHECK(q_rows(Q_POST_VIEW, post, c.hash) == 0);
   CHECK(q_rows(Q_POST_VIEW, post, nobody) == 0);
@@ -90,9 +98,16 @@ int main(void) {
   CHECK(q_rows(Q_AUTHORS, blog, a.hash) == 2);
   CHECK(q_rows(Q_POSTS_PUBLIC, blog, a.hash) == 0);
   CHECK(q_rows(Q_RECENT_PUBLIC, 0, nobody) == 0);
-  CHECK(db_body(&db, post, c.hash, NOW, &html, &hlen) == 0);
-  CHECK(db_body(&db, post, b.hash, NOW, &html, &hlen) == 1 && hlen == 8 && memcmp(html, "<p>m</p>", 8) == 0);
-  CHECK(db_body(&db, post, b.hash, NOW + 3600001, &html, &hlen) == 0);
+  CHECK(BODY(post, c.hash, NOW) == 0);
+  CHECK(BODY(post, b.hash, NOW) == 1 && body_len == 8 && memcmp(body_buf, "<p>m</p>", 8) == 0);
+  // No read transaction is left open after a body is served.
+  CHECK(sqlite3_get_autocommit(db.conn) != 0 && sqlite3_next_stmt(db.conn, NULL) != NULL);
+  {
+    int busy = 0;
+    for (sqlite3_stmt *x = sqlite3_next_stmt(db.conn, NULL); x != NULL; x = sqlite3_next_stmt(db.conn, x)) busy += sqlite3_stmt_busy(x);
+    CHECK(busy == 0);
+  }
+  CHECK(BODY(post, b.hash, NOW + 3600001) == 0);
   CHECK(q_rows(Q_MY_BLOGS, 0, b.hash) == 1);
   CHECK(q_rows(Q_MY_BLOGS, 0, nobody) == 0);
   CHECK(q_rows(99, 0, a.hash) == -1);
@@ -152,7 +167,7 @@ int main(void) {
   CHECK(q_rows(Q_POST_VIEW, post, nobody) == 1);
   CHECK(q_rows(Q_POSTS_PUBLIC, blog, nobody) == 1);
   CHECK(q_rows(Q_RECENT_PUBLIC, 0, nobody) == 1);
-  CHECK(db_body(&db, post, nobody, NOW, &html, &hlen) == 1);
+  CHECK(BODY(post, nobody, NOW) == 1);
   CHECK(apply(&a, draft, (DbWrite){.kind = A_EDIT_POST, .target = post, .title = T("t")}, NULL) == DB_STALE);
 
   // The owner cannot remove themself: the floor denies; forging past the
@@ -181,6 +196,35 @@ int main(void) {
 
   // Unknown action kind.
   CHECK(apply(&a, facts(&a, blog, 0), (DbWrite){.kind = 99}, NULL) == DB_DENIED);
+
+  // Drafts made by Write take an address from their title when first
+  // published, deduplicated in the blog; a published address never changes.
+  {
+    uint32_t taken = 0, d1 = 0, d2 = 0;
+    char got[80];
+    CHECK(apply(&a, facts(&a, blog, 0), (DbWrite){.kind = A_CREATE_POST, .target = blog, .slug = T("hello"), .title = T("Hello")}, &taken) == DB_OK);
+    CHECK(apply(&a, facts(&a, blog, 0), (DbWrite){.kind = A_CREATE_POST, .target = blog, .slug = T("draft-00aa"), .title = T("Untitled")}, &d1) == DB_OK);
+    CHECK(apply(&a, facts(&a, blog, 0), (DbWrite){.kind = A_CREATE_POST, .target = blog, .slug = T("draft-00bb"), .title = T("Untitled")}, &d2) == DB_OK);
+    #define SLUG_OF(id) do { sqlite3_stmt *q; sqlite3_prepare_v2(db.conn, "SELECT slug FROM post WHERE id = ?1", -1, &q, NULL); \
+      sqlite3_bind_int64(q, 1, (id)); got[0] = 0; if (sqlite3_step(q) == SQLITE_ROW) snprintf(got, sizeof got, "%s", sqlite3_column_text(q, 0)); \
+      sqlite3_finalize(q); } while (0)
+    CHECK(apply(&a, facts(&a, 0, d1), (DbWrite){.kind = A_PUBLISH_POST, .target = d1, .flag = 1, .slug = T("hello")}, NULL) == DB_OK);
+    SLUG_OF(d1);
+    CHECK(strcmp(got, "hello-2") == 0);
+    CHECK(apply(&a, facts(&a, 0, d2), (DbWrite){.kind = A_PUBLISH_POST, .target = d2, .flag = 1, .slug = T("hello")}, NULL) == DB_OK);
+    SLUG_OF(d2);
+    CHECK(strcmp(got, "hello-3") == 0);
+    // Unpublish and publish again under another title: the address stays.
+    CHECK(apply(&a, facts(&a, 0, d1), (DbWrite){.kind = A_PUBLISH_POST, .target = d1, .flag = 0}, NULL) == DB_OK);
+    CHECK(apply(&a, facts(&a, 0, d1), (DbWrite){.kind = A_PUBLISH_POST, .target = d1, .flag = 1, .slug = T("other")}, NULL) == DB_OK);
+    SLUG_OF(d1);
+    CHECK(strcmp(got, "hello-2") == 0);
+    // A post with a chosen address is never renamed.
+    CHECK(apply(&a, facts(&a, 0, taken), (DbWrite){.kind = A_PUBLISH_POST, .target = taken, .flag = 1, .slug = T("zzz")}, NULL) == DB_OK);
+    SLUG_OF(taken);
+    CHECK(strcmp(got, "hello") == 0);
+    #undef SLUG_OF
+  }
 
   // Deleting the blog cascades (owner row included).
   CHECK(apply(&a, facts(&a, blog, 0), (DbWrite){.kind = A_DELETE_BLOG, .target = blog}, NULL) == DB_OK);

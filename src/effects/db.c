@@ -314,6 +314,10 @@ static void page_put(PageOut *o, const char *p, u64 n) {
   o->len += n;
 }
 
+static void page_body_put(void *ctx, const char *p, uint32_t n) {
+  page_put((PageOut *)ctx, p, n);
+}
+
 static Term page_more(Env e, IoWork *w) {
   int fd = (int)w->hand;
   u64 deadline = (u64)(uintptr_t)w->text;
@@ -357,9 +361,7 @@ static Term page_run(Env e, Term *f, IoWork *w) {
     texts = rest;
     Term id;
     if (app_uncons(e, CID(Con), ids, &id, &rest)) {
-      const char *html;
-      uint32_t hl;
-      if (db_body(&app_db, (uint32_t)id, h, now, &html, &hl) == 1) page_put(&body, html, hl);
+      db_body(&app_db, (uint32_t)id, h, now, page_body_put, &body);
       ids = rest;
     }
   }

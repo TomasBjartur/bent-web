@@ -48,6 +48,10 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_OP_SINCE] = ("SELECT seq, ctr, rep, kind, pctr, prep, side, ch FROM op WHERE post_id = ?1 AND seq > ?2 "
                    "ORDER BY seq"),
   [ST_OP_COUNT] = "SELECT count(*) FROM op WHERE post_id = ?1",
+  [ST_SLUG_TAKEN] = ("SELECT 1 FROM post WHERE blog_id = (SELECT blog_id FROM post WHERE id = ?1) "
+                     "AND slug = ?2 AND id <> ?1"),
+  [ST_POST_RENAME] = ("UPDATE post SET slug = ?2 WHERE id = ?1 AND published_ms IS NULL "
+                      "AND substr(slug, 1, 6) = 'draft-'"),
   [ST_TOKEN_RECENT] = "SELECT count(*) FROM email_token WHERE email = ?1 AND created_ms > ?2",
   [ST_TOKEN_NEW] = ("INSERT INTO email_token(hash, purpose, email, name, user_id, created_ms, expires_ms) "
                     "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"),
@@ -71,23 +75,24 @@ static const char *const DB_SQL[ST_COUNT] = {
   "WHERE m.blog_id = " blog " AND s.token_hash = ?8 AND s.expires_ms > ?9)"
 
 // Shared SQL pieces for what the pages show about a post p of blog b.
-#define POST_AUTHOR "coalesce((SELECT name FROM user WHERE id = coalesce(p.author_id, b.owner_id)), '')"
+#define POST_AUTHOR "coalesce((SELECT name FROM user WHERE id = p.author_id), '')"
 #define POST_DATE "strftime('%Y-%m-%d', coalesce(p.published_ms, p.updated_ms) / 1000, 'unixepoch')"
 #define POST_EXCERPT \
   "substr(trim(replace(replace(replace(replace(replace(replace(p.body_md, char(13), ''), char(10), ' '), '#', ''), '*', ''), '>', ''), '`', '')), 1, 240)"
 #define POST_MINUTES "max(1, (length(p.body_md) + 999) / 1100)"
 
+#define FEED_COLS "b.slug, p.slug, p.title, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES ", p.author_id"
+
 static const char *const DB_Q[Q_COUNT] = {
   [Q_BLOG_BY_SLUG] = ("SELECT b.id, b.title, b.slug, coalesce((SELECT name FROM user WHERE id = b.owner_id), '') "
                       "FROM blog b WHERE b.slug = ?3"),
   [Q_POST_ID] = "SELECT id FROM post WHERE blog_id = ?1 AND slug = ?3",
-  [Q_POSTS_PUBLIC] = ("SELECT p.slug, p.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES " "
+  [Q_POSTS_PUBLIC] = ("SELECT p.slug, p.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES ", p.author_id "
                       "FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.blog_id = ?1 AND p.published = 1 "
                       "ORDER BY p.published_ms DESC LIMIT 100"),
-  [Q_RECENT_PUBLIC] = ("SELECT b.slug, p.slug, p.title, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_EXCERPT ", " POST_MINUTES " "
-                       "FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.published = 1 "
+  [Q_RECENT_PUBLIC] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.published = 1 "
                        "ORDER BY p.published_ms DESC LIMIT 30"),
-  [Q_POST_VIEW] = ("SELECT p.slug, p.title, p.published, b.slug, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_MINUTES " "
+  [Q_POST_VIEW] = ("SELECT p.slug, p.title, p.published, b.slug, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_MINUTES ", p.author_id "
                    "FROM post p JOIN blog b ON b.id = p.blog_id "
                    "WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
   [Q_MY_BLOGS] = ("SELECT b.id, b.slug, b.title, m.role, "
@@ -107,6 +112,12 @@ static const char *const DB_Q[Q_COUNT] = {
   [Q_OPS] = ("SELECT coalesce(group_concat(ctr || '.' || rep || '.' || kind || '.' || pctr || '.' || prep || '.' || side || '.' || ch || ';', ''), '') "
              "FROM (SELECT * FROM op o WHERE o.post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)") " ORDER BY o.seq)"),
   [Q_OP_COUNT] = ("SELECT count(*) FROM op WHERE post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)")),
+  // Names are shown only for people who have published something: user
+  // ids are sequential, so otherwise anyone could list every account.
+  [Q_AUTHOR_PUBLIC] = ("SELECT u.name FROM user u WHERE u.id = ?1 AND EXISTS "
+                       "(SELECT 1 FROM post p WHERE p.author_id = u.id AND p.published = 1)"),
+  [Q_POSTS_BY_AUTHOR] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id "
+                         "WHERE p.author_id = ?1 AND p.published = 1 ORDER BY p.published_ms DESC LIMIT 100"),
 };
 
 // Schema migrations, in order; PRAGMA user_version counts those applied.
@@ -119,6 +130,10 @@ static const char *const DB_MIGRATIONS[] = {
   "UPDATE post SET published_ms = updated_ms WHERE published = 1;"
   "CREATE INDEX IF NOT EXISTS post_feed ON post(published, published_ms DESC);"
   "CREATE INDEX IF NOT EXISTS post_blog_feed ON post(blog_id, published, published_ms DESC);",
+  // v2: every post has an author (older posts: the blog's owner), for
+  // author pages.
+  "UPDATE post SET author_id = (SELECT owner_id FROM blog WHERE blog.id = post.blog_id) WHERE author_id IS NULL;"
+  "CREATE INDEX IF NOT EXISTS post_author_feed ON post(author_id, published, published_ms DESC);",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 
@@ -349,6 +364,36 @@ static DbResult db_rc(int rc) {
   return DB_ERROR;
 }
 
+// A draft made by "Write" has a placeholder address (draft-<hex>). When it
+// is first published it takes the address its title gives (slug), or the
+// first free of slug-2 .. slug-50 in its blog; if none is free it keeps
+// the placeholder. Only never-published drafts are renamed, so a published
+// address never changes. PRE: slug is a valid slug (Bend's Slug), at most
+// DB_RENAME_BASE_MAX bytes, so a suffix keeps it within 64.
+#define DB_RENAME_BASE_MAX 60u
+#define DB_RENAME_TRIES 50u
+
+static DbResult db_publish_rename(Db *db, uint32_t post, DbText slug) {
+  if (slug.len == 0u || slug.len > DB_RENAME_BASE_MAX) return DB_OK;
+  char cand[DB_RENAME_BASE_MAX + 8u];
+  for (uint32_t i = 1; i <= DB_RENAME_TRIES; i++) {
+    int n = i == 1u ? snprintf(cand, sizeof cand, "%.*s", (int)slug.len, slug.ptr)
+                    : snprintf(cand, sizeof cand, "%.*s-%u", (int)slug.len, slug.ptr, i);
+    ASSERT(n > 0 && (size_t)n < sizeof cand);
+    sqlite3_stmt *st = db->st[ST_SLUG_TAKEN];
+    sqlite3_bind_int64(st, 1, post);
+    sqlite3_bind_text(st, 2, cand, n, SQLITE_STATIC);
+    int rc = db_exec(st);
+    if (rc == SQLITE_ROW) continue;
+    if (rc != SQLITE_DONE) return DB_ERROR;
+    st = db->st[ST_POST_RENAME];
+    sqlite3_bind_int64(st, 1, post);
+    sqlite3_bind_text(st, 2, cand, n, SQLITE_STATIC);
+    return db_rc(db_exec(st));
+  }
+  return DB_OK;
+}
+
 // Performs the write. Called inside the transaction after the checks.
 static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *w, uint32_t *new_id) {
   sqlite3_stmt *st;
@@ -406,6 +451,7 @@ static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *
       sqlite3_bind_int64(st, 5, (sqlite3_int64)now_ms);
       return db_rc(db_exec(st));
     case A_PUBLISH_POST:
+      if (w->flag != 0u && (r = db_publish_rename(db, w->target, w->slug)) != DB_OK) return r;
       st = db->st[ST_POST_PUBLISH];
       sqlite3_bind_int64(st, 1, w->target);
       sqlite3_bind_int64(st, 2, w->flag != 0u);
@@ -426,10 +472,14 @@ DbResult db_apply(Db *db, const uint8_t token_hash[32], uint64_t now_ms,
   *new_id = 0;
   if (w->kind >= A_KINDS) return DB_DENIED;
   if (!db_floor(f, w)) return DB_DENIED;
-  if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return DB_ERROR;
+  if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) {
+    fprintf(stderr, "db_apply: begin: %s\n", sqlite3_errmsg(db->conn));
+    return DB_ERROR;
+  }
   DbResult r = db_facts_hold(db, token_hash, now_ms, f);
   if (r == DB_OK) r = db_do(db, now_ms, f, w, new_id);
   if (r == DB_OK && db_exec(db->st[ST_COMMIT]) == SQLITE_DONE) return DB_OK;
+  if (r == DB_OK || r == DB_ERROR) fprintf(stderr, "db_apply: action %u: %s\n", w->kind, sqlite3_errmsg(db->conn));
   int rb = db_exec(db->st[ST_ROLLBACK]);
   ASSERT(rb == SQLITE_DONE);
   return r == DB_OK ? DB_ERROR : r;
@@ -486,23 +536,23 @@ int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
 }
 
 int32_t db_body(Db *db, uint32_t post, const uint8_t token_hash[32], uint64_t now_ms,
-                const char **html, uint32_t *len) {
+                DbOutFn out, void *ctx) {
   sqlite3_stmt *st = db->st[ST_BODY];
-  sqlite3_reset(st);
   sqlite3_bind_int64(st, 1, post);
   sqlite3_bind_blob(st, 2, token_hash, 32, SQLITE_STATIC);
   sqlite3_bind_int64(st, 3, (sqlite3_int64)now_ms);
   int rc = sqlite3_step(st);
+  int32_t r = rc == SQLITE_DONE ? 0 : -1;
   if (rc == SQLITE_ROW) {
     const unsigned char *t = sqlite3_column_text(st, 0);
     int n = sqlite3_column_bytes(st, 0);
     ASSERT(n >= 0);
-    *html = t != NULL ? (const char *)t : "";
-    *len = (uint32_t)n;
-    return 1;  // valid until the next db_body call (statement not reset yet)
+    out(ctx, t != NULL ? (const char *)t : "", (uint32_t)n);
+    r = 1;
   }
   sqlite3_reset(st);
-  return rc == SQLITE_DONE ? 0 : -1;
+  sqlite3_clear_bindings(st);
+  return r;
 }
 
 // AUTHENTICATION
@@ -807,7 +857,10 @@ DbResult db_sync(Db *db, const uint8_t token_hash[32], uint64_t now_ms, const Db
   if (n < 0) return DB_DENIED;
   DbWrite w = {.kind = A_SYNC_OPS, .target = post};
   if (!db_floor(f, &w)) return DB_DENIED;
-  if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return DB_ERROR;
+  if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) {
+    fprintf(stderr, "db_apply: begin: %s\n", sqlite3_errmsg(db->conn));
+    return DB_ERROR;
+  }
   DbResult r = db_facts_hold(db, token_hash, now_ms, f);
   if (r != DB_OK) {
     auth_rollback(db, AUTH_OK);

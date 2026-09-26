@@ -29,6 +29,11 @@ function start(ta) {
   const url = "/edit/" + post + "/sync";
   const key = "bent:post:" + post;
   const status = document.getElementById("sync-status");
+  // A published post's edits are saved as you type but only go live with
+  // Update: the status says so, rather than a "Saved" that reads as live.
+  const live = ta.dataset.published === "1";
+  let edited = false;
+  const savedText = () => (live && edited ? "Saved · press Update to publish changes" : "Saved");
   const initial = ta.value;
 
   let doc = new Doc();    // every operation known here
@@ -49,12 +54,19 @@ function start(ta) {
   // The button pressed (save or publish) is passed on.
   const form = ta.form;
   const title = form && form.elements.namedItem("title");
+  // A new draft is stored as "Untitled": show an empty title with its
+  // placeholder instead, and send "Untitled" if it is still empty.
+  if (title && title.value === "Untitled" && ta.dataset.published !== "1") {
+    title.value = "";
+    title.required = false;
+  }
   const title0 = title ? title.value : "";
   let leaving = false;
   if (form) {
     form.addEventListener("submit", async (ev) => {
       if (form.dataset.flushed === "1") return;
       ev.preventDefault();
+      if (title && !title.value.trim()) title.value = "Untitled";
       const by = ev.submitter || null;
       for (const b of form.elements) if (b.tagName === "BUTTON") b.disabled = true;
       local();
@@ -119,6 +131,7 @@ function start(ta) {
   ta.addEventListener("input", () => {
     local();
     grow();
+    edited = true;
     show("Unsaved changes", "busy");
     schedule(DEBOUNCE_MS);
   });
@@ -219,7 +232,7 @@ function start(ta) {
       if (got) remote(inflight ? got : got.concat(pending()));
       seed();
       save();
-      show(batches.length ? "Unsaved changes" : "Saved", batches.length ? "busy" : "");
+      show(batches.length ? "Unsaved changes" : savedText(), batches.length ? "busy" : "");
     } catch (e) {
       show("Offline: changes are kept on this device", "off");
     } finally {

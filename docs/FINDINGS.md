@@ -4,6 +4,33 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-26: Usability walkthrough, and a held read snapshot
+
+**Walkthrough.** A scripted headless-Chrome walk as a new user (click by
+visible text, screenshot each step) found: five steps from sign-up to the
+first typed word; a Write button that pointed at the page it was on; no
+feedback after Publish; "Saved" in the editor of a published post while
+the edits were not live; duplicated empty states; no author pages. Now:
+name the blog, press Write (a POST that creates an untitled draft and
+opens the editor), type, Publish (lands on the live post with a notice).
+Drafts get a placeholder address (`draft-<hex>`) and take one from their
+title on first publish, deduplicated in the blog (`db_publish_rename`);
+a published address never changes. Author pages at `/u/<id>`, shown only
+for people who have published (ids are sequential; otherwise anyone could
+list every account's name).
+
+**Bug: the server held a read snapshot after serving any post.**
+`db_body` returned a pointer into SQLite's row and left the statement
+stepping until the next call. A stepping statement is an open read
+transaction, so: (1) after any other process wrote to the database (the
+`sqlite3` CLI, a backup, a second server when we shard), every write here
+failed with "database is locked" (BEGIN IMMEDIATE cannot start from a
+stale snapshot); (2) WAL checkpoints could never finish, so the WAL would
+grow without bound. Found because a test inserted a row directly. Fix:
+the body is passed to a callback and the statement reset at once;
+`db_core_test` now checks that no statement is left busy. The server also
+logs SQLite's message when a write fails (it silently answered 500).
+
 ## 2026-09-26: The UI pass, and a data-loss bug it found
 
 **Design.** One stylesheet written by hand (11.7 KB, 3.4 KB gzipped),
