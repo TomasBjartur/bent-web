@@ -1,0 +1,13 @@
+[Unit]
+Description=Caddy (TLS edge for bent)
+After=network.target
+
+[Service]
+EnvironmentFile=%h/bent/env
+ExecStart=%h/opt/caddy/caddy run --config %h/bent/Caddyfile --adapter caddyfile
+Restart=always
+RestartSec=2
+NoNewPrivileges=no
+
+[Install]
+WantedBy=default.target

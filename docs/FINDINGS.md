@@ -54,6 +54,13 @@ script per load on a throttled phone, `load` 4× sooner, first paint 15–25%
 sooner. Found on the way: two SQLite indexing mistakes, and that
 Cross-Origin-Opener-Policy costs 60–90 ms of first paint from about:blank.
 
+### Deployment
+- **Spike servers were reachable from the internet.** This machine turned
+  out to be the real server (172.236.228.71), and two leftover spike
+  processes were listening on 0.0.0.0 (Bend's `TCP.listen` binds all
+  interfaces; our `Net.listen` binds loopback). Killed on discovery. Rule:
+  anything started for an experiment binds 127.0.0.1 and is stopped after.
+
 ### Open problems
 - **Novel-length documents on the server:** materializing in native Bend
   takes 1.7 s / 80 MB at 100k characters and 6.2 s / 249 MB at 300k, on the

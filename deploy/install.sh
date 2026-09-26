@@ -1,0 +1,26 @@
+#!/bin/sh
+# Installs (or upgrades) bent for the current user: builds, copies the
+# release to ~/bent, keeps data in ~/bent-data, (re)starts the user units.
+# One-time root steps are in deploy/README.md.
+set -eu
+cd "$(dirname "$0")/.."
+HOST="${BENT_HOST:-172-236-228-71.sslip.io}"
+./build.sh
+mkdir -p "$HOME/bent" "$HOME/bent-data" "$HOME/.config/systemd/user"
+chmod 700 "$HOME/bent-data"
+install -m 755 build/server "$HOME/bent/server.new" && mv "$HOME/bent/server.new" "$HOME/bent/server"
+install -m 644 deploy/Caddyfile "$HOME/bent/Caddyfile"
+cat > "$HOME/bent/env" <<ENV
+PORT=8080
+BLOG_DB=$HOME/bent-data/blog.db
+BLOG_ORIGIN=https://$HOST
+BLOG_RP_ID=$HOST
+BENT_HOST=$HOST
+BEND_NO_TELEMETRY=1
+ENV
+install -m 644 deploy/bent.service deploy/caddy.service "$HOME/.config/systemd/user/"
+systemctl --user daemon-reload
+systemctl --user enable bent caddy >/dev/null
+systemctl --user restart bent caddy
+sleep 2
+systemctl --user --no-pager status bent caddy | grep -E "Active|Main PID"

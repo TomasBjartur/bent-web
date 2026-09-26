@@ -1,6 +1,7 @@
-// Differential fuzzing: src/web/fugue.js (the browser's fast CRDT) against
-// src/crdt.bend (the reference whose merge laws are proved), compiled
-// natively as build/crdt_ref. Random multi-replica histories with random,
+// Differential fuzzing: src/web/fugue.js (the browser's fast CRDT) and
+// src/c/fugue_core.h (the server's materializer, as build/c/fugue_cli)
+// against src/crdt.bend (the reference whose merge laws are proved),
+// compiled natively as build/crdt_ref. Random multi-replica histories with random,
 // reordered, partial delivery. Checks, per trial:
 //   - after full delivery, every JS replica has the same text;
 //   - that text equals the reference's text for the union of all ops;
@@ -19,14 +20,26 @@ const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 214748364
 const pick = (n) => Math.floor(rnd() * n);
 const dir = mkdtempSync(join(tmpdir(), "fugue-"));
 const REF = new URL("../build/crdt_ref", import.meta.url).pathname;
+const CMAT = new URL("../build/c/fugue_cli", import.meta.url).pathname;
 
-function reference(ops) {
+function run(bin, ops) {
   const f = join(dir, "ops.txt");
   writeFileSync(f, Doc.encode(ops));
-  const out = execFileSync(REF, [f], { encoding: "utf8", maxBuffer: 1 << 26 });
+  const out = execFileSync(bin, [f], { encoding: "utf8", maxBuffer: 1 << 26 });
   const m = out.match(/<<TEXT>>([\s\S]*)<<END>>/);
-  if (!m) throw new Error("reference: " + out.slice(0, 200));
+  if (!m) throw new Error(bin + ": " + out.slice(0, 200));
   return m[1];
+}
+
+// The Bend reference; the C materializer (the server's) must agree with it.
+function reference(ops) {
+  const want = run(REF, ops);
+  const c = run(CMAT, ops);
+  if (c !== want) {
+    failures++;
+    console.log(`FAIL C materializer: c ${JSON.stringify(c)} ref ${JSON.stringify(want)}\n  ops ${Doc.encode(ops)}`);
+  }
+  return want;
 }
 
 const ALPHABET = ["a", "b", "c", "x", "y", "\n", "é", "😀"];

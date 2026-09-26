@@ -1,0 +1,19 @@
+[Unit]
+Description=bent blog server (Bend)
+After=network.target
+
+[Service]
+EnvironmentFile=%h/bent/env
+ExecStart=%h/bent/server
+WorkingDirectory=%h/bent-data
+Restart=always
+RestartSec=2
+# Sandboxing that works without root (user units).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/bent-data
+UMask=0077
+
+[Install]
+WantedBy=default.target
