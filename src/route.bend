@@ -47,6 +47,9 @@ type Route is Data:
   RTag{tag: String}
   RUpload{post: U32}
   RImage{key: String}
+  RBlogDomain{blog: String}
+  RDomainAsk{}
+  RToMain{path: String}
   RNotFound{}
 
 type Plan is Data:
@@ -92,6 +95,8 @@ def get1(k: Nat, +a: String) -> Route:
       RFeed{}
     case 7n:
       RSearch{}
+    case 8n:
+      RDomainAsk{}
     case _:
       RNotFound{}
 
@@ -133,7 +138,7 @@ def route_get(xs: List<&2, String>) -> Route:
     case Con{+a, t}:
       match t:
         case Nil{}:
-          get1(Nat.add(eq(a, "healthz"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.add(Nat.mul(eq(a, "login"), 4n), Nat.add(Nat.mul(eq(a, "verify"), 5n), Nat.add(Nat.mul(eq(a, "feed.xml"), 6n), Nat.mul(eq(a, "search"), 7n))))))), a)
+          get1(Nat.add(eq(a, "healthz"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "signup"), 3n), Nat.add(Nat.mul(eq(a, "login"), 4n), Nat.add(Nat.mul(eq(a, "verify"), 5n), Nat.add(Nat.mul(eq(a, "feed.xml"), 6n), Nat.add(Nat.mul(eq(a, "search"), 7n), Nat.mul(eq(a, "_domain"), 8n)))))))), a)
         case Con{+b, u}:
           match u:
             case Nil{}:
@@ -200,6 +205,8 @@ def post3(k: Nat, +b: String) -> Route:
       RSync{id_of(b)}
     case 9n:
       RDeleteComment{id_of(b)}
+    case 10n:
+      RBlogDomain{b}
     case _:
       RNotFound{}
 
@@ -207,7 +214,7 @@ def post3_old(+a: String, +c: String) -> Nat:
   Nat.add(Nat.mul(eq(a, "dash"), Nat.add(eq(c, "posts"), Nat.mul(eq(c, "authors"), 2n))), Nat.mul(eq(a, "edit"), Nat.add(Nat.mul(eq(c, "publish"), 3n), Nat.add(Nat.mul(eq(c, "unpublish"), 4n), Nat.add(Nat.mul(eq(c, "delete"), 5n), Nat.mul(eq(c, "sync"), 8n))))))
 
 def post3_id(+a: String, +b: String, +c: String) -> Nat:
-  Nat.add(Nat.mul(Nat.mul(eq(a, "passkey"), eq(c, "options")), Nat.add(Nat.mul(eq(b, "register"), 6n), Nat.mul(eq(b, "login"), 7n))), Nat.add(Nat.mul(Nat.mul(eq(a, "comment"), eq(c, "delete")), 9n), post3_old(a, c)))
+  Nat.add(Nat.mul(Nat.mul(eq(a, "passkey"), eq(c, "options")), Nat.add(Nat.mul(eq(b, "register"), 6n), Nat.mul(eq(b, "login"), 7n))), Nat.add(Nat.mul(Nat.mul(eq(a, "comment"), eq(c, "delete")), 9n), Nat.add(Nat.mul(Nat.mul(eq(a, "dash"), eq(c, "domain")), 10n), post3_old(a, c))))
 
 # /dash/<slug>/authors/<id>/remove
 def post5(k: Nat, +b: String, +d: String) -> Route:
@@ -270,5 +277,84 @@ def plan(h: Http.Head) -> Plan:
           Read{route_get(texts(Http.Path.segs(path)))}
         case Http.POST{}:
           plan_post(Csrf.csrf_ok(site_of(hdrs)), path)
+        case _:
+          Deny{405}
+
+# CUSTOM DOMAINS
+# --------------
+# A request to a blog's own domain (verified by DNS) can only read: "/" is
+# the blog, "/feed.xml" its feed, "/<post>" and "/b/<blog>/<post>" its
+# posts, "/s/..." and "/img/..." as usual. Anything else (logging in,
+# writing, other blogs) goes to the main site, where sessions and passkeys
+# live. Every POST is denied. LAWS.bend: route_custom_reads.
+def path_of(xs: List<&2, String>) -> String:
+  match xs:
+    case Nil{}:
+      ""
+    case Con{x, t}:
+      "/" ++ (x ++ path_of(t))
+
+# The site's own one-segment pages go to the main site (a post named like
+# one is still at /b/<blog>/<post>).
+def site_page(+a: String) -> Bool:
+  Bool.or(String.eq(a, "login"), Bool.or(String.eq(a, "signup"), Bool.or(String.eq(a, "dash"), Bool.or(String.eq(a, "search"), Bool.or(String.eq(a, "verify"), String.eq(a, "healthz"))))))
+
+def custom_one.go(k: Nat, +slug: String, +a: String) -> Route:
+  match k:
+    case 1n:
+      RBlogFeed{slug}
+    case 2n:
+      RToMain{"/" ++ a}
+    case _:
+      RPost{slug, a}
+
+def custom_one(+slug: String, +a: String) -> Route:
+  custom_one.go(Nat.add(eq(a, "feed.xml"), Nat.mul(U32.to_nat(Bool.to_u32(site_page(a))), 2n)), slug, a)
+
+def custom_two(k: Nat, +a: String, +b: String) -> Route:
+  match k:
+    case 1n:
+      RStatic{b}
+    case 2n:
+      RImage{b}
+    case _:
+      RToMain{"/" ++ (a ++ ("/" ++ b))}
+
+def custom_three(own: Bool, +slug: String, +a: String, +b: String, +c: String) -> Route:
+  match own:
+    case True{}:
+      RPost{slug, c}
+    case False{}:
+      RToMain{"/" ++ (a ++ ("/" ++ (b ++ ("/" ++ c))))}
+
+def custom_get(+slug: String, xs: List<&2, String>) -> Route:
+  match xs:
+    case Nil{}:
+      RBlog{slug}
+    case Con{+a, t}:
+      match t:
+        case Nil{}:
+          custom_one(slug, a)
+        case Con{+b, u}:
+          match u:
+            case Nil{}:
+              custom_two(Nat.add(eq(a, "s"), Nat.mul(eq(a, "img"), 2n)), a, b)
+            case Con{+c, v}:
+              match v:
+                case Nil{}:
+                  custom_three(Bool.and(String.eq(a, "b"), String.eq(b, slug)), slug, a, b, c)
+                case Con{d, w}:
+                  RToMain{path_of(Con{a, Con{b, Con{c, Con{d, w}}}})}
+
+def custom_plan(+slug: String, h: Http.Head) -> Plan:
+  match h:
+    case Http.Head{m, path, q, hdrs}:
+      match m:
+        case Http.GET{}:
+          Read{custom_get(slug, texts(Http.Path.segs(path)))}
+        case Http.HEAD{}:
+          Read{custom_get(slug, texts(Http.Path.segs(path)))}
+        case Http.POST{}:
+          Deny{403}
         case _:
           Deny{405}

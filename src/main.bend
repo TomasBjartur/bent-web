@@ -12,6 +12,8 @@ import ./route.bend as Route
 import ./session.bend as Session
 import ./handlers.bend as Handlers
 import ./auth.bend as Auth
+import ./text.bend as Text
+import ./pages.bend as Pages
 
 def head_timeout() -> U32:
   10000
@@ -53,11 +55,61 @@ def head_hdrs(h: Http.Head) -> Http.Hdrs:
     case Http.Head{m, p, q, hdrs}:
       hdrs
 
+# The Host header's name: lowered, without a port.
+def host.keep(colon: Bool, +h: Char, rest: String) -> String:
+  match colon:
+    case True{}:
+      SNil{}
+    case False{}:
+      SCon{h, rest}
+
+def host.cut(s: String) -> String:
+  match s:
+    case SNil{}:
+      SNil{}
+    case SCon{+h, t}:
+      host.keep(Char.is_eq(h, ':'), h, host.cut(t))
+
+def host_of(h: Http.Head) -> String:
+  match h:
+    case Http.Head{m, p, q, hdrs}:
+      match hdrs:
+        case Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}:
+          match host:
+            case None{}:
+              ""
+            case Some{v}:
+              Text.lower(host.cut(Http.Hval.text(v)))
+
+# This site (or a local check: Caddy's on-demand TLS question, tests).
+def is_main(+host: String, +c: Auth.Conf) -> Bool:
+  Bool.or(String.is_empty(host), Bool.or(String.eq(host, Auth.rp_id(c)), Bool.or(String.eq(host, "localhost"), String.eq(host, "127.0.0.1"))))
+
+# Any other host must be a blog's verified custom domain: served read-only
+# (Route.custom_plan), always as a signed-out visitor, whatever cookie came
+# with the request.
+def custom(s: Socket, +c: Auth.Conf, +h: Http.Head, +body: String, +rows: List<&2, List<&2, String>>) -> IO(Unit):
+  match rows:
+    case Nil{}:
+      Handlers.fail(s, "", 0, 404)
+    case Con{r, t}:
+      Handlers.exec(s, Route.custom_plan(Pages.col(r, 0n), h), c, "", 0, body, head_query(h))
+
+def dispatch(ours: Bool, s: Socket, +c: Auth.Conf, +h: Http.Head, +body: String, +token: String, +host: String) -> IO(Unit):
+  match ours:
+    case True{}:
+      do IO<Unit>:
+        +who : U32 <- Db.session_user(token)
+        Handlers.exec(s, Route.plan(h), c, token, who, body, head_query(h))
+    case False{}:
+      do IO<Unit>:
+        rows : List<&2, List<&2, String>> <- Db.query(Db.q_blog_by_domain(), 0, 0, host, "")
+        custom(s, c, h, body, rows)
+
 def handle.go(s: Socket, +c: Auth.Conf, +h: Http.Head, +body: String, +token: String) -> IO(Unit):
   do IO<Unit>:
     Db.tick()
-    +who : U32 <- Db.session_user(token)
-    Handlers.exec(s, Route.plan(h), c, token, who, body, head_query(h))
+    dispatch(is_main(host_of(h), c), s, c, h, body, token, host_of(h))
 
 # A complete request: find the session, plan, execute.
 def handle(s: Socket, +c: Auth.Conf, +h: Http.Head, +body: String) -> IO(Unit):

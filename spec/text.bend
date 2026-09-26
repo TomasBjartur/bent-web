@@ -92,3 +92,75 @@ def email_ok(+s: String) -> Bool:
 # A display name: 1..64 line characters.
 def name_ok(+s: String) -> Bool:
   Bool.and(Bool.not(String.is_empty(s)), Bool.and(Nat.is_le(String.length(s), 64n), all_line_chars(s)))
+
+# A custom domain for a blog: 4..253 characters of a-z 0-9 '-' '.', at
+# least two labels of 1..63 characters, no label starting or ending with
+# '-', starting with a letter or digit and ending with a letter (so never
+# an IP address).
+def dom_char(+c: Char) -> Bool:
+  +x = Char.to_u32(c)
+  Bool.or(Http.in_range(x, 97, 122), Bool.or(Http.in_range(x, 48, 57), Bool.or(U32.is_eq(x, 45), U32.is_eq(x, 46))))
+
+def all_dom_chars(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{+h, t}:
+      Bool.and(dom_char(h), all_dom_chars(t))
+
+def dom_next(dot: Bool, +n: U32) -> U32:
+  match dot:
+    case True{}:
+      0
+    case False{}:
+      (n + 1 : U32)
+
+# Every label (between dots) is at most 63 characters.
+def dom_labels(s: String, +n: U32) -> Bool:
+  match s:
+    case SNil{}:
+      U32.is_le(n, 63)
+    case SCon{+h, t}:
+      Bool.and(U32.is_le(n, 63), dom_labels(t, dom_next(Char.is_eq(h, '.'), n)))
+
+# No empty label and no label edge at '-': never "..", ".-" or "-.".
+def dom_pair_ok(+a: Char, +b: Char) -> Bool:
+  Bool.not(Bool.or(Bool.and(Char.is_eq(a, '.'), Bool.or(Char.is_eq(b, '.'), Char.is_eq(b, '-'))), Bool.and(Char.is_eq(a, '-'), Char.is_eq(b, '.'))))
+
+def dom_pairs(s: String, +prev: Char) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{+h, t}:
+      Bool.and(dom_pair_ok(prev, h), dom_pairs(t, h))
+
+def dom_has_dot(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      False{}
+    case SCon{+h, t}:
+      Bool.or(Char.is_eq(h, '.'), dom_has_dot(t))
+
+def dom_alnum(+c: Char) -> Bool:
+  +x = Char.to_u32(c)
+  Bool.or(Http.in_range(x, 97, 122), Http.in_range(x, 48, 57))
+
+def dom_alpha(+c: Char) -> Bool:
+  Http.in_range(Char.to_u32(c), 97, 122)
+
+def dom_last_alpha(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      False{}
+    case SCon{+h, t}:
+      dom_alpha(h)
+
+def dom_ends(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      False{}
+    case SCon{+h, t}:
+      Bool.and(dom_alnum(h), dom_last_alpha(String.reverse(SCon{h, t})))
+
+def domain_ok(+s: String) -> Bool:
+  Bool.and(Bool.and(Nat.is_le(4n, String.length(s)), Nat.is_le(String.length(s), 253n)), Bool.and(all_dom_chars(s), Bool.and(dom_has_dot(s), Bool.and(dom_ends(s), Bool.and(dom_pairs(s, '.'), dom_labels(s, 0))))))

@@ -46,5 +46,5 @@ echo "== server"
 # registers on Bend's runtime (clang 19). Our standalone cores keep it.
 HARDEN="-fstack-protector-strong -D_FORTIFY_SOURCE=3 -fno-strict-aliasing -fPIE"
 $CC -std=c11 -O2 $HARDEN -Wno-everything build/server.c build/sqlite3.o build/libbearssl.a \
-  -lpthread -lm -pie -Wl,-z,relro,-z,now -o build/server
+  -lpthread -lm -lresolv -pie -Wl,-z,relro,-z,now -o build/server
 echo "built build/server"

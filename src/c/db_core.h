@@ -73,7 +73,9 @@ typedef struct {
   DbText slug;       // A_CREATE_BLOG, A_CREATE_POST; A_PUBLISH_POST: the address
                      // for a never-published draft (see db_publish_rename);
                      // A_EDIT_POST with flag 1: the tags, "a,b,c" (see db_set_tags)
-  DbText title;      // A_CREATE_BLOG, A_EDIT_BLOG, A_CREATE_POST, A_EDIT_POST
+  DbText title;      // A_CREATE_BLOG, A_EDIT_BLOG, A_CREATE_POST, A_EDIT_POST;
+                     // A_EDIT_BLOG flag 1 (set) and 2 (verified): the custom domain,
+                     // with slug = its verification token; flag 3 removes it
   DbText body_md;    // A_EDIT_POST
   DbText body_html;  // A_EDIT_POST
 } DbWrite;
@@ -109,6 +111,8 @@ enum {
   Q_COMMENT_INFO,       // a=comment -> post_id, author_id, author, date, deleted  (published, or member)
   Q_POST_TAGS,          // a=post -> tag  (published, or member)
   Q_POSTS_BY_TAG,       // text=tag -> as Q_RECENT_PUBLIC  (published only)
+  Q_BLOG_DOMAIN,        // a=blog -> domain, token, verified (0/1)  (member only)
+  Q_BLOG_BY_DOMAIN,     // text=host -> slug  (verified domains only)
   Q_COUNT
 };
 
@@ -147,7 +151,7 @@ enum {
   ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
   ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
   ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT, ST_SLUG_TAKEN, ST_POST_RENAME,
-  ST_IMG_POST_COUNT, ST_IMG_RECENT, ST_IMG_NEW, ST_IMG_GET, ST_TAGS_CLEAR, ST_TAG_ADD, ST_SCHEDULE, ST_UNSCHEDULE, ST_DUE, ST_PUBLISH_DUE, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
+  ST_DOMAIN_SET, ST_DOMAIN_TAKE, ST_DOMAIN_OK, ST_DOMAIN_CLEAR, ST_IMG_POST_COUNT, ST_IMG_RECENT, ST_IMG_NEW, ST_IMG_GET, ST_TAGS_CLEAR, ST_TAG_ADD, ST_SCHEDULE, ST_UNSCHEDULE, ST_DUE, ST_PUBLISH_DUE, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
   ST_COUNT
 };
 

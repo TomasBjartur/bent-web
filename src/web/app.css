@@ -166,6 +166,15 @@ h2 { font-size: 1.35rem; margin: 40px 0 12px; }
 .body pre code { background: none; padding: 0; font-size: 0.88em; }
 .article footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 
+/* CUSTOM DOMAIN */
+
+.domain { margin-top: 32px; }
+.domain ol.steps { padding-left: 1.2em; font-size: 0.92rem; }
+.domain ol.steps li { margin: 8px 0; }
+.domain code { font: 0.85em var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.domain code.select { user-select: all; }
+.domain .row form { display: inline; }
+
 /* TAGS */
 
 .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 32px; }

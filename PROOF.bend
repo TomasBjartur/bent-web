@@ -351,6 +351,28 @@ def Laws.text_body_ok(t):
     case Text.Body{s, p}:
       p
 
+def Laws.route_custom_reads(slug, h):
+  match h:
+    case Http.Head{m, path, q, hdrs}:
+      match m:
+        case Http.GET{}:
+          {==}
+        case Http.HEAD{}:
+          {==}
+        case Http.POST{}:
+          {==}
+        case Http.PUT{}:
+          {==}
+        case Http.PATCH{}:
+          {==}
+        case Http.DELETE{}:
+          {==}
+
+def Laws.text_domain_ok(d):
+  match d:
+    case Text.Domain{s, p}:
+      p
+
 def Laws.text_slug_ok(t):
   match t:
     case Text.Slug{s, p}:

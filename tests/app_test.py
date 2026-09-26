@@ -18,9 +18,9 @@ def check(name, ok, detail=""):
     print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"   {detail}"))
 
 
-def req(method, path, token=None, form=None, site="same-origin", extra=b""):
+def req(method, path, token=None, form=None, site="same-origin", extra=b"", host="localhost"):
     body = urllib.parse.urlencode(form).encode() if form is not None else b""
-    head = f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n"
+    head = f"{method} {path} HTTP/1.1\r\nHost: {host}\r\n"
     if token:
         head += f"Cookie: sid={token}\r\n"
     if site:
@@ -526,6 +526,48 @@ def run(dbpath):
     req("POST", f"/edit/{tgid}", b, {"title": "Tagged", "body": f"A picture:\n\n![A red square]({path})\n\n![remote](https://evil.example/x.png)", "action": "publish"})
     _, _, body, _ = req("GET", "/b/bob-s-great-blog/tagged")
     check("post shows the stored image, not the remote one", f'<img src="{path}" alt="A red square" loading="lazy">' in body and "evil.example" not in body)
+
+    # Custom domains: the owner sets one, proves it with DNS, and the blog
+    # is served there read-only, as a signed-out visitor.
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/domain", b, {"action": "set", "domain": "Blog.Example.ORG."})
+    check("owner sets a domain", st == 303 and loc == "/dash/bob-s-great-blog#domain", (st, loc))
+    _, _, body, _ = req("GET", "/dash/bob-s-great-blog", b)
+    tok = re.search(r"slopstack-verify=([0-9a-f]{24})", body)
+    check("instructions: TXT record with a token", tok is not None and "_slopstack.blog.example.org" in body, body[body.find('id="domain"'):][:500])
+    st, _, _, _ = req("POST", "/dash/bob-s-great-blog/domain", c, {"action": "set", "domain": "evil.example.org"})
+    check("others cannot set a blog's domain", st == 403, st)
+    for bad in ["localhost", "10.0.0.1", "a..b.com", "https://x.com", "x" * 300 + ".com"]:
+        st, _, _, _ = req("POST", "/dash/bob-s-great-blog/domain", b, {"action": "set", "domain": bad})
+        check(f"bad domain {bad[:20]!r} refused", st == 400, st)
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/domain", b, {"action": "verify"})
+    check("verify without the TXT record: not verified", st == 303 and "dns=0" in loc, (st, loc))
+    check("says so", "was not found yet" in req("GET", loc.split("#")[0], b)[2])
+    check("unverified: no certificate", req("GET", "/_domain?domain=blog.example.org")[0] == 404)
+    check("unverified: not served", req("GET", "/", host="blog.example.org")[0] == 404)
+    q = sqlite3.connect(dbpath)
+    q.execute("UPDATE blog SET domain_ok = 1 WHERE domain = 'blog.example.org'")
+    q.commit()
+    q.close()
+    check("verified: certificate allowed", req("GET", "/_domain?domain=blog.example.org")[0] == 200)
+    st, _, body, _ = req("GET", "/", host="blog.example.org")
+    check("custom domain: / is the blog", st == 200 and "Bob&#39;s Great Blog!" in body and "Log out" not in body, st)
+    st, _, body, _ = req("GET", "/hello-world", host="blog.example.org")
+    check("custom domain: /<post>", st == 200 and "Words here." in body, st)
+    st, _, body, _ = req("GET", "/b/bob-s-great-blog/hello-world", host="blog.example.org:443")
+    check("custom domain: /b/<blog>/<post> links work (port ignored)", st == 200 and "Words here." in body, st)
+    st, _, xml, head = req("GET", "/feed.xml", host="blog.example.org")
+    check("custom domain: its feed", st == 200 and "application/rss+xml" in head and "Hello, World" in xml, st)
+    st, loc, _, _ = req("GET", "/login", host="blog.example.org")
+    check("custom domain: logging in happens on the main site", st == 303 and loc.startswith("http") and loc.endswith("/login"), (st, loc))
+    st, loc, _, _ = req("GET", "/b/mallory-writes/hello-world", host="blog.example.org")
+    check("custom domain: other blogs are on the main site", st == 303 and "/b/mallory-writes/hello-world" in loc, (st, loc))
+    st, _, _, _ = req("POST", f"/like/{ppid}", b, {"on": "1"}, host="blog.example.org")
+    check("custom domain: no writes, even with a session", st == 403, st)
+    st, _, _, _ = req("GET", "/draft-tagged", b, host="blog.example.org")
+    check("custom domain: drafts never shown, even with a session", st == 404, st)
+    check("unknown host: 404", req("GET", "/", host="nobody.example.net")[0] == 404)
+    st, _, _, _ = req("POST", "/dash/bob-s-great-blog/domain", b, {"action": "remove"})
+    check("remove", st == 303 and req("GET", "/_domain?domain=blog.example.org")[0] == 404 and req("GET", "/", host="blog.example.org")[0] == 404)
 
     # Security headers everywhere.
     _, _, _, head = req("GET", "/b/alice/first")

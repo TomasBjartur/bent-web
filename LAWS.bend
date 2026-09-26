@@ -354,6 +354,17 @@ law text_body_ok:
   for t: Text.Body
   {TextSpec.body_ok(body_text(t)) == True{} : Bool}
 
+def domain_text(d: Text.Domain) -> String:
+  match d:
+    case Text.Domain{s, p}:
+      s
+
+# LAW: a custom domain is a valid host name of letters, digits, '-' and
+# '.', never an IP address (see spec/text.bend domain_ok).
+law text_domain_ok:
+  for d: Text.Domain
+  {TextSpec.domain_ok(domain_text(d)) == True{} : Bool}
+
 # LAW: a slug is 1..64 of a-z, 0-9 and '-'.
 law text_slug_ok:
   for t: Text.Slug
@@ -392,6 +403,13 @@ law route_csrf:
   for ds: Maybe<&2, Http.Hval>
   for e: {CsrfSpec.csrf_ok(site_str(site)) == False{} : Bool}
   {Route.plan(Http.Head{Http.POST{}, path, q, Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}}) == Route.Deny{403} : Route.Plan}
+
+# LAW: on a blog's custom domain nothing is ever planned as a write, for
+# any method, path or headers (no session cookie reaches it anyway).
+law route_custom_reads:
+  for +slug: String
+  for h: Http.Head
+  {is_write(Route.custom_plan(slug, h)) == False{} : Bool}
 
 # LAW: only POST can ever plan a write; GET, HEAD and every other method
 # never do.

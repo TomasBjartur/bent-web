@@ -358,8 +358,36 @@ def owner_tools(b: Bool, +blog: String) -> String:
     case False{}:
       ""
 
-def dash_blog(+slug: String, title: String, +is_owner: Bool, posts: List<&2, List<&2, String>>, authors: List<&2, List<&2, String>>) -> String:
-  "<p class=\"meta crumb\"><a href=\"/dash\">← Your blogs</a></p><div class=\"dash-head\"><h1>" ++ (e(title) ++ ("</h1><div class=\"row\"><a class=\"btn\" href=\"/b/" ++ (e(slug) ++ ("\">View blog</a>" ++ (new_post_button(slug, "New post") ++ ("</div></div><div class=\"cols\"><section>" ++ (member_posts(slug, posts) ++ ("</section><aside><h2>Authors</h2><ul class=\"people\">" ++ (author_items(slug, is_owner, authors) ++ ("</ul>" ++ (owner_tools(is_owner, slug) ++ "</aside></div>")))))))))))
+# CUSTOM DOMAIN (owner only). dom: [domain, token, verified]; main: this
+# site's host; failed: a verification just found no TXT record.
+def dns_notice(failed: Bool) -> String:
+  match failed:
+    case True{}:
+      "<p class=\"notice\">The TXT record was not found yet. DNS changes can take a few minutes (sometimes an hour) to appear.</p>"
+    case False{}:
+      ""
+
+def domain_form(+slug: String, +action: String, +label: String, +cls: String) -> String:
+  "<form method=\"post\" action=\"/dash/" ++ (e(slug) ++ ("/domain\"><input type=\"hidden\" name=\"action\" value=\"" ++ (e(action) ++ ("\"><button class=\"" ++ (e(cls) ++ ("\">" ++ (e(label) ++ "</button></form>")))))))
+
+def domain_state(k: Nat, +slug: String, +dom: List<&2, String>, +main: String, failed: Bool) -> String:
+  match k:
+    case 0n:
+      "<p class=\"muted\">Serve this blog at your own address, like blog.example.com.</p><form method=\"post\" action=\"/dash/" ++ (e(slug) ++ "/domain\" class=\"stack\"><input type=\"hidden\" name=\"action\" value=\"set\"><label>Domain <input name=\"domain\" required maxlength=\"253\" placeholder=\"blog.example.com\"></label><div><button>Use this domain</button></div></form>")
+    case 1n:
+      "<p>For <strong>" ++ (e(col(dom, 0n)) ++ ("</strong>, at your DNS provider:</p><ol class=\"steps\"><li>Point it here: a <code>CNAME</code> record to <code>" ++ (e(main) ++ ("</code> (or the same <code>A</code> record).</li><li>Add a <code>TXT</code> record named <code>_slopstack." ++ (e(col(dom, 0n)) ++ ("</code> with the value <code class=\"select\">slopstack-verify=" ++ (e(col(dom, 1n)) ++ ("</code></li></ol>" ++ (dns_notice(failed) ++ ("<div class=\"row\">" ++ (domain_form(slug, "verify", "Verify", "primary") ++ (domain_form(slug, "remove", "Remove", "quiet") ++ "</div>"))))))))))))
+    case _:
+      "<p>Live at <a href=\"https://" ++ (e(col(dom, 0n)) ++ ("/\">" ++ (e(col(dom, 0n)) ++ ("</a>.</p>" ++ domain_form(slug, "remove", "Remove", "quiet")))))
+
+def domain_section(b: Bool, +slug: String, +dom: List<&2, String>, +main: String, failed: Bool) -> String:
+  match b:
+    case True{}:
+      "<section id=\"domain\" class=\"domain\"><h2>Custom domain</h2>" ++ (domain_state(Nat.add(U32.to_nat(Bool.to_u32(Bool.not(String.is_empty(col(dom, 0n))))), U32.to_nat(Bool.to_u32(String.eq(col(dom, 2n), "1")))), slug, dom, main, failed) ++ "</section>")
+    case False{}:
+      ""
+
+def dash_blog(+slug: String, title: String, +is_owner: Bool, posts: List<&2, List<&2, String>>, authors: List<&2, List<&2, String>>, +dom: List<&2, String>, +main: String, failed: Bool) -> String:
+  "<p class=\"meta crumb\"><a href=\"/dash\">← Your blogs</a></p><div class=\"dash-head\"><h1>" ++ (e(title) ++ ("</h1><div class=\"row\"><a class=\"btn\" href=\"/b/" ++ (e(slug) ++ ("\">View blog</a>" ++ (new_post_button(slug, "New post") ++ ("</div></div><div class=\"cols\"><section>" ++ (member_posts(slug, posts) ++ ("</section><aside><h2>Authors</h2><ul class=\"people\">" ++ (author_items(slug, is_owner, authors) ++ ("</ul>" ++ (owner_tools(is_owner, slug) ++ (domain_section(is_owner, slug, dom, main, failed) ++ "</aside></div>"))))))))))))
 
 def schedule_ui.go(none: Bool, +at: String) -> String:
   match none:

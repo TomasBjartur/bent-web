@@ -34,3 +34,15 @@ exists.
 - Data: `~/bent-data/blog.db` (WAL). Backup: `sqlite3 ~/bent-data/blog.db ".backup backup.db"`.
 - Email: nothing sends mail yet. Sign-up and recovery links are in the
   `outbox` table: `tools/outbox.py` prints the pending ones.
+
+## Custom domains
+
+Blog owners set a domain under "Custom domain" on the blog's page, point it
+at this server (a CNAME to the main host, or the same A record), and add a
+TXT record `_slopstack.<domain>` = `slopstack-verify=<token>`. Verify checks
+it with the system resolver. Caddy then gets a certificate on the first
+visit (on-demand TLS), after asking the app (`GET /_domain?domain=...`),
+which only approves verified domains. Custom domains are served read-only
+and always as a signed-out visitor; logging in and writing redirect to the
+main site. Verification is not repeated later: a domain that lapses keeps
+working until its owner removes it or another blog verifies it.

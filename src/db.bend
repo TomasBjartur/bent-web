@@ -108,7 +108,7 @@ def act_of(a: Spec.Action, +flag: U32) -> Act:
     case Spec.CreateBlog{}:
       Act{0, 0, 0, 0}
     case Spec.EditBlog{b}:
-      Act{1, b, 0, 0}
+      Act{1, b, 0, flag}
     case Spec.DeleteBlog{b}:
       Act{2, b, 0, 0}
     case Spec.AddAuthor{b, u}:
@@ -145,6 +145,11 @@ def upload(+token: String, p: Authz.Permit, bytes: String) -> IO(Result<&1, &1, 
 
 # Sends the image stored under key (32 hex digits), or 404.
 def image(sock: Socket, key: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+  import "./effects/db.c"
+
+# Does name have a TXT record reading exactly expect? (A blocking lookup
+# on a helper thread; false on any failure.)
+def dns_txt_has(name: String, expect: String) -> IO(Bool):
   import "./effects/db.c"
 
 # The page cache (src/effects/db.c): cached sends the page stored under
@@ -224,6 +229,12 @@ def q_post_tags() -> U32:
 def q_posts_by_tag() -> U32:
   19
 
+def q_blog_domain() -> U32:
+  20
+
+def q_blog_by_domain() -> U32:
+  21
+
 def principal.go(anon: Bool, +who: U32) -> Spec.Principal:
   match anon:
     case True{}:
@@ -288,6 +299,10 @@ def blog_data(s: Text.Slug, t: Text.Title) -> WData:
 
 def title_data(t: Text.Title) -> WData:
   WData{"", Text.Title.text(t), "", None{}, 0}
+
+# A custom domain and its verification token (EditBlog, flags 1 and 2).
+def domain_data(+domain: String, +token: String) -> WData:
+  WData{token, domain, "", None{}, 0}
 
 # Scheduling (apply's flag 2): the address the draft will take and when
 # (minutes since 1970, UTC).

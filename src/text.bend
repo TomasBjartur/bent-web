@@ -35,6 +35,11 @@ type Name is Data:
 type Field is Data:
   Field{name: String, value: String}
 
+# CUSTOM DOMAINS
+# --------------
+type Domain is Data:
+  Domain{text: String, pf: {Spec.domain_ok(text) == True{} : Bool}}
+
 def mk_title.go(b: Bool, +s: String, e: {Spec.title_ok(s) == b : Bool}) -> Maybe<&2, Title>:
   match b:
     case True{}:
@@ -768,3 +773,47 @@ def minutes.pick(ok: Bool, +s: String) -> U32:
 
 def minutes_of(+s: String) -> U32:
   minutes.pick(Bool.and(U32.is_eq(U32.from_nat(String.length(s)), 16), minutes.ok(s)), s)
+
+def Domain.text(d: Domain) -> String:
+  match d:
+    case Domain{s, p}:
+      s
+
+def mk_domain.go(b: Bool, +s: String, e: {Spec.domain_ok(s) == b : Bool}) -> Maybe<&2, Domain>:
+  match b:
+    case True{}:
+      Some{Domain{s, e}}
+    case False{}:
+      None{}
+
+def mk_domain(+s: String) -> Maybe<&2, Domain>:
+  mk_domain.go(Spec.domain_ok(s), s, {==})
+
+# ASCII letters lowered (so "Blog.Example.COM" is accepted).
+def lower.c(up: Bool, +c: Char) -> Char:
+  match up:
+    case True{}:
+      Char.from_u32((Char.to_u32(c) + 32 : U32))
+    case False{}:
+      c
+
+def lower(s: String) -> String:
+  match s:
+    case SNil{}:
+      SNil{}
+    case SCon{+h, t}:
+      SCon{lower.c(Http.in_range(Char.to_u32(h), 65, 90), h), lower(t)}
+
+def dom_norm.go(dot: Bool, +s: String) -> String:
+  match dot:
+    case True{}:
+      String.take(s, Nat.sub(String.length(s), 1n))
+    case False{}:
+      s
+
+# The domain field: trimmed, lowered, a final '.' dropped.
+def dom_norm(+s: String) -> String:
+  dom_norm.go(String.ends_with(s, "."), s)
+
+def form_domain(+xs: List<&2, Field>, +key: String) -> Maybe<&2, Domain>:
+  mk_domain(dom_norm(lower(String.trim(Maybe.default(&2, String, decode_of(form_get(xs, key)), "")))))

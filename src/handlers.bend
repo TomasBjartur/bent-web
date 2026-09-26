@@ -472,7 +472,7 @@ def facts_role(f: Spec.Facts) -> Maybe<&2, Spec.Role>:
     case Spec.Facts{who, blog, role, post}:
       role
 
-def h_dash_blog3(s: Socket, +token: String, +who: U32, +blog: U32, +slug: String, +title: String, +f: Spec.Facts, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+def h_dash_blog3(s: Socket, +token: String, +who: U32, +blog: U32, +slug: String, +title: String, +main: String, +failed: Bool, +f: Spec.Facts, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
     case None{}:
       fail(s, token, who, 404)
@@ -480,21 +480,128 @@ def h_dash_blog3(s: Socket, +token: String, +who: U32, +blog: U32, +slug: String
       do IO<Unit>:
         posts : List<&2, List<&2, String>> <- Db.query(Db.q_posts_member(), blog, 0, "", token)
         authors : List<&2, List<&2, String>> <- Db.query(Db.q_authors(), blog, 0, "", token)
-        send(s, token, 200, Pages.layout_wide(title, True{}, Pages.dash_blog(slug, title, Spec.is_owner(facts_role(f)), posts, authors)))
+        dom : List<&2, List<&2, String>> <- Db.query(Db.q_blog_domain(), blog, 0, "", token)
+        send(s, token, 200, Pages.layout_wide(title, True{}, Pages.dash_blog(slug, title, Spec.is_owner(facts_role(f)), posts, authors, first_row(dom), main, failed)))
 
-def h_dash_blog2.go(s: Socket, +token: String, +who: U32, +slug: String, +id: U32, +title: String) -> IO(Unit):
+def h_dash_blog2.go(s: Socket, +token: String, +who: U32, +slug: String, +id: U32, +title: String, +main: String, +failed: Bool) -> IO(Unit):
   do IO<Unit>:
     +f : Spec.Facts <- Db.facts(who, id, 0)
-    h_dash_blog3(s, token, who, id, slug, title, f, Authz.authorize(f, Spec.ReadBlogAdmin{id}))
+    h_dash_blog3(s, token, who, id, slug, title, main, failed, f, Authz.authorize(f, Spec.ReadBlogAdmin{id}))
 
-def h_dash_blog2(s: Socket, +token: String, +who: U32, +slug: String, +blog: List<&2, List<&2, String>>) -> IO(Unit):
+def h_dash_blog2(s: Socket, +token: String, +who: U32, +slug: String, +main: String, +failed: Bool, +blog: List<&2, List<&2, String>>) -> IO(Unit):
   +id = num(first_col(blog, 0n))
-  h_dash_blog2.go(s, token, who, slug, id, first_col(blog, 1n))
+  h_dash_blog2.go(s, token, who, slug, id, first_col(blog, 1n), main, failed)
 
-def h_dash_blog(s: Socket, +token: String, +who: U32, +slug: String) -> IO(Unit):
+# ?dns=0: a domain verification just found no TXT record.
+def h_dash_blog(s: Socket, +token: String, +who: U32, +slug: String, +query: String, +main: String) -> IO(Unit):
   do IO<Unit>:
     blog : List<&2, List<&2, String>> <- blog_rows(token, slug)
-    h_dash_blog2(s, token, who, slug, blog)
+    h_dash_blog2(s, token, who, slug, main, String.eq(Maybe.default(&2, String, Text.form_raw(form(query), "dns"), ""), "0"), blog)
+
+# WRITES
+# ------
+# Runs a write the Permit allows, then redirects to `next` (or fails).
+def write_done(s: Socket, +token: String, +who: U32, +next: String, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
+  match r:
+    case Done{id}:
+      redirect(s, token, next, "")
+    case Fail{err}:
+      (code, msg) = err
+      fail(s, token, who, apply_status(code))
+
+def write(s: Socket, +token: String, +who: U32, m: Maybe<&2, Authz.Permit>, +flag: U32, d: Db.WData, +next: String) -> IO(Unit):
+  match m:
+    case None{}:
+      fail(s, token, who, 403)
+    case Some{p}:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, flag, d)
+        write_done(s, token, who, next, r)
+
+# CUSTOM DOMAINS (the blog's owner: EditBlog). action=set with a domain
+# (not this site's own host or a name under it), verify (the DNS TXT
+# record _slopstack.<domain> must read slopstack-verify=<token>), remove.
+def h_domain_write(s: Socket, +token: String, +who: U32, +slug: String, m: Maybe<&2, Authz.Permit>, +flag: U32, d: Db.WData) -> IO(Unit):
+  write(s, token, who, m, flag, d, "/dash/" ++ (slug ++ "#domain"))
+
+def h_domain_set2(ours: Bool, s: Socket, +token: String, +who: U32, +slug: String, m: Maybe<&2, Authz.Permit>, +domain: String) -> IO(Unit):
+  match ours:
+    case True{}:
+      fail(s, token, who, 400)
+    case False{}:
+      do IO<Unit>:
+        +hex : String <- Auth.random_hex(12)
+        h_domain_write(s, token, who, slug, m, 1, Db.domain_data(domain, hex))
+
+def h_domain_set(s: Socket, +token: String, +who: U32, +slug: String, +main: String, m: Maybe<&2, Authz.Permit>, d: Maybe<&2, Text.Domain>) -> IO(Unit):
+  match d:
+    case None{}:
+      fail(s, token, who, 400)
+    case Some{+x}:
+      h_domain_set2(Bool.or(String.eq(Text.Domain.text(x), main), String.ends_with(Text.Domain.text(x), "." ++ main)), s, token, who, slug, m, Text.Domain.text(x))
+
+def h_domain_verified(found: Bool, s: Socket, +token: String, +who: U32, +slug: String, m: Maybe<&2, Authz.Permit>, +dom: List<&2, String>) -> IO(Unit):
+  match found:
+    case True{}:
+      h_domain_write(s, token, who, slug, m, 2, Db.domain_data(Pages.col(dom, 0n), Pages.col(dom, 1n)))
+    case False{}:
+      redirect(s, token, "/dash/" ++ (slug ++ "?dns=0#domain"), "")
+
+def h_domain_verify2(s: Socket, +token: String, +who: U32, +slug: String, m: Maybe<&2, Authz.Permit>, +dom: List<&2, String>) -> IO(Unit):
+  do IO<Unit>:
+    found : Bool <- Db.dns_txt_has("_slopstack." ++ Pages.col(dom, 0n), "slopstack-verify=" ++ Pages.col(dom, 1n))
+    h_domain_verified(Bool.and(found, Bool.not(String.is_empty(Pages.col(dom, 0n)))), s, token, who, slug, m, dom)
+
+def h_domain_verify(s: Socket, +token: String, +who: U32, +slug: String, +blog: U32, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match m:
+    case None{}:
+      fail(s, token, who, 403)
+    case Some{+p}:
+      do IO<Unit>:
+        dom : List<&2, List<&2, String>> <- Db.query(Db.q_blog_domain(), blog, 0, "", token)
+        h_domain_verify2(s, token, who, slug, Some{p}, first_row(dom))
+
+def h_domain3(k: Nat, s: Socket, +token: String, +who: U32, +slug: String, +blog: U32, +main: String, +xs: List<&2, Text.Field>, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match k:
+    case 1n:
+      h_domain_set(s, token, who, slug, main, m, Text.form_domain(xs, "domain"))
+    case 2n:
+      h_domain_verify(s, token, who, slug, blog, m)
+    case 3n:
+      h_domain_write(s, token, who, slug, m, 3, Db.no_data())
+    case _:
+      fail(s, token, who, 400)
+
+def save_mode.go_domain(+a: String) -> U32:
+  (Bool.to_u32(String.eq(a, "set")) + ((2 * Bool.to_u32(String.eq(a, "verify"))) + (3 * Bool.to_u32(String.eq(a, "remove")))) : U32)
+
+def h_domain2(s: Socket, +token: String, +who: U32, +slug: String, +main: String, +xs: List<&2, Text.Field>, +blog: U32) -> IO(Unit):
+  do IO<Unit>:
+    f : Spec.Facts <- Db.facts(who, blog, 0)
+    h_domain3(U32.to_nat(save_mode.go_domain(Maybe.default(&2, String, Text.form_raw(xs, "action"), ""))), s, token, who, slug, blog, main, xs, Authz.authorize(f, Spec.EditBlog{blog}))
+
+def h_domain(s: Socket, +token: String, +who: U32, +slug: String, +body: String, +main: String) -> IO(Unit):
+  do IO<Unit>:
+    blog : List<&2, List<&2, String>> <- blog_rows(token, slug)
+    h_domain2(s, token, who, slug, main, form(body), num(first_col(blog, 0n)))
+
+# GET /_domain?domain=X: Caddy asks before getting a certificate for a
+# host (on-demand TLS); only verified custom domains are allowed.
+def h_domain_ask2(s: Socket, +token: String, +rows: List<&2, List<&2, String>>) -> IO(Unit):
+  match rows:
+    case Nil{}:
+      send_text(s, token, 404, "unknown domain\n")
+    case Con{r, t}:
+      send_text(s, token, 200, "ok\n")
+
+def h_domain_ask(s: Socket, +token: String, +query: String) -> IO(Unit):
+  do IO<Unit>:
+    rows : List<&2, List<&2, String>> <- Db.query(Db.q_blog_by_domain(), 0, 0, Maybe.default(&2, String, Text.decode_of(Text.form_get(form(query), "domain")), ""), token)
+    h_domain_ask2(s, token, rows)
+
+# The site's host (its origin without the scheme).
+def main_host(+origin: String) -> String:
+  String.drop(origin, U32.to_nat(((Bool.to_u32(String.starts_with(origin, "https://")) * 8) + (Bool.to_u32(String.starts_with(origin, "http://")) * 7) : U32)))
 
 # A replica id for this editor: random, >= 2 (1 is the seed replica).
 def rep_of(+rh: String) -> U32:
@@ -523,26 +630,6 @@ def h_edit(s: Socket, +token: String, +who: U32, +pid: U32) -> IO(Unit):
   do IO<Unit>:
     f : Spec.Facts <- Db.facts(who, 0, pid)
     h_edit2(s, token, who, pid, Authz.authorize(f, Spec.EditPost{pid}))
-
-# WRITES
-# ------
-# Runs a write the Permit allows, then redirects to `next` (or fails).
-def write_done(s: Socket, +token: String, +who: U32, +next: String, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
-  match r:
-    case Done{id}:
-      redirect(s, token, next, "")
-    case Fail{err}:
-      (code, msg) = err
-      fail(s, token, who, apply_status(code))
-
-def write(s: Socket, +token: String, +who: U32, m: Maybe<&2, Authz.Permit>, +flag: U32, d: Db.WData, +next: String) -> IO(Unit):
-  match m:
-    case None{}:
-      fail(s, token, who, 403)
-    case Some{p}:
-      do IO<Unit>:
-        r : Result<&1, &1, U32 & String, U32> <- Db.apply(token, p, flag, d)
-        write_done(s, token, who, next, r)
 
 # Like write, but redirects to a path built from the new id.
 def write_new_done(s: Socket, +token: String, +who: U32, +prefix: String, r: Result<&1, &1, U32 & String, U32>) -> IO(Unit):
@@ -964,6 +1051,10 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
   match r:
     case Route.RFeed{}:
       h_feed(s, token, origin)
+    case Route.RDomainAsk{}:
+      h_domain_ask(s, token, query)
+    case Route.RToMain{+p}:
+      redirect(s, token, origin ++ p, "")
     case Route.RSearch{}:
       h_search(s, token, who, query)
     case Route.RReply{+id}:
@@ -989,7 +1080,7 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
     case Route.RDash{}:
       h_dash(s, token, who)
     case Route.RDashBlog{+slug}:
-      h_dash_blog(s, token, who, slug)
+      h_dash_blog(s, token, who, slug, query, main_host(origin))
     case Route.REdit{+id}:
       h_edit(s, token, who, id)
     case Route.RStatic{+name}:
@@ -1029,6 +1120,8 @@ def write_route(s: Socket, r: Route.Route, +c: Auth.Conf, +token: String, +who: 
       h_like(s, token, who, id, body)
     case Route.RUpload{+id}:
       h_upload(s, token, who, id, body)
+    case Route.RBlogDomain{+b}:
+      h_domain(s, token, who, b, body, main_host(Auth.origin(c)))
     case Route.RComment{+id}:
       h_comment(s, token, who, id, body)
     case Route.RDeleteComment{+id}:

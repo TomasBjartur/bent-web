@@ -72,6 +72,12 @@ static const char *const DB_SQL[ST_COUNT] = {
               "ORDER BY publish_at_ms LIMIT 20"),
   [ST_PUBLISH_DUE] = ("UPDATE post SET published = 1, published_ms = publish_at_ms, updated_ms = ?2, "
                       "publish_at_ms = NULL, publish_slug = NULL WHERE id = ?1 AND published = 0 AND publish_at_ms <= ?2"),
+  [ST_DOMAIN_SET] = "UPDATE blog SET domain = ?2, domain_token = ?3, domain_ok = 0 WHERE id = ?1",
+  // DNS proved control now: another blog's older claim to it ends.
+  [ST_DOMAIN_TAKE] = "UPDATE blog SET domain = NULL, domain_token = NULL, domain_ok = 0 WHERE domain = ?2 AND id <> ?1",
+  [ST_DOMAIN_OK] = ("UPDATE blog SET domain_ok = 1 WHERE id = ?1 AND domain = ?2 AND domain_token = ?3 "
+                    "AND domain_ok = 0"),
+  [ST_DOMAIN_CLEAR] = "UPDATE blog SET domain = NULL, domain_token = NULL, domain_ok = 0 WHERE id = ?1",
   [ST_IMG_POST_COUNT] = "SELECT count(*) FROM image WHERE post_id = ?1",
   [ST_IMG_RECENT] = "SELECT count(*) FROM image WHERE author_id = ?1 AND created_ms > ?2",
   [ST_IMG_NEW] = ("INSERT INTO image(key, post_id, author_id, type, bytes, created_ms) "
@@ -183,6 +189,9 @@ static const char *const DB_Q[Q_COUNT] = {
                    "AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ") ORDER BY t.rowid LIMIT 5"),
   [Q_POSTS_BY_TAG] = ("SELECT " FEED_COLS " FROM post_tag t JOIN post p ON p.id = t.post_id JOIN blog b ON b.id = p.blog_id "
                       "WHERE t.tag = ?3 AND p.published = 1 ORDER BY p.published_ms DESC LIMIT 100"),
+  [Q_BLOG_DOMAIN] = ("SELECT coalesce(b.domain, ''), coalesce(b.domain_token, ''), b.domain_ok FROM blog b "
+                     "WHERE b.id = ?1 AND " MEMBER_OF("b.id")),
+  [Q_BLOG_BY_DOMAIN] = "SELECT slug FROM blog WHERE domain = ?3 AND domain_ok = 1",
   [Q_POSTS_BY_AUTHOR] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id "
                          "WHERE p.author_id = ?1 AND p.published = 1 ORDER BY p.published_ms DESC LIMIT 100"),
 };
@@ -242,6 +251,14 @@ static const char *const DB_MIGRATIONS[] = {
   " bytes BLOB NOT NULL CHECK (length(bytes) BETWEEN 1 AND 1048576), created_ms INTEGER NOT NULL);"
   "CREATE INDEX image_post ON image(post_id);"
   "CREATE INDEX image_author_time ON image(author_id, created_ms);",
+  // v8: custom domains (verified by a DNS TXT record; one blog per
+  // verified domain).
+  "ALTER TABLE blog ADD COLUMN domain TEXT CHECK (domain IS NULL OR (length(domain) BETWEEN 4 AND 253"
+  " AND domain NOT GLOB '*[^a-z0-9.-]*'));"
+  "ALTER TABLE blog ADD COLUMN domain_token TEXT;"
+  "ALTER TABLE blog ADD COLUMN domain_ok INTEGER NOT NULL DEFAULT 0 CHECK (domain_ok IN (0, 1));"
+  "CREATE UNIQUE INDEX blog_domain_ok ON blog(domain) WHERE domain_ok = 1;"
+  "CREATE INDEX blog_domain ON blog(domain);",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 
@@ -554,6 +571,33 @@ static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *
       sqlite3_bind_int64(st, 3, ROLE_OWNER);
       return db_rc(db_exec(st));
     case A_EDIT_BLOG:
+      if (w->flag == 1u || w->flag == 2u) {
+        // Custom domain: set (unverified), or verified (the caller checked
+        // DNS; the row must still hold this domain and token).
+        if (w->title.len < 4u || w->title.len > 253u || w->slug.len == 0u || w->slug.len > 64u) return DB_CONFLICT;
+        if (w->flag == 1u) {
+          st = db->st[ST_DOMAIN_SET];
+          sqlite3_bind_int64(st, 1, w->target);
+          bind_text(st, 2, w->title);
+          bind_text(st, 3, w->slug);
+          return db_rc(db_exec(st));
+        }
+        st = db->st[ST_DOMAIN_TAKE];
+        sqlite3_bind_int64(st, 1, w->target);
+        bind_text(st, 2, w->title);
+        if ((r = db_rc(db_exec(st))) != DB_OK) return r;
+        st = db->st[ST_DOMAIN_OK];
+        sqlite3_bind_int64(st, 1, w->target);
+        bind_text(st, 2, w->title);
+        bind_text(st, 3, w->slug);
+        if ((r = db_rc(db_exec(st))) != DB_OK) return r;
+        return sqlite3_changes(db->conn) == 1 ? DB_OK : DB_STALE;
+      }
+      if (w->flag == 3u) {
+        st = db->st[ST_DOMAIN_CLEAR];
+        sqlite3_bind_int64(st, 1, w->target);
+        return db_rc(db_exec(st));
+      }
       st = db->st[ST_BLOG_TITLE];
       sqlite3_bind_int64(st, 1, w->target);
       bind_text(st, 2, w->title);

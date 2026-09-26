@@ -2,11 +2,30 @@
 # listens on 127.0.0.1:8080 only.
 {
 	admin off
+	# Blogs' custom domains get certificates on demand, but only after the
+	# app says the domain is a blog's verified domain (GET /_domain).
+	on_demand_tls {
+		ask http://127.0.0.1:8080/_domain
+	}
 }
 
 {$BENT_HOST} {
 	encode zstd gzip
 	header Strict-Transport-Security "max-age=31536000"
+	header -Server
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy 127.0.0.1:8080
+}
+
+# Any other name: a blog's custom domain. No HSTS here: that is the domain
+# owner's decision, and it would outlive the blog.
+https:// {
+	tls {
+		on_demand
+	}
+	encode zstd gzip
 	header -Server
 	request_body {
 		max_size 2MB

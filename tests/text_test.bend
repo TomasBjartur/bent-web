@@ -30,6 +30,13 @@ def msg(ok: Bool, name: String, got: String, want: String) -> String:
     case False{}:
       "FAIL " ++ (name ++ ("  got " ++ (got ++ ("  want " ++ want))))
 
+def show_dom(m: Maybe<&2, T.Domain>) -> String:
+  match m:
+    case None{}:
+      "none"
+    case Some{d}:
+      T.Domain.text(d)
+
 def check(name: String, +got: String, +want: String) -> IO(Unit):
   IO.print(msg(String.eq(got, want), name, got, want))
 
@@ -127,6 +134,17 @@ def main() -> IO(Unit):
     check("slug dotdot", slug("slug=.."), "none")
     check("slug slash", slug("slug=a%2Fb"), "none")
     check("slugify words", T.slugify("Hello, World!"), "hello-world")
+    check("domain ok", show_dom(T.mk_domain("blog.example.com")), "blog.example.com")
+    check("domain lowered, dot dropped", show_dom(T.mk_domain(T.dom_norm(T.lower("Blog.Example.COM.")))), "blog.example.com")
+    check("domain IP refused", show_dom(T.mk_domain("192.168.1.1")), "none")
+    check("domain one label refused", show_dom(T.mk_domain("localhost")), "none")
+    check("domain empty label refused", show_dom(T.mk_domain("a..example.com")), "none")
+    check("domain dash edge refused", show_dom(T.mk_domain("a-.example.com")), "none")
+    check("domain leading dash refused", show_dom(T.mk_domain("-a.example.com")), "none")
+    check("domain underscore refused", show_dom(T.mk_domain("a_b.example.com")), "none")
+    check("domain label 64 refused", show_dom(T.mk_domain("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com")), "none")
+    check("domain label 63 ok", show_dom(T.mk_domain("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com")), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com")
+    check("domain with scheme refused", show_dom(T.mk_domain("https://x.com")), "none")
     check("minutes epoch", U32.show(T.minutes_of("1970-01-01T00:00")), "0")
     check("minutes 2026", U32.show(T.minutes_of("2026-09-26T18:20")), "29840780")
     check("minutes leap day", U32.show(T.minutes_of("2024-02-29T12:00")), "28486800")

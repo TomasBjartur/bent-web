@@ -317,9 +317,17 @@ static const char *const page_ctypes[] = {
 
 // A redirect target: starts with "/", not "//", only unreserved characters
 // and "/", "?", "=", "&", "%", "#".
+// Or an absolute http(s) URL (a custom domain sends readers to the main
+// site), with ':' allowed; the character set still excludes CR, LF,
+// spaces and quotes, so a Location header can never be split.
 static int page_path_ok(const char *p, u64 n) {
-  if (n == 0u || n > 512u || p[0] != '/' || (n > 1u && p[1] == '/')) return 0;
-  for (u64 i = 0; i < n; i++) {
+  u64 from = 0;
+  if (n > 8u && memcmp(p, "https://", 8) == 0) from = 8;
+  else if (n > 7u && memcmp(p, "http://", 7) == 0) from = 7;
+  if (n == 0u || n > 512u) return 0;
+  if (from == 0u && (p[0] != '/' || (n > 1u && p[1] == '/'))) return 0;
+  for (u64 i = from; i < n; i++) {
+    if (from != 0u && p[i] == ':') continue;
     unsigned char c = (unsigned char)p[i];
     int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
              c == '-' || c == '.' || c == '_' || c == '~' || c == '/' || c == '?' || c == '=' ||
@@ -556,6 +564,83 @@ Term image_run(Env e, Term *f, IoWork *w) {
 
 static void __attribute__((constructor)) image_use(void) {
   io_eff(CID(image), image_run, 0);
+}
+#endif
+
+// DNS
+// ---
+// dns_txt_has(name, expect): does name have a TXT record whose text is
+// exactly expect? (Custom domain verification.) The lookup blocks, so it
+// runs on a helper thread (io_work), with a short timeout; the system
+// resolver (glibc's libresolv: no new dependency) does the parsing.
+#ifdef CID(dns_txt_has)
+#include <arpa/nameser.h>
+#include <resolv.h>
+
+#define DNS_NAME_MAX 253u
+#define DNS_EXPECT_MAX 128u
+
+static void dns_call(IoWork *w) {
+  const char *name = w->data;
+  const char *expect = w->data + DNS_NAME_MAX + 1u;
+  size_t en = strlen(expect);
+  w->code = 0;
+  struct __res_state st;
+  memset(&st, 0, sizeof st);
+  if (res_ninit(&st) != 0) return;
+  st.retrans = 2;
+  st.retry = 2;
+  static __thread unsigned char buf[8192];
+  int n = res_nquery(&st, name, ns_c_in, ns_t_txt, buf, sizeof buf);
+  ns_msg m;
+  if (n > 0 && ns_initparse(buf, n, &m) == 0) {
+    for (int i = 0; i < ns_msg_count(m, ns_s_an) && i < 64; i++) {
+      ns_rr rr;
+      if (ns_parserr(&m, ns_s_an, i, &rr) != 0 || ns_rr_type(rr) != ns_t_txt) continue;
+      // A TXT record's text is its character-strings joined.
+      const unsigned char *d = ns_rr_rdata(rr);
+      int len = ns_rr_rdlen(rr);
+      char text[1024];
+      size_t tn = 0;
+      for (int k = 0; k < len && tn < sizeof text;) {
+        int sl = d[k];
+        if (k + 1 + sl > len || tn + (size_t)sl > sizeof text) break;
+        memcpy(text + tn, d + k + 1, (size_t)sl);
+        tn += (size_t)sl;
+        k += 1 + sl;
+      }
+      if (tn == en && memcmp(text, expect, en) == 0) w->code = 1;
+    }
+  }
+  res_nclose(&st);
+}
+
+static Term dns_pack(Env e, IoWork *w) {
+  (void)e;
+  free(w->data);
+  w->data = NULL;
+  return term_pak(w->code == 1u ? CID(True) : CID(False), 0);
+}
+
+Term dns_txt_has_run(Env e, Term *f, IoWork *w) {
+  u64 nn = 0, en = 0;
+  char *name = io_cstr(e, f[0], &nn);
+  char *expect = io_cstr(e, f[1], &en);
+  if (nn == 0u || nn > DNS_NAME_MAX || en == 0u || en > DNS_EXPECT_MAX) {
+    free(name);
+    free(expect);
+    return term_pak(CID(False), 0);
+  }
+  w->data = io_mem(calloc(1, DNS_NAME_MAX + 1u + DNS_EXPECT_MAX + 1u));
+  memcpy(w->data, name, nn);
+  memcpy(w->data + DNS_NAME_MAX + 1u, expect, en);
+  free(name);
+  free(expect);
+  return io_work(w, dns_call, dns_pack);
+}
+
+static void __attribute__((constructor)) dns_txt_has_use(void) {
+  io_eff(CID(dns_txt_has), dns_txt_has_run, 0);
 }
 #endif
 
