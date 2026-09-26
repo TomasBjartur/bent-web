@@ -46,6 +46,44 @@ def req(method, path, token=None, form=None, site="same-origin", extra=b""):
     return status, (loc.group(1).decode() if loc else None), body.decode("utf-8", "replace"), head.decode("latin-1")
 
 
+def raw_post(path, token, data, site="same-origin"):
+    head = f"POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/png\r\nContent-Length: {len(data)}\r\n"
+    if token:
+        head += f"Cookie: sid={token}\r\n"
+    if site:
+        head += f"Sec-Fetch-Site: {site}\r\n"
+    s = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+    try:
+        s.sendall(head.encode() + b"\r\n" + data)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    out = b""
+    try:
+        while True:
+            b = s.recv(65536)
+            if not b:
+                break
+            out += b
+    except (ConnectionResetError, socket.timeout):
+        pass
+    s.close()
+    h, _, body = out.partition(b"\r\n\r\n")
+    return (int(h.split(b" ")[1]) if h.startswith(b"HTTP/1.1 ") else 0), body.decode("latin-1")
+
+
+def raw_get(path):
+    s = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+    s.sendall(f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode())
+    out = b""
+    while True:
+        b = s.recv(65536)
+        if not b:
+            break
+        out += b
+    s.close()
+    return out.partition(b"\r\n\r\n")[2]
+
+
 def main():
     tmp = tempfile.mkdtemp()
     dbpath = os.path.join(tmp, "blog.db")
@@ -458,6 +496,36 @@ def run(dbpath):
     check("due: published on the next request, home fresh", "Tomorrow&#39;s news" in body, body[:0])
     st, _, body, _ = req("GET", "/b/bob-s-great-blog/tomorrow-s-news")
     check("due: address from its title", st == 200 and "Later." in body, st)
+
+    # Images: members of the post's blog upload; the type is checked by its
+    # bytes; images are served inert and cached; Markdown shows only these.
+    import struct, zlib
+    def png(w, h):
+        raw = b"".join(b"\x00" + b"\xff\x00\x00" * w for _ in range(h))
+        def chunk(t, d):
+            return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    def up(pid, tok, data, site="same-origin"):
+        return raw_post(f"/upload/{pid}", tok, data, site)
+    img = png(4, 3)
+    st, path = up(tgid, b, img)
+    check("member uploads an image", st == 200 and re.fullmatch(r"/img/[0-9a-f]{32}", path.strip() or ""), (st, path))
+    path = path.strip()
+    st, _, got, head = req("GET", path)
+    check("image served with its type, inert, cached", st == 200 and "Content-Type: image/png" in head and "nosniff" in head and "immutable" in head, head)
+    check("image bytes intact", got.encode("latin-1", "replace") != b"" and raw_get(path) == img)
+    check("unknown image 404", req("GET", "/img/" + "0" * 32)[0] == 404)
+    check("malformed image key 404", req("GET", "/img/../../etc")[0] in (400, 404))
+    check("outsider cannot upload", up(tgid, c, img)[0] == 403)
+    check("anonymous cannot upload", up(tgid, None, img)[0] == 403)
+    check("cross-site upload refused", up(tgid, b, img, "cross-site")[0] == 403)
+    check("not an image: 400", up(tgid, b, b"<svg onload=alert(1)>")[0] == 400)
+    check("HTML with a text type: 400", up(tgid, b, b"<html><script>x</script>")[0] == 400)
+    st, _ = up(tgid, b, b"\x89PNG\r\n\x1a\n" + b"x" * (1024 * 1024))
+    check("over 1 MiB refused", st in (400, 413), st)
+    req("POST", f"/edit/{tgid}", b, {"title": "Tagged", "body": f"A picture:\n\n![A red square]({path})\n\n![remote](https://evil.example/x.png)", "action": "publish"})
+    _, _, body, _ = req("GET", "/b/bob-s-great-blog/tagged")
+    check("post shows the stored image, not the remote one", f'<img src="{path}" alt="A red square" loading="lazy">' in body and "evil.example" not in body)
 
     # Security headers everywhere.
     _, _, _, head = req("GET", "/b/alice/first")

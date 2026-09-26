@@ -62,6 +62,91 @@ def page(sock: Socket, status: U32, ctype: U32, texts: List<&2, String>, bodies:
 def sync_page(sock: Socket, token: String, who: U32, blog: U32, role: U32, has_post: U32, post: U32, post_blog: U32, post_pub: U32, target: U32, ops: String, since: U32) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
   import "./effects/db.c"
 
+# IMAGES
+# ------
+def upload_raw(token: String, who: U32, blog: U32, role: U32, has_post: U32, post: U32, post_blog: U32, post_pub: U32, target: U32, bytes: String) -> IO(Result<&1, &1, U32 & String, String>):
+  import "./effects/db.c"
+
+def upload_post(+token: String, +who: U32, +blog: U32, +role: U32, post: Maybe<&2, Spec.PostInfo>, +target: U32, bytes: String) -> IO(Result<&1, &1, U32 & String, String>):
+  match post:
+    case None{}:
+      upload_raw(token, who, blog, role, 0, 0, 0, 0, target, bytes)
+    case Some{x}:
+      match x:
+        case Spec.PostInfo{id, pb, pub}:
+          upload_raw(token, who, blog, role, 1, id, pb, Bool.to_u32(pub), target, bytes)
+
+# WRITES
+# ------
+def role_code(r: Maybe<&2, Spec.Role>) -> U32:
+  match r:
+    case None{}:
+      0
+    case Some{x}:
+      match x:
+        case Spec.Owner{}:
+          1
+        case Spec.Author{}:
+          2
+
+def who_code(p: Spec.Principal) -> U32:
+  match p:
+    case Spec.Anon{}:
+      0
+    case Spec.User{id}:
+      id
+
+def upload_go(+token: String, f: Spec.Facts, a: Act, bytes: String) -> IO(Result<&1, &1, U32 & String, String>):
+  match f:
+    case Spec.Facts{who, blog, role, post}:
+      match a:
+        case Act{kind, target, user, flag}:
+          upload_post(token, who_code(who), blog, role_code(role), post, target, bytes)
+
+def act_of(a: Spec.Action, +flag: U32) -> Act:
+  match a:
+    case Spec.CreateBlog{}:
+      Act{0, 0, 0, 0}
+    case Spec.EditBlog{b}:
+      Act{1, b, 0, 0}
+    case Spec.DeleteBlog{b}:
+      Act{2, b, 0, 0}
+    case Spec.AddAuthor{b, u}:
+      Act{3, b, u, 0}
+    case Spec.RemoveAuthor{b, u}:
+      Act{4, b, u, 0}
+    case Spec.CreatePost{b}:
+      Act{5, b, 0, 0}
+    case Spec.EditPost{p}:
+      Act{6, p, 0, flag}
+    case Spec.PublishPost{p}:
+      Act{7, p, 0, flag}
+    case Spec.DeletePost{p}:
+      Act{8, p, 0, 0}
+    case Spec.ReadPost{p}:
+      Act{99, p, 0, 0}
+    case Spec.ReadBlogAdmin{b}:
+      Act{99, b, 0, 0}
+    case Spec.LikePost{p}:
+      Act{10, p, 0, flag}
+    case Spec.CommentPost{p}:
+      Act{11, p, 0, flag}
+    case Spec.DeleteComment{p, c, a}:
+      Act{12, c, a, 0}
+    case Spec.UploadImage{p}:
+      Act{13, p, 0, 0}
+
+# Stores an image (the request body's bytes) under a Permit for UploadImage;
+# answers its key. The effect re-checks the facts, as every write does.
+def upload(+token: String, p: Authz.Permit, bytes: String) -> IO(Result<&1, &1, U32 & String, String>):
+  match p:
+    case Authz.Permit{f, a, pf}:
+      upload_go(token, f, act_of(a, 0), bytes)
+
+# Sends the image stored under key (32 hex digits), or 404.
+def image(sock: Socket, key: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+  import "./effects/db.c"
+
 # The page cache (src/effects/db.c): cached sends the page stored under
 # key and answers Done, or answers Fail if there is none for the current
 # write generation. page_cache_put sends texts as a 200 HTML page and
@@ -195,26 +280,6 @@ def facts(who: U32, blog: U32, post: U32) -> IO(Spec.Facts):
     xs : List<&2, U32> <- load_facts(who, blog, post)
     return facts_of(xs)
 
-# WRITES
-# ------
-def role_code(r: Maybe<&2, Spec.Role>) -> U32:
-  match r:
-    case None{}:
-      0
-    case Some{x}:
-      match x:
-        case Spec.Owner{}:
-          1
-        case Spec.Author{}:
-          2
-
-def who_code(p: Spec.Principal) -> U32:
-  match p:
-    case Spec.Anon{}:
-      0
-    case Spec.User{id}:
-      id
-
 def no_data() -> WData:
   WData{"", "", "", None{}, 0}
 
@@ -257,37 +322,6 @@ def html_of(m: Maybe<&2, Md.Rendered>) -> String:
       ""
     case Some{r}:
       Md.Rendered.html(r)
-
-def act_of(a: Spec.Action, +flag: U32) -> Act:
-  match a:
-    case Spec.CreateBlog{}:
-      Act{0, 0, 0, 0}
-    case Spec.EditBlog{b}:
-      Act{1, b, 0, 0}
-    case Spec.DeleteBlog{b}:
-      Act{2, b, 0, 0}
-    case Spec.AddAuthor{b, u}:
-      Act{3, b, u, 0}
-    case Spec.RemoveAuthor{b, u}:
-      Act{4, b, u, 0}
-    case Spec.CreatePost{b}:
-      Act{5, b, 0, 0}
-    case Spec.EditPost{p}:
-      Act{6, p, 0, flag}
-    case Spec.PublishPost{p}:
-      Act{7, p, 0, flag}
-    case Spec.DeletePost{p}:
-      Act{8, p, 0, 0}
-    case Spec.ReadPost{p}:
-      Act{99, p, 0, 0}
-    case Spec.ReadBlogAdmin{b}:
-      Act{99, b, 0, 0}
-    case Spec.LikePost{p}:
-      Act{10, p, 0, flag}
-    case Spec.CommentPost{p}:
-      Act{11, p, 0, flag}
-    case Spec.DeleteComment{p, c, a}:
-      Act{12, c, a, 0}
 
 def apply_post(+token: String, +who: U32, +blog: U32, +role: U32, post: Maybe<&2, Spec.PostInfo>, +kind: U32, +target: U32, +user: U32, +flag: U32, slug: String, title: String, md: String, html: String) -> IO(Result<&1, &1, U32 & String, U32>):
   match post:

@@ -45,6 +45,8 @@ type Route is Data:
   RDeleteComment{comment: U32}
   RReply{comment: U32}
   RTag{tag: String}
+  RUpload{post: U32}
+  RImage{key: String}
   RNotFound{}
 
 type Plan is Data:
@@ -109,6 +111,8 @@ def get2(k: Nat, +b: String) -> Route:
       RReply{id_of(b)}
     case 7n:
       RTag{b}
+    case 8n:
+      RImage{b}
     case _:
       RNotFound{}
 
@@ -133,7 +137,7 @@ def route_get(xs: List<&2, String>) -> Route:
         case Con{+b, u}:
           match u:
             case Nil{}:
-              get2(Nat.add(eq(a, "b"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "edit"), 3n), Nat.add(Nat.mul(eq(a, "s"), 4n), Nat.add(Nat.mul(eq(a, "u"), 5n), Nat.add(Nat.mul(eq(a, "reply"), 6n), Nat.mul(eq(a, "t"), 7n))))))), b)
+              get2(Nat.add(eq(a, "b"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "edit"), 3n), Nat.add(Nat.mul(eq(a, "s"), 4n), Nat.add(Nat.mul(eq(a, "u"), 5n), Nat.add(Nat.mul(eq(a, "reply"), 6n), Nat.add(Nat.mul(eq(a, "t"), 7n), Nat.mul(eq(a, "img"), 8n)))))))), b)
             case Con{+c, v}:
               match v:
                 case Nil{}:
@@ -169,6 +173,8 @@ def post2(k: Nat, +b: String) -> Route:
       RLike{id_of(b)}
     case 5n:
       RComment{id_of(b)}
+    case 6n:
+      RUpload{id_of(b)}
     case _:
       RNotFound{}
 
@@ -222,7 +228,7 @@ def route_post(xs: List<&2, String>) -> Route:
         case Con{+b, u}:
           match u:
             case Nil{}:
-              post2(Nat.add(eq(a, "edit"), Nat.add(Nat.mul(eq(a, "passkey"), Nat.add(Nat.mul(eq(b, "login"), 2n), Nat.mul(eq(b, "register"), 3n))), Nat.add(Nat.mul(eq(a, "like"), 4n), Nat.mul(eq(a, "comment"), 5n)))), b)
+              post2(Nat.add(eq(a, "edit"), Nat.add(Nat.mul(eq(a, "passkey"), Nat.add(Nat.mul(eq(b, "login"), 2n), Nat.mul(eq(b, "register"), 3n))), Nat.add(Nat.mul(eq(a, "like"), 4n), Nat.add(Nat.mul(eq(a, "comment"), 5n), Nat.mul(eq(a, "upload"), 6n))))), b)
             case Con{+c, v}:
               match v:
                 case Nil{}:

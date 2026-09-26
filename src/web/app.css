@@ -156,6 +156,8 @@ h2 { font-size: 1.35rem; margin: 40px 0 12px; }
 .body h2 { font-size: 1.6rem; margin: 1.8em 0 0.6em; }
 .body h3 { font-size: 1.3rem; margin: 1.6em 0 0.5em; }
 .body a { text-decoration-color: var(--accent); }
+.body img { display: block; max-width: 100%; height: auto; margin: 1.2em auto; border-radius: 4px; }
+.comment .cbody img { max-height: 400px; width: auto; }
 .body ul, .body ol { padding-left: 1.4em; }
 .body li { margin: 0.3em 0; }
 .body blockquote { margin-left: 0; padding: 2px 0 2px 1.1em; border-left: 3px solid var(--accent); color: var(--muted); font-style: italic; }
@@ -278,6 +280,7 @@ details.more .center { text-align: left; }
 }
 .write textarea.title:focus, .write textarea.text:focus { box-shadow: none; }
 .write .help { color: var(--faint); font-size: 0.85rem; margin-top: 14px; }
+.write .help button.link { color: var(--accent); font-weight: 600; padding: 0; }
 .write .help code { font-family: var(--mono); background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
 .editor-bar .btn.quiet[aria-label] { font-size: 1.2rem; padding: 8px 12px; }
 .danger-zone { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); }

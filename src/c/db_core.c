@@ -72,6 +72,11 @@ static const char *const DB_SQL[ST_COUNT] = {
               "ORDER BY publish_at_ms LIMIT 20"),
   [ST_PUBLISH_DUE] = ("UPDATE post SET published = 1, published_ms = publish_at_ms, updated_ms = ?2, "
                       "publish_at_ms = NULL, publish_slug = NULL WHERE id = ?1 AND published = 0 AND publish_at_ms <= ?2"),
+  [ST_IMG_POST_COUNT] = "SELECT count(*) FROM image WHERE post_id = ?1",
+  [ST_IMG_RECENT] = "SELECT count(*) FROM image WHERE author_id = ?1 AND created_ms > ?2",
+  [ST_IMG_NEW] = ("INSERT INTO image(key, post_id, author_id, type, bytes, created_ms) "
+                  "VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
+  [ST_IMG_GET] = "SELECT type, bytes FROM image WHERE key = ?1",
   [ST_TAGS_CLEAR] = "DELETE FROM post_tag WHERE post_id = ?1",
   [ST_TAG_ADD] = "INSERT OR IGNORE INTO post_tag(post_id, tag) VALUES (?1, ?2)",
   [ST_LIKE_ADD] = "INSERT OR IGNORE INTO post_like(post_id, user_id, created_ms) VALUES (?1, ?2, ?3)",
@@ -230,6 +235,13 @@ static const char *const DB_MIGRATIONS[] = {
   "ALTER TABLE post ADD COLUMN publish_at_ms INTEGER;"
   "ALTER TABLE post ADD COLUMN publish_slug TEXT;"
   "CREATE INDEX post_due ON post(publish_at_ms) WHERE publish_at_ms IS NOT NULL;",
+  // v7: images, stored in the database (served by key; see db_image).
+  "CREATE TABLE image (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE CHECK (length(key) = 32),"
+  " post_id INTEGER NOT NULL REFERENCES post(id) ON DELETE CASCADE, author_id INTEGER NOT NULL REFERENCES user(id),"
+  " type TEXT NOT NULL CHECK (type IN ('image/jpeg', 'image/png', 'image/gif', 'image/webp')),"
+  " bytes BLOB NOT NULL CHECK (length(bytes) BETWEEN 1 AND 1048576), created_ms INTEGER NOT NULL);"
+  "CREATE INDEX image_post ON image(post_id);"
+  "CREATE INDEX image_author_time ON image(author_id, created_ms);",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 
@@ -714,6 +726,85 @@ int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
   sqlite3_reset(st);
   sqlite3_clear_bindings(st);
   return rows;
+}
+
+const char *db_image_type(const uint8_t *p, uint32_t n) {
+  if (n >= 3u && p[0] == 0xFF && p[1] == 0xD8 && p[2] == 0xFF) return "image/jpeg";
+  if (n >= 8u && memcmp(p, "\x89PNG\r\n\x1a\n", 8) == 0) return "image/png";
+  if (n >= 6u && (memcmp(p, "GIF87a", 6) == 0 || memcmp(p, "GIF89a", 6) == 0)) return "image/gif";
+  if (n >= 12u && memcmp(p, "RIFF", 4) == 0 && memcmp(p + 8, "WEBP", 4) == 0) return "image/webp";
+  return NULL;
+}
+
+DbResult db_upload(Db *db, const uint8_t token_hash[32], uint64_t now_ms, const DbFacts *f, uint32_t post,
+                   const uint8_t *bytes, uint32_t n, const uint8_t key[IMG_KEY_BYTES], char key_hex[2u * IMG_KEY_BYTES + 1u]) {
+  ASSERT(db != NULL && f != NULL && key != NULL && key_hex != NULL);
+  key_hex[0] = 0;
+  // The floor, as for editing the post.
+  if (!(f->has_post && post == f->post && f->post_blog == f->blog && f->role != ROLE_NONE)) return DB_DENIED;
+  const char *type = db_image_type(bytes, n);
+  if (type == NULL || n == 0u || n > IMG_BYTES_MAX) return DB_CONFLICT;
+  for (uint32_t i = 0; i < IMG_KEY_BYTES; i++) {
+    static const char hx[] = "0123456789abcdef";
+    key_hex[2u * i] = hx[key[i] >> 4];
+    key_hex[2u * i + 1u] = hx[key[i] & 15u];
+  }
+  key_hex[2u * IMG_KEY_BYTES] = 0;
+  if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return DB_ERROR;
+  DbResult r = db_facts_hold(db, token_hash, now_ms, f);
+  uint32_t count = 0;
+  if (r == DB_OK) {
+    sqlite3_stmt *st = db->st[ST_IMG_POST_COUNT];
+    sqlite3_bind_int64(st, 1, post);
+    if (db_one_u32(st, &count) != 1) r = DB_ERROR;
+    else if (count >= IMG_PER_POST_MAX) r = DB_CONFLICT;
+  }
+  if (r == DB_OK) {
+    sqlite3_stmt *st = db->st[ST_IMG_RECENT];
+    sqlite3_bind_int64(st, 1, f->who);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)(now_ms - IMG_RATE_WINDOW_MS));
+    if (db_one_u32(st, &count) != 1) r = DB_ERROR;
+    else if (count >= IMG_RATE_MAX) r = DB_CONFLICT;
+  }
+  if (r == DB_OK) {
+    sqlite3_stmt *st = db->st[ST_IMG_NEW];
+    sqlite3_bind_text(st, 1, key_hex, (int)(2u * IMG_KEY_BYTES), SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, post);
+    sqlite3_bind_int64(st, 3, f->who);
+    sqlite3_bind_text(st, 4, type, -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 5, bytes, (int)n, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 6, (sqlite3_int64)now_ms);
+    r = db_rc(db_exec(st));
+  }
+  if (r == DB_OK && db_exec(db->st[ST_COMMIT]) == SQLITE_DONE) return DB_OK;
+  if (r == DB_ERROR) fprintf(stderr, "db_upload: %s\n", sqlite3_errmsg(db->conn));
+  int rb = db_exec(db->st[ST_ROLLBACK]);
+  ASSERT(rb == SQLITE_DONE);
+  key_hex[0] = 0;
+  return r == DB_OK ? DB_ERROR : r;
+}
+
+int32_t db_image(Db *db, const char *key_hex, uint32_t key_len, DbImageFn out, void *ctx) {
+  if (key_len != 2u * IMG_KEY_BYTES) return 0;
+  for (uint32_t i = 0; i < key_len; i++) {
+    char c = key_hex[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return 0;
+  }
+  sqlite3_stmt *st = db->st[ST_IMG_GET];
+  sqlite3_bind_text(st, 1, key_hex, (int)key_len, SQLITE_STATIC);
+  int rc = sqlite3_step(st);
+  int32_t r = rc == SQLITE_DONE ? 0 : -1;
+  if (rc == SQLITE_ROW) {
+    const char *type = (const char *)sqlite3_column_text(st, 0);
+    const void *p = sqlite3_column_blob(st, 1);
+    int n = sqlite3_column_bytes(st, 1);
+    ASSERT(n >= 0);
+    out(ctx, type != NULL ? type : "application/octet-stream", p != NULL ? (const uint8_t *)p : (const uint8_t *)"", (uint32_t)n);
+    r = 1;
+  }
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+  return r;
 }
 
 int32_t db_publish_due(Db *db, uint64_t now_ms) {

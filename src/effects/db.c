@@ -457,6 +457,108 @@ static void __attribute__((constructor)) page_use(void) {
 }
 #endif
 
+// IMAGES
+// ------
+// upload_raw(token, facts (7), post, bytes): bytes is a Bend String of one
+// Char per byte (as the network layer reads them); stores the image (see
+// db_upload) and answers its key, or fails with DbResult as the code.
+// Only src/db.bend's upload calls this (tools/lint.sh).
+#ifdef CID(upload_raw)
+
+// A byte string back to bytes: NULL if longer than max or a Char > 255.
+static uint8_t *app_bytes(Env e, Term s, uint32_t max, uint32_t *n) {
+  uint8_t *out = io_mem(malloc(max > 0u ? max : 1u));
+  uint32_t len = 0;
+  Term h, t;
+  for (uint64_t guard = 0; guard <= (uint64_t)max && app_uncons(e, CID(SCon), s, &h, &t); guard++) {
+    if (len == max || (u64)h > 255u) {
+      free(out);
+      return NULL;
+    }
+    out[len++] = (uint8_t)h;
+    s = t;
+  }
+  *n = len;
+  return out;
+}
+
+Term upload_raw_run(Env e, Term *f, IoWork *w) {
+  (void)w;
+  ASSERT(app_db_ready);
+  uint8_t h[32];
+  app_token_hash(e, f[0], h);
+  DbFacts x = {(uint32_t)f[1], (uint32_t)f[2], (uint32_t)f[3], (uint32_t)f[4],
+               (uint32_t)f[5], (uint32_t)f[6], (uint32_t)f[7]};
+  uint32_t n = 0;
+  uint8_t *bytes = app_bytes(e, f[9], IMG_BYTES_MAX, &n);
+  if (bytes == NULL) return io_fail(e, DB_CONFLICT, NULL);
+  uint8_t key[IMG_KEY_BYTES];
+  char hex[2u * IMG_KEY_BYTES + 1u];
+  if (getrandom(key, sizeof key, 0) != (ssize_t)sizeof key) {
+    free(bytes);
+    return io_fail(e, DB_ERROR, NULL);
+  }
+  DbResult r = db_upload(&app_db, h, app_now_ms(), &x, (uint32_t)f[8], bytes, n, key, hex);
+  free(bytes);
+  return r == DB_OK ? io_done(e, io_str(e, hex, 2u * IMG_KEY_BYTES)) : io_fail(e, (uint32_t)r, NULL);
+}
+
+static void __attribute__((constructor)) upload_raw_use(void) {
+  io_eff(CID(upload_raw), upload_raw_run, 0);
+}
+#endif
+
+// image(sock, key): sends the image stored under key with its checked
+// type, immutable caching (keys are random and images never change),
+// nosniff and a CSP that forbids everything (so it is inert if opened as
+// a document); 404 if there is none.
+typedef struct {
+  PageOut body;
+  const char *type;
+} ImageOut;
+
+static void image_put(void *ctx, const char *type, const uint8_t *p, uint32_t n) {
+  ImageOut *o = ctx;
+  o->type = type[0] == 'i' ? (strcmp(type, "image/jpeg") == 0 ? "image/jpeg" : strcmp(type, "image/png") == 0 ? "image/png"
+                              : strcmp(type, "image/gif") == 0 ? "image/gif" : strcmp(type, "image/webp") == 0 ? "image/webp" : NULL) : NULL;
+  if (o->type != NULL) page_put(&o->body, (const char *)p, n);
+}
+
+#ifdef CID(image)
+Term image_run(Env e, Term *f, IoWork *w) {
+  ASSERT(app_db_ready);
+  w->hand = (intptr_t)io_hand_v(f[0]);
+  u64 kn = 0;
+  char *key = io_cstr(e, f[1], &kn);
+  ImageOut o = {{io_mem(malloc(65536)), 0, 65536, 0}, NULL};
+  int32_t found = kn <= 64u ? db_image(&app_db, key, (uint32_t)kn, image_put, &o) : 0;
+  free(key);
+  int ok = found == 1 && o.type != NULL && !o.body.overflow;
+  if (!ok) o.body.len = 0;
+  char head[1024];
+  int hn = snprintf(head, sizeof head, "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s"
+                    "Content-Disposition: inline\r\n\r\n",
+                    ok ? "200 OK" : "404 Not Found", ok ? o.type : "text/plain; charset=utf-8",
+                    (unsigned long long)o.body.len, NET_SECURITY_HEADERS, ok ? NET_IMMUTABLE : NET_NO_STORE);
+  ASSERT(hn > 0 && (size_t)hn < sizeof head);
+  u64 total = (u64)hn + o.body.len;
+  char *out = io_mem(malloc(total));
+  memcpy(out, head, (size_t)hn);
+  memcpy(out + hn, o.body.buf, o.body.len);
+  free(o.body.buf);
+  w->data = out;
+  w->size = total;
+  w->made = 0;
+  w->code = 0;
+  w->text = (char *)(uintptr_t)(io_tick() + 10000ull * 1000000ull);
+  return page_more(e, w);
+}
+
+static void __attribute__((constructor)) image_use(void) {
+  io_eff(CID(image), image_run, 0);
+}
+#endif
+
 // PAGE CACHE
 // ----------
 // Rendered public pages (feeds), so a visitor's request does not render

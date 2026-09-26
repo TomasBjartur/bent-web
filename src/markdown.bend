@@ -194,6 +194,16 @@ def link_act(mi: Maybe<&2, Nat>, +rest: String) -> Act:
     case Some{+i}:
       link_url(i, find_paren(512n, String.drop(rest, Nat.add(i, 2n))), String.drop(rest, Nat.add(i, 2n)))
 
+# "![alt](src)" is parsed as a link after the "!": kind 7, same lengths.
+def img_act(a: Act) -> Act:
+  match a:
+    case Act{k, +i, +j}:
+      match k:
+        case 5n:
+          Act{7n, i, j}
+        case _:
+          plain()
+
 def star(two: Bool, +s: String) -> Act:
   match two:
     case True{}:
@@ -213,22 +223,26 @@ def classify.pick(k: Nat, +s: String, +t: String) -> Act:
       link_act(bracket_paren(find_bracket(256n, t), t), t)
     case 5n:
       Act{6n, 0n, 0n}
+    case 6n:
+      img_act(link_act(bracket_paren(find_bracket(256n, String.drop(s, 2n)), String.drop(s, 2n)), String.drop(s, 2n)))
     case _:
       plain()
 
-def mark(a: Bool, b: Bool, c: Bool, d: Bool, e: Bool) -> Nat:
-  match a b c d e:
-    case True{} _ _ _ _:
+def mark(a: Bool, b: Bool, c: Bool, d: Bool, e: Bool, f: Bool) -> Nat:
+  match a b c d e f:
+    case True{} _ _ _ _ _:
       1n
-    case _ True{} _ _ _:
+    case _ True{} _ _ _ _:
       2n
-    case _ _ True{} _ _:
+    case _ _ True{} _ _ _:
       3n
-    case _ _ _ True{} _:
+    case _ _ _ True{} _ _:
       4n
-    case _ _ _ _ True{}:
+    case _ _ _ _ True{} _:
       5n
-    case _ _ _ _ _:
+    case _ _ _ _ _ True{}:
+      6n
+    case _ _ _ _ _ _:
       0n
 
 def classify(+s: String) -> Act:
@@ -236,7 +250,7 @@ def classify(+s: String) -> Act:
     case SNil{}:
       Act{9n, 0n, 0n}
     case SCon{+c, +t}:
-      classify.pick(mark(Char.is_eq(c, '`'), Char.is_eq(c, '*'), Char.is_eq(c, '_'), Char.is_eq(c, '['), Char.is_eq(c, '\\')), s, t)
+      classify.pick(mark(Char.is_eq(c, '`'), Char.is_eq(c, '*'), Char.is_eq(c, '_'), Char.is_eq(c, '['), Char.is_eq(c, '\\'), String.starts_with(s, "![")), s, t)
 
 def seq(a: M.Node, b: M.Node) -> M.Node:
   M.Seq{a, b}
@@ -253,6 +267,17 @@ def mk_link.go(b: Bool, +url: String, kids: M.Node, e: {M.url_ok(url) == b : Boo
 
 def mk_link(+url: String, kids: M.Node) -> M.Node:
   mk_link.go(M.url_ok(url), url, kids, {==})
+
+# An image from this site's store; any other source shows its alt text.
+def mk_img.go(b: Bool, +src: String, +alt: String, e: {M.img_src_ok(src) == b : Bool}) -> M.Node:
+  match b:
+    case True{}:
+      M.Img{src, e, alt}
+    case False{}:
+      M.Text{alt}
+
+def mk_img(+src: String, +alt: String) -> M.Node:
+  mk_img.go(M.img_src_ok(src), src, alt, {==})
 
 # n: fuel. act: what s starts. acc: plain text so far (reversed).
 # out: what came before.
@@ -278,6 +303,8 @@ def inl(+n: Nat, act: Act, +s: String, +acc: String, out: M.Node) -> M.Node:
               inl(p, classify(String.drop(s, Nat.add(Nat.add(a, b), 4n))), String.drop(s, Nat.add(Nat.add(a, b), 4n)), "", seq(seq(out, text(acc)), mk_link(String.take(String.drop(s, Nat.add(a, 3n)), b), inl(p, classify(String.take(String.drop(s, 1n), a)), String.take(String.drop(s, 1n), a), "", M.Empty{}))))
             case 6n:
               inl(p, classify(String.drop(s, 2n)), String.drop(s, 2n), SCon{head(String.drop(s, 1n)), acc}, out)
+            case 7n:
+              inl(p, classify(String.drop(s, Nat.add(Nat.add(a, b), 5n))), String.drop(s, Nat.add(Nat.add(a, b), 5n)), "", seq(seq(out, text(acc)), mk_img(String.take(String.drop(s, Nat.add(a, 4n)), b), String.take(String.drop(s, 2n), a))))
             case _:
               inl(p, classify(String.drop(s, 1n)), String.drop(s, 1n), SCon{head(s), acc}, out)
 

@@ -116,6 +116,87 @@ function start(ta) {
       });
     }
   }
+  // IMAGES: chosen, pasted or dropped. Resized in the browser (at most
+  // 1600 px, JPEG) to fit the 1 MiB request limit; re-encoding also drops
+  // EXIF data such as GPS positions. A small GIF is sent as it is.
+  const pick = document.getElementById("image-pick");
+  const addBtn = document.getElementById("image-add");
+  if (addBtn && pick) {
+    addBtn.addEventListener("click", () => pick.click());
+    pick.addEventListener("change", () => {
+      for (const f of pick.files) upload(f);
+      pick.value = "";
+    });
+  }
+  ta.addEventListener("paste", (ev) => {
+    const files = [...(ev.clipboardData ? ev.clipboardData.files : [])].filter((f) => f.type.startsWith("image/"));
+    if (files.length) {
+      ev.preventDefault();
+      for (const f of files) upload(f);
+    }
+  });
+  ta.addEventListener("dragover", (ev) => ev.preventDefault());
+  ta.addEventListener("drop", (ev) => {
+    const files = [...(ev.dataTransfer ? ev.dataTransfer.files : [])].filter((f) => f.type.startsWith("image/"));
+    if (files.length) {
+      ev.preventDefault();
+      for (const f of files) upload(f);
+    }
+  });
+
+  const IMG_MAX_BYTES = 1000000;
+  const IMG_MAX_SIDE = 1600;
+
+  async function shrink(file) {
+    if (file.type === "image/gif" && file.size <= IMG_MAX_BYTES) return file;
+    const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+    let scale = Math.min(1, IMG_MAX_SIDE / Math.max(bmp.width, bmp.height));
+    for (let round = 0; round < 6; round++) {
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(bmp.width * scale));
+      c.height = Math.max(1, Math.round(bmp.height * scale));
+      const g = c.getContext("2d");
+      g.fillStyle = "#fff";
+      g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(bmp, 0, 0, c.width, c.height);
+      for (const q of [0.85, 0.72, 0.6]) {
+        const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", q));
+        if (blob && blob.size <= IMG_MAX_BYTES) return blob;
+      }
+      scale *= 0.7;
+    }
+    throw new Error("too large");
+  }
+
+  function altOf(name) {
+    return (name || "").replace(/\.[a-z0-9]+$/i, "").replace(/[\[\]\r\n]/g, " ").slice(0, 100).trim();
+  }
+
+  async function upload(file) {
+    show("Adding the image…", "busy");
+    try {
+      const blob = await shrink(file);
+      const res = await fetch("/upload/" + post, {
+        method: "POST",
+        headers: { "Content-Type": blob.type || "application/octet-stream" },
+        body: blob,
+        credentials: "same-origin",
+      });
+      const text = (await res.text()).trim();
+      if (!res.ok || !/^\/img\/[0-9a-f]{32}$/.test(text)) {
+        show(text || "The image was not added", "off");
+        return;
+      }
+      const md = "\n![" + altOf(file.name) + "](" + text + ")\n";
+      const at = ta.selectionStart;
+      ta.value = ta.value.slice(0, at) + md + ta.value.slice(ta.selectionEnd);
+      ta.setSelectionRange(at + md.length, at + md.length);
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    } catch (e) {
+      show("The image could not be added", "off");
+    }
+  }
+
   // A scheduled time, shown in the reader's own time zone.
   for (const el of document.querySelectorAll(".scheduled time[datetime]")) {
     const d = new Date(el.getAttribute("datetime"));

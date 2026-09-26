@@ -6,7 +6,7 @@ fail=0
 rule() { echo "LINT: $1"; fail=1; }
 
 # 1. Writes only through Db.apply (which takes a Permit).
-hits=$(grep -rn "apply_raw(\|sync_page(" src --include=*.bend | grep -v "^src/db.bend:" || true)
+hits=$(grep -rn "apply_raw(\|sync_page(\|upload_raw(" src --include=*.bend | grep -v "^src/db.bend:" || true)
 [ -z "$hits" ] || rule "apply_raw called outside src/db.bend (writes must go through apply, which takes a Permit): $hits"
 
 # 2. Permits are only constructed by authorize.

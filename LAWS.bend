@@ -263,7 +263,7 @@ law authz_drafts_private:
   for +q: U32
   {AuthzSpec.permitted(AuthzSpec.Facts{who, blog, None{}, Some{AuthzSpec.PostInfo{p, pb, False{}}}}, AuthzSpec.ReadPost{q}) == False{} : Bool}
 
-# The four post-writing actions (including creation), selected by k.
+# The post-writing actions (creation, images included), selected by k.
 def post_any_write(k: Nat, +b: U32, +q: U32) -> AuthzSpec.Action:
   match k:
     case 0n:
@@ -272,11 +272,13 @@ def post_any_write(k: Nat, +b: U32, +q: U32) -> AuthzSpec.Action:
       AuthzSpec.EditPost{q}
     case 2n:
       AuthzSpec.PublishPost{q}
-    case _:
+    case 3n:
       AuthzSpec.DeletePost{q}
+    case _:
+      AuthzSpec.UploadImage{q}
 
 # LAW: only members of a blog (its owner or authors) create, edit, publish
-# or delete posts in it.
+# or delete posts in it, or add images to them.
 law authz_members_write:
   for k: Nat
   for +who: AuthzSpec.Principal

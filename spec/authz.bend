@@ -49,6 +49,7 @@ type Action is Data:
   # author: the comment's author as loaded; the write re-checks it (the
   # delete only matches a comment by that author on that post).
   DeleteComment{post: U32, comment: U32, author: U32}
+  UploadImage{post: U32}
 
 # PREDICATES
 # ----------
@@ -178,3 +179,6 @@ def permitted(+f: Facts, a: Action) -> Bool:
     # (moderation).
     case DeleteComment{+p, +c, +a}:
       Bool.and(is_user(facts_who(f)), Bool.and(post_is(f, p), Bool.or(Bool.and(U32.is_ne(a, 0), U32.is_eq(a, user_id(facts_who(f)))), can_write_post(f, p))))
+    # Images for a post are added by those who may write it.
+    case UploadImage{+p}:
+      can_write_post(f, p)

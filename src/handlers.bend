@@ -247,6 +247,45 @@ def h_post2(s: Socket, +token: String, +who: U32, +pid: U32, +notice: Bool) -> I
     +f : Spec.Facts <- Db.facts(who, 0, pid)
     h_post3(s, token, who, pid, is_some_permit(Authz.authorize(f, Spec.EditPost{pid})), notice, Authz.authorize(f, Spec.ReadPost{pid}))
 
+def upload_status.go(k: Nat) -> U32:
+  match k:
+    case 1n:
+      409
+    case 2n:
+      403
+    case 3n:
+      400
+    case _:
+      500
+
+def upload_status(+code: U32) -> U32:
+  upload_status.go(U32.to_nat(code))
+
+# IMAGES: POST /upload/<post> with the image's bytes as the body (from
+# the editor's script, which resizes to fit the 1 MiB request limit).
+# Answers the image's path as text.
+def uploaded(s: Socket, +token: String, r: Result<&1, &1, U32 & String, String>) -> IO(Unit):
+  match r:
+    case Done{+key}:
+      send_text(s, token, 200, "/img/" ++ key)
+    case Fail{err}:
+      (+code, msg) = err
+      send_text(s, token, upload_status(code), "The image was not stored: not a JPEG, PNG, GIF or WebP, too large, or too many.\n")
+
+def h_upload2(s: Socket, +token: String, +who: U32, +body: String, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match m:
+    case None{}:
+      send_text(s, token, 403, "not allowed\n")
+    case Some{p}:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, String> <- Db.upload(token, p, body)
+        uploaded(s, token, r)
+
+def h_upload(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> IO(Unit):
+  do IO<Unit>:
+    f : Spec.Facts <- Db.facts(who, 0, pid)
+    h_upload2(s, token, who, body, Authz.authorize(f, Spec.UploadImage{pid}))
+
 # TAG PAGES (cached): /t/<tag>.
 def h_tag2(s: Socket, +token: String, +who: U32, +tag: String) -> IO(Unit):
   do IO<Unit>:
@@ -931,6 +970,10 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
       h_reply(s, token, who, id)
     case Route.RTag{+t}:
       h_tag(s, token, who, t)
+    case Route.RImage{+k}:
+      do IO<Unit>:
+        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.image(s, k)
+        done(r)
     case Route.RBlogFeed{+b}:
       h_blog_feed(s, token, origin, b)
     case Route.RHome{}:
@@ -984,6 +1027,8 @@ def write_route(s: Socket, r: Route.Route, +c: Auth.Conf, +token: String, +who: 
       h_write(s, token, who)
     case Route.RLike{+id}:
       h_like(s, token, who, id, body)
+    case Route.RUpload{+id}:
+      h_upload(s, token, who, id, body)
     case Route.RComment{+id}:
       h_comment(s, token, who, id, body)
     case Route.RDeleteComment{+id}:

@@ -118,6 +118,35 @@ def run(dbpath):
     check("published post renders", "First line" in body)
     check("XSS payload is inert text", js("document.querySelectorAll('img').length") == 0 and
           "<img src=x onerror=alert(1)>" in body)
+    # An image through the editor: picked, resized to JPEG in the page,
+    # uploaded, inserted as Markdown, shown on the published post.
+    js("[...document.querySelectorAll('a')].find(a => a.innerText.trim() === 'Keep editing').click()")
+    time.sleep(1)
+    js("""(async () => {
+        const c = document.createElement('canvas'); c.width = 3000; c.height = 2000;
+        const g = c.getContext('2d'); g.fillStyle = '#c33'; g.fillRect(0, 0, 3000, 2000);
+        const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+        const dt = new DataTransfer(); dt.items.add(new File([blob], 'red square.png', {type: 'image/png'}));
+        const pick = document.getElementById('image-pick'); pick.files = dt.files;
+        pick.dispatchEvent(new Event('change'));
+      })()""")
+    md = ""
+    for _ in range(50):
+        time.sleep(0.2)
+        md = js("document.getElementById('editor').value") or ""
+        if "/img/" in md:
+            break
+    m = re.search(r"!\[red square\]\((/img/[0-9a-f]{32})\)", md)
+    check("editor inserts the uploaded image", m is not None, md)
+    if m:
+        dims = js(f"(async () => {{ const r = await fetch('{m.group(1)}'); const b = await r.blob(); const i = await createImageBitmap(b); return [r.headers.get('content-type'), i.width, i.height, b.size]; }})()")
+        check("resized in the browser to at most 1600 px, as JPEG", dims and dims[0] == "image/jpeg" and max(dims[1], dims[2]) == 1600 and dims[3] <= 1000000, dims)
+        time.sleep(2)
+        js("document.querySelector('button[value=publish]').click()")
+        wait_path("/b/eve-writes/hello-world")
+        time.sleep(0.5)
+        check("published post shows the image", js(f"!!document.querySelector('.body img[src=\"{m.group(1)}\"]') && document.querySelector('.body img').complete && document.querySelector('.body img').naturalWidth > 0") is True)
+
     go(BASE + "/b/eve-writes/hello-world")
     check("no notice on a plain visit", "Your post is live" not in (js("document.body.innerText") or ""))
     js("document.querySelector('.byline a').click()")

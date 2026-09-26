@@ -258,6 +258,8 @@ def Laws.authz_anon_read_only(blog, role, post, a, e):
       e
     case AuthzSpec.DeleteComment{p, c, a2}:
       e
+    case AuthzSpec.UploadImage{p}:
+      e
 
 # can_write_post needs the post's blog to equal the facts' blog; it does not.
 def cwp_cross(+who: AuthzSpec.Principal, +blog: U32, +role: Maybe<&2, AuthzSpec.Role>, +p: U32, +pb: U32, +pub: Bool, +q: U32, ne: {U32.is_eq(pb, blog) == False{} : Bool}) -> {AuthzSpec.can_write_post(AuthzSpec.Facts{who, blog, role, Some{AuthzSpec.PostInfo{p, pb, pub}}}, q) == False{} : Bool}:
@@ -315,7 +317,9 @@ def Laws.authz_members_write(k, who, blog, role, post, b, q, e):
       cwp_member(who, blog, role, post, q, e)
     case 2n:
       cwp_member(who, blog, role, post, q, e)
-    case 3n+r:
+    case 3n:
+      cwp_member(who, blog, role, post, q, e)
+    case 4n+r:
       cwp_member(who, blog, role, post, q, e)
 
 # post_public on an unpublished post is (p == q) && False.

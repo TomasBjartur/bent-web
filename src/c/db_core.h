@@ -35,6 +35,7 @@ enum {
   A_LIKE_POST,       // target = post, flag = 1 like, 0 unlike
   A_COMMENT,         // target = post, flag = parent comment (0: none), body_md/html
   A_DELETE_COMMENT,  // target = comment, user = its author (checked in SQL)
+  A_UPLOAD_IMAGE,    // not through db_apply: see db_upload
   A_KINDS
 };
 
@@ -119,6 +120,15 @@ enum {
 #define COMMENT_RATE_WINDOW_MS 60000ull
 #define POST_COMMENTS_MAX 5000u
 
+// IMAGES: JPEG, PNG, GIF or WebP (by their first bytes), at most
+// IMG_BYTES_MAX each, IMG_PER_POST_MAX per post, IMG_RATE_MAX per user per
+// IMG_RATE_WINDOW_MS. Keys: 16 random bytes as 32 lowercase hex digits.
+#define IMG_BYTES_MAX (1024u * 1024u)
+#define IMG_PER_POST_MAX 300u
+#define IMG_RATE_MAX 60u
+#define IMG_RATE_WINDOW_MS 600000ull
+#define IMG_KEY_BYTES 16u
+
 // TAGS: at most TAGS_MAX per post, each 1..TAG_BYTES_MAX of a-z 0-9 '-'.
 #define TAGS_MAX 5u
 #define TAG_BYTES_MAX 32u
@@ -137,7 +147,7 @@ enum {
   ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
   ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
   ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT, ST_SLUG_TAKEN, ST_POST_RENAME,
-  ST_TAGS_CLEAR, ST_TAG_ADD, ST_SCHEDULE, ST_UNSCHEDULE, ST_DUE, ST_PUBLISH_DUE, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
+  ST_IMG_POST_COUNT, ST_IMG_RECENT, ST_IMG_NEW, ST_IMG_GET, ST_TAGS_CLEAR, ST_TAG_ADD, ST_SCHEDULE, ST_UNSCHEDULE, ST_DUE, ST_PUBLISH_DUE, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
   ST_COUNT
 };
 
@@ -162,6 +172,21 @@ int32_t db_body(Db *db, uint32_t post, const uint8_t token_hash[32], uint64_t no
 
 // The same for a comment's stored HTML (not deleted; its post published or
 // the session a member of the post's blog).
+// The image type for these bytes, or NULL if not an accepted image.
+const char *db_image_type(const uint8_t *p, uint32_t n);
+
+// Stores an image for a post, as a write: the floor (a member of the post's
+// blog), then in one IMMEDIATE transaction the facts are re-checked, the
+// quotas, and the type. key: IMG_KEY_BYTES random bytes (the caller's);
+// key_hex gets the key as 32 hex digits and a NUL.
+DbResult db_upload(Db *db, const uint8_t token_hash[32], uint64_t now_ms, const DbFacts *f, uint32_t post,
+                   const uint8_t *bytes, uint32_t n, const uint8_t key[IMG_KEY_BYTES], char key_hex[2u * IMG_KEY_BYTES + 1u]);
+
+// An image by its key (32 hex digits): passes type and bytes to out.
+// Returns 1 if found, 0 if not, -1 on error.
+typedef void (*DbImageFn)(void *ctx, const char *type, const uint8_t *p, uint32_t n);
+int32_t db_image(Db *db, const char *key_hex, uint32_t key_len, DbImageFn out, void *ctx);
+
 // Publishes scheduled posts that are due (at most DUE_BATCH_MAX a call),
 // each in its own IMMEDIATE transaction. Returns how many, or -1.
 #define DUE_BATCH_MAX 20u
