@@ -14,6 +14,8 @@ import ./spec/html.bend as HtmlSpec
 import ./spec/http.bend as HttpSpec
 import ./src/html.bend as Html
 import ./src/http.bend as Http
+import ./spec/authz.bend as AuthzSpec
+import ./src/authz.bend as Authz
 
 # HTML ESCAPING
 # -------------
@@ -145,3 +147,134 @@ law http_no_dup:
   for raw: String
   for e: {field_set(h, k) == True{} : Bool}
   {is_fail(Http.Hdrs, Http.hdrs_set(h, k, v, raw)) == True{} : Bool}
+
+# AUTHORIZATION
+# -------------
+
+def permit_facts(p: Authz.Permit) -> AuthzSpec.Facts:
+  match p:
+    case Authz.Permit{f, a, pf}:
+      f
+
+def permit_action(p: Authz.Permit) -> AuthzSpec.Action:
+  match p:
+    case Authz.Permit{f, a, pf}:
+      a
+
+# LAW: every Permit, anywhere in the program, was allowed by the policy.
+law authz_permit_ok:
+  for p: Authz.Permit
+  {AuthzSpec.permitted(permit_facts(p), permit_action(p)) == True{} : Bool}
+
+# POLICY SANITY
+# These laws are about spec/authz.bend itself, so a mistake in the policy is
+# likely to break one of them.
+
+def is_read(a: AuthzSpec.Action) -> Bool:
+  match a:
+    case AuthzSpec.ReadPost{p}:
+      True{}
+    case _:
+      False{}
+
+# LAW: a signed-out visitor can only ever read. Whatever the facts say
+# (even inconsistent ones, like a role for an anonymous visitor), every
+# other action is denied.
+law authz_anon_read_only:
+  for +blog: U32
+  for +role: Maybe<&2, AuthzSpec.Role>
+  for +post: Maybe<&2, AuthzSpec.PostInfo>
+  for a: AuthzSpec.Action
+  for e: {AuthzSpec.permitted(AuthzSpec.Facts{AuthzSpec.Anon{}, blog, role, post}, a) == True{} : Bool}
+  {is_read(a) == True{} : Bool}
+
+# The three post-writing actions, selected by k.
+def post_write(k: Nat, +q: U32) -> AuthzSpec.Action:
+  match k:
+    case 0n:
+      AuthzSpec.EditPost{q}
+    case 1n:
+      AuthzSpec.PublishPost{q}
+    case _:
+      AuthzSpec.DeletePost{q}
+
+# LAW: nobody can edit, publish or delete a post that belongs to a blog
+# other than the one their role is for, whatever their role.
+law authz_no_cross_blog:
+  for k: Nat
+  for +who: AuthzSpec.Principal
+  for +blog: U32
+  for +role: Maybe<&2, AuthzSpec.Role>
+  for +p: U32
+  for +pb: U32
+  for +pub: Bool
+  for +q: U32
+  for ne: {U32.is_eq(pb, blog) == False{} : Bool}
+  {AuthzSpec.permitted(AuthzSpec.Facts{who, blog, role, Some{AuthzSpec.PostInfo{p, pb, pub}}}, post_write(k, q)) == False{} : Bool}
+
+# The four blog-management actions, selected by k.
+def manage(k: Nat, +b: U32, +u: U32) -> AuthzSpec.Action:
+  match k:
+    case 0n:
+      AuthzSpec.EditBlog{b}
+    case 1n:
+      AuthzSpec.DeleteBlog{b}
+    case 2n:
+      AuthzSpec.AddAuthor{b, u}
+    case _:
+      AuthzSpec.RemoveAuthor{b, u}
+
+# LAW: only a blog's owner can edit or delete it or change its authors.
+law authz_owner_manages:
+  for k: Nat
+  for +who: AuthzSpec.Principal
+  for +blog: U32
+  for +role: Maybe<&2, AuthzSpec.Role>
+  for +post: Maybe<&2, AuthzSpec.PostInfo>
+  for +b: U32
+  for +u: U32
+  for e: {AuthzSpec.permitted(AuthzSpec.Facts{who, blog, role, post}, manage(k, b, u)) == True{} : Bool}
+  {AuthzSpec.is_owner(role) == True{} : Bool}
+
+# LAW: an owner can never remove themself, so a blog always keeps its owner.
+law authz_no_self_remove:
+  for +id: U32
+  for +blog: U32
+  for +role: Maybe<&2, AuthzSpec.Role>
+  for +post: Maybe<&2, AuthzSpec.PostInfo>
+  for +b: U32
+  {AuthzSpec.permitted(AuthzSpec.Facts{AuthzSpec.User{id}, blog, role, post}, AuthzSpec.RemoveAuthor{b, id}) == False{} : Bool}
+
+# LAW: someone who is not a member of the blog can never read a draft.
+law authz_drafts_private:
+  for +who: AuthzSpec.Principal
+  for +blog: U32
+  for +p: U32
+  for +pb: U32
+  for +q: U32
+  {AuthzSpec.permitted(AuthzSpec.Facts{who, blog, None{}, Some{AuthzSpec.PostInfo{p, pb, False{}}}}, AuthzSpec.ReadPost{q}) == False{} : Bool}
+
+# The four post-writing actions (including creation), selected by k.
+def post_any_write(k: Nat, +b: U32, +q: U32) -> AuthzSpec.Action:
+  match k:
+    case 0n:
+      AuthzSpec.CreatePost{b}
+    case 1n:
+      AuthzSpec.EditPost{q}
+    case 2n:
+      AuthzSpec.PublishPost{q}
+    case _:
+      AuthzSpec.DeletePost{q}
+
+# LAW: only members of a blog (its owner or authors) create, edit, publish
+# or delete posts in it.
+law authz_members_write:
+  for k: Nat
+  for +who: AuthzSpec.Principal
+  for +blog: U32
+  for +role: Maybe<&2, AuthzSpec.Role>
+  for +post: Maybe<&2, AuthzSpec.PostInfo>
+  for +b: U32
+  for +q: U32
+  for e: {AuthzSpec.permitted(AuthzSpec.Facts{who, blog, role, post}, post_any_write(k, b, q)) == True{} : Bool}
+  {AuthzSpec.is_member(role) == True{} : Bool}

@@ -3,15 +3,10 @@ import Base
 import ./src/html.bend as Html
 import ./spec/html.bend as HtmlSpec
 import ./src/http.bend as Http
+import ./proof/lemmas.bend as L
+import ./spec/authz.bend as AuthzSpec
+import ./src/authz.bend as Authz
 import ./LAWS.bend as Laws
-
-# If a && b is True, then a is True.
-def and_left(a: Bool, -b: Bool, e: {Bool.and(a, b) == True{} : Bool}) -> {a == True{} : Bool}:
-  match a:
-    case True{}:
-      {==}
-    case False{}:
-      e
 
 # Each encoding branch emits a fixed entity (whose characters compute to
 # safe) in front of x, or just x.
@@ -55,7 +50,7 @@ def enc_lt_ok(b: Bool, +h: Char, -x: String, hx: {HtmlSpec.safe_str(x) == True{}
 def pick_ok(b: Bool, +h: Char, -x: String, e: {Html.plain(h) == b : Bool}, hx: {HtmlSpec.safe_str(x) == True{} : Bool}) -> {HtmlSpec.safe_str(Html.pick(b, h, x)) == True{} : Bool}:
   match b:
     case True{}:
-      hb = and_left(Html.base_ok(h), U32.is_ne(Char.to_u32(h), 38), e)
+      hb = L.and_left(Html.base_ok(h), U32.is_ne(Char.to_u32(h), 38), e)
       %Equal.sym(Bool, Html.base_ok(h), True{}, hb) : {Bool.and(_, HtmlSpec.safe_str(x)) == True{} : Bool}
       hx
     case False{}:
@@ -99,19 +94,6 @@ def Laws.http_clen_ok(c):
 
 # REQUEST SMUGGLING
 
-# True means Empty, False means Unit: rewriting {False == True} through this
-# turns a Unit into an Empty.
-def bool_disc(b: Bool) -> Type:
-  match b:
-    case True{}:
-      Empty
-    case False{}:
-      Unit
-
-def false_ne_true(e: {False{} == True{} : Bool}) -> Empty:
-  %e : bool_disc(_)
-  Unit{}
-
 # Transfer-Encoding: once the name is known to lower-case to
 # "transfer-encoding", header_id computes 8, and hdrs_set fails on 8.
 def te_set(h: Http.Hdrs, -v: Http.Hval, -t: String) -> {Laws.is_fail(Http.Hdrs, Http.hdrs_set(h, 8n, v, t)) == True{} : Bool}:
@@ -145,49 +127,49 @@ def no_dup_absurd(z: Empty, -h: Http.Hdrs, -k: Nat, -v: Http.Hval, -raw: String)
 def dup_host(host: Maybe<&2, Http.Hval>, -cookie: Maybe<&2, Http.Hval>, -clen: Maybe<&2, Http.Clen>, -ctype: Maybe<&2, Http.Hval>, -origin: Maybe<&2, Http.Hval>, -site: Maybe<&2, Http.Hval>, -ds: Maybe<&2, Http.Hval>, -v: Http.Hval, -raw: String, e: {Maybe.is_some(&2, Http.Hval, host) == True{} : Bool}) -> {Laws.is_fail(Http.Hdrs, Http.hdrs_set(Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 1n, v, raw)) == True{} : Bool}:
   match host:
     case None{}:
-      no_dup_absurd(false_ne_true(e), Http.Hdrs{None{}, cookie, clen, ctype, origin, site, ds}, 1n, v, raw)
+      no_dup_absurd(L.false_ne_true(e), Http.Hdrs{None{}, cookie, clen, ctype, origin, site, ds}, 1n, v, raw)
     case Some{x}:
       {==}
 
 def dup_cookie(-host: Maybe<&2, Http.Hval>, cookie: Maybe<&2, Http.Hval>, -clen: Maybe<&2, Http.Clen>, -ctype: Maybe<&2, Http.Hval>, -origin: Maybe<&2, Http.Hval>, -site: Maybe<&2, Http.Hval>, -ds: Maybe<&2, Http.Hval>, -v: Http.Hval, -raw: String, e: {Maybe.is_some(&2, Http.Hval, cookie) == True{} : Bool}) -> {Laws.is_fail(Http.Hdrs, Http.hdrs_set(Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 2n, v, raw)) == True{} : Bool}:
   match cookie:
     case None{}:
-      no_dup_absurd(false_ne_true(e), Http.Hdrs{host, None{}, clen, ctype, origin, site, ds}, 2n, v, raw)
+      no_dup_absurd(L.false_ne_true(e), Http.Hdrs{host, None{}, clen, ctype, origin, site, ds}, 2n, v, raw)
     case Some{x}:
       {==}
 
 def dup_clen(-host: Maybe<&2, Http.Hval>, -cookie: Maybe<&2, Http.Hval>, clen: Maybe<&2, Http.Clen>, -ctype: Maybe<&2, Http.Hval>, -origin: Maybe<&2, Http.Hval>, -site: Maybe<&2, Http.Hval>, -ds: Maybe<&2, Http.Hval>, -v: Http.Hval, -raw: String, e: {Maybe.is_some(&2, Http.Clen, clen) == True{} : Bool}) -> {Laws.is_fail(Http.Hdrs, Http.hdrs_set(Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 3n, v, raw)) == True{} : Bool}:
   match clen:
     case None{}:
-      no_dup_absurd(false_ne_true(e), Http.Hdrs{host, cookie, None{}, ctype, origin, site, ds}, 3n, v, raw)
+      no_dup_absurd(L.false_ne_true(e), Http.Hdrs{host, cookie, None{}, ctype, origin, site, ds}, 3n, v, raw)
     case Some{x}:
       {==}
 
 def dup_ctype(-host: Maybe<&2, Http.Hval>, -cookie: Maybe<&2, Http.Hval>, -clen: Maybe<&2, Http.Clen>, ctype: Maybe<&2, Http.Hval>, -origin: Maybe<&2, Http.Hval>, -site: Maybe<&2, Http.Hval>, -ds: Maybe<&2, Http.Hval>, -v: Http.Hval, -raw: String, e: {Maybe.is_some(&2, Http.Hval, ctype) == True{} : Bool}) -> {Laws.is_fail(Http.Hdrs, Http.hdrs_set(Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 4n, v, raw)) == True{} : Bool}:
   match ctype:
     case None{}:
-      no_dup_absurd(false_ne_true(e), Http.Hdrs{host, cookie, clen, None{}, origin, site, ds}, 4n, v, raw)
+      no_dup_absurd(L.false_ne_true(e), Http.Hdrs{host, cookie, clen, None{}, origin, site, ds}, 4n, v, raw)
     case Some{x}:
       {==}
 
 def dup_origin(-host: Maybe<&2, Http.Hval>, -cookie: Maybe<&2, Http.Hval>, -clen: Maybe<&2, Http.Clen>, -ctype: Maybe<&2, Http.Hval>, origin: Maybe<&2, Http.Hval>, -site: Maybe<&2, Http.Hval>, -ds: Maybe<&2, Http.Hval>, -v: Http.Hval, -raw: String, e: {Maybe.is_some(&2, Http.Hval, origin) == True{} : Bool}) -> {Laws.is_fail(Http.Hdrs, Http.hdrs_set(Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 5n, v, raw)) == True{} : Bool}:
   match origin:
     case None{}:
-      no_dup_absurd(false_ne_true(e), Http.Hdrs{host, cookie, clen, ctype, None{}, site, ds}, 5n, v, raw)
+      no_dup_absurd(L.false_ne_true(e), Http.Hdrs{host, cookie, clen, ctype, None{}, site, ds}, 5n, v, raw)
     case Some{x}:
       {==}
 
 def dup_site(-host: Maybe<&2, Http.Hval>, -cookie: Maybe<&2, Http.Hval>, -clen: Maybe<&2, Http.Clen>, -ctype: Maybe<&2, Http.Hval>, -origin: Maybe<&2, Http.Hval>, site: Maybe<&2, Http.Hval>, -ds: Maybe<&2, Http.Hval>, -v: Http.Hval, -raw: String, e: {Maybe.is_some(&2, Http.Hval, site) == True{} : Bool}) -> {Laws.is_fail(Http.Hdrs, Http.hdrs_set(Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 6n, v, raw)) == True{} : Bool}:
   match site:
     case None{}:
-      no_dup_absurd(false_ne_true(e), Http.Hdrs{host, cookie, clen, ctype, origin, None{}, ds}, 6n, v, raw)
+      no_dup_absurd(L.false_ne_true(e), Http.Hdrs{host, cookie, clen, ctype, origin, None{}, ds}, 6n, v, raw)
     case Some{x}:
       {==}
 
 def dup_ds(-host: Maybe<&2, Http.Hval>, -cookie: Maybe<&2, Http.Hval>, -clen: Maybe<&2, Http.Clen>, -ctype: Maybe<&2, Http.Hval>, -origin: Maybe<&2, Http.Hval>, -site: Maybe<&2, Http.Hval>, ds: Maybe<&2, Http.Hval>, -v: Http.Hval, -raw: String, e: {Maybe.is_some(&2, Http.Hval, ds) == True{} : Bool}) -> {Laws.is_fail(Http.Hdrs, Http.hdrs_set(Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 7n, v, raw)) == True{} : Bool}:
   match ds:
     case None{}:
-      no_dup_absurd(false_ne_true(e), Http.Hdrs{host, cookie, clen, ctype, origin, site, None{}}, 7n, v, raw)
+      no_dup_absurd(L.false_ne_true(e), Http.Hdrs{host, cookie, clen, ctype, origin, site, None{}}, 7n, v, raw)
     case Some{x}:
       {==}
 
@@ -196,7 +178,7 @@ def Laws.http_no_dup(h, k, v, raw, e):
     case Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}:
       match k:
         case 0n:
-          no_dup_absurd(false_ne_true(e), Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 0n, v, raw)
+          no_dup_absurd(L.false_ne_true(e), Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 0n, v, raw)
         case 1n:
           dup_host(host, cookie, clen, ctype, origin, site, ds, v, raw, e)
         case 2n:
@@ -212,4 +194,98 @@ def Laws.http_no_dup(h, k, v, raw, e):
         case 7n:
           dup_ds(host, cookie, clen, ctype, origin, site, ds, v, raw, e)
         case 8n+q:
-          no_dup_absurd(false_ne_true(e), Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 8n+q, v, raw)
+          no_dup_absurd(L.false_ne_true(e), Http.Hdrs{host, cookie, clen, ctype, origin, site, ds}, 8n+q, v, raw)
+
+# AUTHORIZATION
+
+def Laws.authz_permit_ok(p):
+  match p:
+    case Authz.Permit{f, a, pf}:
+      pf
+
+# Anonymous: every non-read action's policy reduces to False (is_user(Anon)
+# comes first in each check), so e is {False == True}, which is exactly the
+# goal is_read(a) == True for a non-read action.
+def Laws.authz_anon_read_only(blog, role, post, a, e):
+  match a:
+    case AuthzSpec.CreateBlog{}:
+      e
+    case AuthzSpec.EditBlog{b}:
+      e
+    case AuthzSpec.DeleteBlog{b}:
+      e
+    case AuthzSpec.AddAuthor{b, u}:
+      e
+    case AuthzSpec.RemoveAuthor{b, u}:
+      e
+    case AuthzSpec.CreatePost{b}:
+      e
+    case AuthzSpec.EditPost{p}:
+      e
+    case AuthzSpec.PublishPost{p}:
+      e
+    case AuthzSpec.DeletePost{p}:
+      e
+    case AuthzSpec.ReadPost{p}:
+      {==}
+    case AuthzSpec.ReadBlogAdmin{b}:
+      e
+
+# can_write_post needs the post's blog to equal the facts' blog; it does not.
+def cwp_cross(+who: AuthzSpec.Principal, +blog: U32, +role: Maybe<&2, AuthzSpec.Role>, +p: U32, +pb: U32, +pub: Bool, +q: U32, ne: {U32.is_eq(pb, blog) == False{} : Bool}) -> {AuthzSpec.can_write_post(AuthzSpec.Facts{who, blog, role, Some{AuthzSpec.PostInfo{p, pb, pub}}}, q) == False{} : Bool}:
+  %Equal.sym(Bool, U32.is_eq(pb, blog), False{}, ne) : {Bool.and(AuthzSpec.member_of(AuthzSpec.Facts{who, blog, role, Some{AuthzSpec.PostInfo{p, pb, pub}}}, blog), Bool.and(U32.is_eq(p, q), _)) == False{} : Bool}
+  %Equal.sym(Bool, Bool.and(U32.is_eq(p, q), False{}), False{}, L.and_false_r(U32.is_eq(p, q))) : {Bool.and(AuthzSpec.member_of(AuthzSpec.Facts{who, blog, role, Some{AuthzSpec.PostInfo{p, pb, pub}}}, blog), _) == False{} : Bool}
+  L.and_false_r(AuthzSpec.member_of(AuthzSpec.Facts{who, blog, role, Some{AuthzSpec.PostInfo{p, pb, pub}}}, blog))
+
+def Laws.authz_no_cross_blog(k, who, blog, role, p, pb, pub, q, ne):
+  match k:
+    case 0n:
+      cwp_cross(who, blog, role, p, pb, pub, q, ne)
+    case 1n:
+      cwp_cross(who, blog, role, p, pb, pub, q, ne)
+    case 2n+r:
+      cwp_cross(who, blog, role, p, pb, pub, q, ne)
+
+# owner_of(f, b) is is_user && (blog == b && is_owner(role)); peel it.
+def owner_role(+who: AuthzSpec.Principal, +blog: U32, +role: Maybe<&2, AuthzSpec.Role>, +post: Maybe<&2, AuthzSpec.PostInfo>, +b: U32, e: {AuthzSpec.owner_of(AuthzSpec.Facts{who, blog, role, post}, b) == True{} : Bool}) -> {AuthzSpec.is_owner(role) == True{} : Bool}:
+  L.and_right(U32.is_eq(blog, b), AuthzSpec.is_owner(role), L.and_right(AuthzSpec.is_user(who), Bool.and(U32.is_eq(blog, b), AuthzSpec.is_owner(role)), e))
+
+def Laws.authz_owner_manages(k, who, blog, role, post, b, u, e):
+  match k:
+    case 0n:
+      owner_role(who, blog, role, post, b, e)
+    case 1n:
+      owner_role(who, blog, role, post, b, e)
+    case 2n:
+      owner_role(who, blog, role, post, b, L.and_left(AuthzSpec.owner_of(AuthzSpec.Facts{who, blog, role, post}, b), U32.is_ne(u, 0), e))
+    case 3n+r:
+      owner_role(who, blog, role, post, b, L.and_left(AuthzSpec.owner_of(AuthzSpec.Facts{who, blog, role, post}, b), U32.is_ne(u, AuthzSpec.user_id(who)), e))
+
+def Laws.authz_no_self_remove(id, blog, role, post, b):
+  %Equal.sym(Bool, U32.is_ne(id, id), False{}, L.u32_ne_refl(id)) : {Bool.and(AuthzSpec.owner_of(AuthzSpec.Facts{AuthzSpec.User{id}, blog, role, post}, b), _) == False{} : Bool}
+  L.and_false_r(AuthzSpec.owner_of(AuthzSpec.Facts{AuthzSpec.User{id}, blog, role, post}, b))
+
+def Laws.authz_drafts_private(who, blog, p, pb, q):
+  %Equal.sym(Bool, Bool.and(U32.is_eq(p, q), False{}), False{}, L.and_false_r(U32.is_eq(p, q))) : {Bool.or(_, AuthzSpec.can_write_post(AuthzSpec.Facts{who, blog, None{}, Some{AuthzSpec.PostInfo{p, pb, False{}}}}, q)) == False{} : Bool}
+  %Equal.sym(Bool, Bool.and(U32.is_eq(blog, blog), False{}), False{}, L.and_false_r(U32.is_eq(blog, blog))) : {Bool.and(Bool.and(AuthzSpec.is_user(who), _), AuthzSpec.post_is(AuthzSpec.Facts{who, blog, None{}, Some{AuthzSpec.PostInfo{p, pb, False{}}}}, q)) == False{} : Bool}
+  %Equal.sym(Bool, Bool.and(AuthzSpec.is_user(who), False{}), False{}, L.and_false_r(AuthzSpec.is_user(who))) : {Bool.and(_, AuthzSpec.post_is(AuthzSpec.Facts{who, blog, None{}, Some{AuthzSpec.PostInfo{p, pb, False{}}}}, q)) == False{} : Bool}
+  {==}
+
+# member_of(f, b) is is_user && (blog == b && is_member(role)); peel it.
+def member_role(+who: AuthzSpec.Principal, +blog: U32, +role: Maybe<&2, AuthzSpec.Role>, +post: Maybe<&2, AuthzSpec.PostInfo>, +b: U32, e: {AuthzSpec.member_of(AuthzSpec.Facts{who, blog, role, post}, b) == True{} : Bool}) -> {AuthzSpec.is_member(role) == True{} : Bool}:
+  L.and_right(U32.is_eq(blog, b), AuthzSpec.is_member(role), L.and_right(AuthzSpec.is_user(who), Bool.and(U32.is_eq(blog, b), AuthzSpec.is_member(role)), e))
+
+# can_write_post(f, q) starts with member_of(f, blog).
+def cwp_member(+who: AuthzSpec.Principal, +blog: U32, +role: Maybe<&2, AuthzSpec.Role>, +post: Maybe<&2, AuthzSpec.PostInfo>, +q: U32, e: {AuthzSpec.can_write_post(AuthzSpec.Facts{who, blog, role, post}, q) == True{} : Bool}) -> {AuthzSpec.is_member(role) == True{} : Bool}:
+  member_role(who, blog, role, post, blog, L.and_left(AuthzSpec.member_of(AuthzSpec.Facts{who, blog, role, post}, blog), AuthzSpec.post_is(AuthzSpec.Facts{who, blog, role, post}, q), e))
+
+def Laws.authz_members_write(k, who, blog, role, post, b, q, e):
+  match k:
+    case 0n:
+      member_role(who, blog, role, post, b, e)
+    case 1n:
+      cwp_member(who, blog, role, post, q, e)
+    case 2n:
+      cwp_member(who, blog, role, post, q, e)
+    case 3n+r:
+      cwp_member(who, blog, role, post, q, e)
