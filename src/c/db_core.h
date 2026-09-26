@@ -253,6 +253,23 @@ int32_t db_comment_body(Db *db, uint32_t comment, const uint8_t token_hash[32], 
 int32_t db_open(Db *db, const char *path);
 void db_close(Db *db);
 
+// A read-only connection for queries run off the event loop (on a helper
+// thread: one reader per thread at a time). SQLite refuses writes on it.
+// Its page cache is its own (and emptied by any write elsewhere), so only
+// queries whose cost depends on the data and the input (search) use one.
+typedef struct {
+  sqlite3 *conn;
+  sqlite3_stmt *q[Q_COUNT];
+  uint64_t deadline_ns;
+} DbReader;
+
+int32_t db_reader_open(DbReader *r, const char *path);
+void db_reader_close(DbReader *r);
+
+// As db_query, on r, stopping after budget_ms: then (or on any error) -1.
+int32_t db_reader_query(DbReader *r, uint32_t q, uint32_t a, uint32_t b, DbText text, const uint8_t token_hash[32],
+                        uint64_t now_ms, uint64_t budget_ms, DbRowFn fn, void *ctx);
+
 // The user a session token hash belongs to, if unexpired; 0 otherwise.
 uint32_t db_session_user(Db *db, const uint8_t token_hash[32], uint64_t now_ms);
 

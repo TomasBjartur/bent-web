@@ -600,6 +600,9 @@ def search_results(asked: Bool, rows: List<&2, List<&2, String>>) -> String:
         case Con{r, t}:
           "<ul class=\"feed\">" ++ (search_items(Con{r, t}) ++ "</ul>")
 
+def search_busy() -> String:
+  "<div id=\"results\"><div class=\"empty\"><p>Search is busy right now. Try again in a moment.</p></div></div>"
+
 def results_div(+q: String, rows: List<&2, List<&2, String>>) -> String:
   "<div id=\"results\">" ++ (search_results(Bool.not(String.is_empty(q)), rows) ++ "</div>")
 
@@ -805,5 +808,36 @@ def live_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool) -
     case Con{+r, t}:
       Con{T{live_target(col(r, 7n)) ++ (SCon{Char.from_u32(31), SNil{}} ++ ("append" ++ (SCon{Char.from_u32(31), SNil{}} ++ comment_open(r))))}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{comment_after(r, signed, can_mod, False{}) ++ ("</details></div>" ++ SCon{Char.from_u32(30), SNil{}})}, live_segs(t, signed, can_mod)}}}
 
-def comments_section(+signed: Bool, +can_mod: Bool, +pid: String, +count: String, +last: String, rows: List<&2, List<&2, String>>) -> List<&2, Seg>:
-  Con{T{"<section class=\"comments\" id=\"comments\"><h2>Comments</h2>" ++ (comment_form(signed, pid) ++ (live_div(pid, last, "0", False{}) ++ "<div id=\"thread\">"))}, List.append(&2, Seg, comment_segs(rows, signed, can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), None{}), Con{T{"</div></section>"}, Nil{}})}
+# COMMENT PAGES: a post page shows 20 threads (src/handlers.bend
+# threads_take); "More comments" brings the next 20 (Datastar puts them in
+# place, before itself; without it, a page of their own). upto: the last
+# comment when the post page was made (later ones came live, or will).
+def more_comments(+pid: String, +after: String, +upto: String) -> String:
+  "<div id=\"more-comments\" class=\"more-comments\"><a class=\"btn\" href=\"/comments/" ++ Html.esc(pid, "?after=" ++ Html.esc(after, "&amp;upto=" ++ Html.esc(upto, "\" data-on:click__prevent=\"@get('/comments/" ++ Html.esc(pid, "?after=" ++ Html.esc(after, "&amp;upto=" ++ Html.esc(upto, "&amp;frag=1')\" data-indicator:_morec data-attr:aria-busy=\"$_morec\">More comments</a></div>"))))))
+
+def more_or_none(more: Bool, +pid: String, +after: String, +upto: String) -> String:
+  match more:
+    case True{}:
+      more_comments(pid, after, upto)
+    case False{}:
+      ""
+
+def more_mode(none: Bool) -> String:
+  match none:
+    case True{}:
+      "remove"
+    case False{}:
+      "outer"
+
+# Datastar's answer to "More comments": the threads put before it (in one
+# element), then it is replaced by the next link (more) or removed.
+def more_segs(+signed: Bool, +can_mod: Bool, +many: Bool, rows: List<&2, List<&2, String>>, +more: String) -> List<&2, Seg>:
+  Con{T{"#more-comments" ++ (SCon{Char.from_u32(31), SNil{}} ++ ("before" ++ (SCon{Char.from_u32(31), SNil{}} ++ "<div class=\"cbatch\">")))}, List.append(&2, Seg, comment_segs(rows, signed, can_mod, many, None{}), Con{T{"</div>" ++ (SCon{Char.from_u32(30), SNil{}} ++ patch("#more-comments", more_mode(String.is_empty(more)), more))}, Nil{}})}
+
+# Without Datastar: the next threads on a page of their own. view: as the
+# post page's (Q_POST_VIEW: post slug, title, published, blog slug, ...).
+def more_page(+signed: Bool, +can_mod: Bool, +many: Bool, +view: List<&2, String>, rows: List<&2, List<&2, String>>, +more: String) -> List<&2, Seg>:
+  Con{T{layout_top("Comments: " ++ col(view, 1n), signed) ++ ("<p><a href=\"/b/" ++ Html.esc(col(view, 3n), "/" ++ Html.esc(col(view, 0n), "#comments\">← " ++ Html.esc(col(view, 1n), "</a></p><section class=\"comments\" id=\"comments\"><div id=\"thread\">"))))}, List.append(&2, Seg, comment_segs(rows, signed, can_mod, many, None{}), Con{T{more ++ ("</div></section>" ++ layout_bottom())}, Nil{}})}
+
+def comments_section(+signed: Bool, +can_mod: Bool, +pid: String, +count: String, +last: String, rows: List<&2, List<&2, String>>, +more: String) -> List<&2, Seg>:
+  Con{T{"<section class=\"comments\" id=\"comments\"><h2>Comments</h2>" ++ (comment_form(signed, pid) ++ (live_div(pid, last, "0", False{}) ++ "<div id=\"thread\">"))}, List.append(&2, Seg, comment_segs(rows, signed, can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), None{}), Con{T{more ++ "</div></section>"}, Nil{}})}

@@ -213,6 +213,8 @@ button.like.on { color: var(--accent); border-color: var(--accent); background: 
 .replies > summary::-webkit-details-marker { display: none; }
 .replies[open] > summary { color: var(--muted); font-weight: 400; }
 .replies .replies .replies .replies .replies .replies { margin-left: 0; padding-left: 0; border-left: 0; }
+.more-comments { padding: 16px 0 4px; text-align: center; }
+.more-comments a[aria-busy="true"] { opacity: 0.6; pointer-events: none; }
 .comment.new > .cbody { animation: arrive 2.5s ease-out; }
 @keyframes arrive { from { background: var(--accent-soft); } to { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { .comment.new > .cbody { animation: none; } }

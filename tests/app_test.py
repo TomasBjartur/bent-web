@@ -5,7 +5,7 @@ Starts build/server on a fresh database, creates users and sessions
 directly in SQLite (login is not implemented yet), then drives the app over
 raw HTTP. usage: tests/app_test.py
 """
-import hashlib, os, re, secrets, socket, sqlite3, subprocess, sys, tempfile, time, urllib.parse
+import html, hashlib, os, re, secrets, socket, sqlite3, subprocess, sys, tempfile, time, urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = 8099
@@ -420,7 +420,9 @@ def run(dbpath):
     check("search finds the published post", st == 200 and "Searchable" in body, st)
     check("search never shows drafts", "Secret draft" not in body and "nobody may read" not in body)
     check("result excerpt is escaped", "galloped" in body and "<b" not in body.split('class="feed"')[1] and "&amp; sang" in body, body.split('class="feed"')[1][:400] if 'class="feed"' in body else body[-400:])
-    check("prefix search", "Searchable" in req("GET", "/search?q=zebrac")[2])
+    check("prefix search while typing", "Searchable" in req("GET", "/search?q=zebrac&frag=1")[2])
+    check("a submitted search matches whole words", "Searchable" not in req("GET", "/search?q=zebrac")[2])
+    check("no one- or two-letter prefixes", "Searchable" not in req("GET", "/search?q=ze&frag=1")[2])
     check("case and accents folded", "Searchable" in req("GET", "/search?q=" + urllib.parse.quote("ZEBRACÓRN"))[2])
     for q in ['"', '""', 'zebracorn"', 'NEAR(', 'a OR', '*', '^', ')(', "'", '%00', 'x' * 600, ' ' * 50, '\x01zebracorn']:
         st, _, body, _ = req("GET", "/search?q=" + urllib.parse.quote(q, safe=''))
@@ -487,6 +489,34 @@ def run(dbpath):
     check("a member of the blog moderates", st == 303 and "A reply" not in req("GET", turl)[2], st)
     codes = [req("POST", f"/comment/{tpid}", c, {"body": f"spam {i}"})[0] for i in range(6)]
     check("comment rate limit: 429", 429 in codes and codes.count(303) <= 4, codes)
+
+    # Comment pages: a post shows 20 threads; "More comments" brings the
+    # rest (as a page, or as a Datastar patch), replies with their thread,
+    # and not comments newer than the post page (those come live).
+    q = sqlite3.connect(dbpath)
+    au = q.execute("SELECT id FROM user ORDER BY id LIMIT 1").fetchone()[0]
+    ids = [q.execute("INSERT INTO comment(post_id, parent_id, author_id, body_md, body_html, created_ms) VALUES (?, NULL, ?, ?, ?, 1)",
+                     (tpid, au, f"thread {i}", f"<p>thread {i}</p>")).lastrowid for i in range(25)]
+    q.execute("INSERT INTO comment(post_id, parent_id, author_id, body_md, body_html, created_ms) VALUES (?, ?, ?, 'late reply', '<p>late reply</p>', 1)",
+              (tpid, ids[-1], au))
+    q.commit()
+    _, _, body, _ = req("GET", turl)
+    threads = body.count('data-parent="0"')
+    check("comment pages: 20 threads on the post page", threads == 20 and 'id="more-comments"' in body, threads)
+    m = re.search(r'href="(/comments/[^"]+)"', body)
+    more = html.unescape(m.group(1)) if m else "/comments/0"
+    q.execute("INSERT INTO comment(post_id, parent_id, author_id, body_md, body_html, created_ms) VALUES (?, NULL, ?, 'too new', '<p>too new</p>', 1)", (tpid, au))
+    q.commit()
+    q.close()
+    st, _, page2, _ = req("GET", more)
+    shown = [i for i in range(25) if f"<p>thread {i}</p>" in body or f"<p>thread {i}</p>" in page2]
+    check("comment pages: the rest on the next page", st == 200 and len(shown) == 25 and 'id="more-comments"' not in page2, (st, len(shown)))
+    check("comment pages: a reply stays with its thread", page2.find("late reply") > page2.find(f"<p>thread 24</p>") > 0)
+    check("comment pages: not newer than the post page", "too new" not in page2)
+    st, _, frag, head = req("GET", more + "&frag=1")
+    check("comment pages: Datastar patch", st == 200 and "text/event-stream" in head and "data: mode before" in frag and "data: mode remove" in frag and "thread 24" in frag, frag[:300])
+    st, _, _, _ = req("GET", f"/comments/{qd}?after=0")
+    check("comment pages: not for a draft", st == 404, st)
 
     # Tags: normalized on save, shown on the post, a page per tag.
     st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b, {"title": "Tagged"})

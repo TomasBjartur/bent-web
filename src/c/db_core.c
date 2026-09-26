@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/random.h>
+#include <time.h>
 
 #include "../../vendor/bearssl/inc/bearssl_ec.h"
 #include "../../vendor/bearssl/inc/bearssl_hash.h"
@@ -187,12 +188,16 @@ static const char *const DB_Q[Q_COUNT] = {
                      "p.comment_count "
                      "FROM post p WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
   // Threads in order (a path of zero-padded ids), at most 50 deep.
+  // One page of threads: the top-level comments after ?2 (and, if ?3 is
+  // not empty, at most ?3: those after it arrived live), 21 of them, so
+  // the page (src/handlers.bend, 20 threads) knows whether there are more.
   // The recursion takes the smallest path first (depth-first, in thread
   // order) and stops at 300 rows, so a post with thousands of comments
   // costs no more than 300; CROSS JOIN makes SQLite look comments up by id
   // (left to right) instead of scanning the table.
   [Q_COMMENTS] = ("WITH RECURSIVE t(id, depth, path) AS ("
-                  "SELECT id, 0, printf('%010d', id) FROM comment WHERE post_id = ?1 AND parent_id IS NULL "
+                  "SELECT id, 0, printf('%010d', id) FROM (SELECT id FROM comment WHERE post_id = ?1 AND parent_id IS NULL "
+                  "AND id > ?2 AND (?3 = '' OR id <= CAST(?3 AS INTEGER)) ORDER BY id LIMIT 21) "
                   "UNION ALL SELECT c.id, t.depth + 1, t.path || printf('%010d', c.id) FROM t CROSS JOIN comment c "
                   "ON c.parent_id = t.id WHERE t.depth < 50 ORDER BY 3 LIMIT 300) "
                   "SELECT c.id, t.depth, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted, "
@@ -345,6 +350,14 @@ static const char *const DB_MIGRATIONS[] = {
   "UPDATE user SET handle = substr(handle, 1, 20) || '_' || id WHERE id NOT IN (SELECT min(id) FROM user GROUP BY handle);"
   "CREATE UNIQUE INDEX user_handle ON user(handle);"
   "ALTER TABLE email_token ADD COLUMN handle TEXT;",
+  // v13: 3-character prefixes indexed, for search as you type (a prefix
+  // query without an index gathers every match first; see
+  // src/text.bend fts.last). Only the index is rebuilt: the triggers that
+  // feed it are on post and post_body.
+  "DROP TABLE post_fts;"
+  "CREATE VIRTUAL TABLE post_fts USING fts5(title, body_md, content='', contentless_delete=1,"
+  " tokenize='unicode61 remove_diacritics 2', prefix='3');"
+  "INSERT INTO post_fts(rowid, title, body_md) SELECT p.id, p.title, b.body_md FROM post p JOIN post_body b ON b.post_id = p.id;",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 
@@ -935,10 +948,12 @@ uint32_t db_user_new(Db *db, DbText email, DbText name, uint64_t now_ms) {
   return (uint32_t)sqlite3_last_insert_rowid(db->conn);
 }
 
-int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
-                 const uint8_t token_hash[32], uint64_t now_ms, DbRowFn fn, void *ctx) {
-  if (q >= Q_COUNT) return -1;
-  sqlite3_stmt *st = db->q[q];
+// Runs a prepared query (of DB_Q) and hands each row to fn. *end gets the
+// last step's result (SQLITE_DONE, SQLITE_ROW if cut at DB_ROWS_MAX, or
+// an error such as SQLITE_INTERRUPT).
+static int32_t db_query_st(sqlite3_stmt *st, uint32_t a, uint32_t b, DbText text, const uint8_t token_hash[32],
+                           uint64_t now_ms, DbRowFn fn, void *ctx, int *end) {
+  ASSERT(st != NULL && fn != NULL && end != NULL);
   int n = sqlite3_bind_parameter_count(st);
   // Bind only the parameters this statement uses (by name position).
   for (int i = 1; i <= n; i++) {
@@ -955,7 +970,7 @@ int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
     }
   }
   int32_t rows = 0;
-  int rc;
+  int rc = SQLITE_DONE;
   while (rows < (int32_t)DB_ROWS_MAX && (rc = sqlite3_step(st)) == SQLITE_ROW) {
     int nc = sqlite3_column_count(st);
     ASSERT(nc > 0 && (uint32_t)nc <= DB_COLS_MAX);
@@ -971,9 +986,69 @@ int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
     fn(ctx, (uint32_t)nc, cols, lens);
     rows++;
   }
+  *end = rc;
   sqlite3_reset(st);
   sqlite3_clear_bindings(st);
+  ASSERT(rows >= 0 && rows <= (int32_t)DB_ROWS_MAX);
   return rows;
+}
+
+int32_t db_query(Db *db, uint32_t q, uint32_t a, uint32_t b, DbText text,
+                 const uint8_t token_hash[32], uint64_t now_ms, DbRowFn fn, void *ctx) {
+  if (q >= Q_COUNT) return -1;
+  int end = 0;
+  return db_query_st(db->q[q], a, b, text, token_hash, now_ms, fn, ctx, &end);
+}
+
+// READERS: read-only connections for queries run on a helper thread (see
+// db_core.h). A query stops at its deadline (checked every 1000 steps of
+// SQLite's VM).
+static int db_reader_progress(void *arg) {
+  const DbReader *r = arg;
+  ASSERT(r != NULL && r->deadline_ns > 0u);
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec > r->deadline_ns;
+}
+
+int32_t db_reader_open(DbReader *r, const char *path) {
+  ASSERT(r != NULL && path != NULL);
+  memset(r, 0, sizeof *r);
+  if (sqlite3_open_v2(path, &r->conn, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK) return -1;
+  int on = 1;
+  if (sqlite3_db_config(r->conn, SQLITE_DBCONFIG_DEFENSIVE, 1, &on) != SQLITE_OK) return -1;
+  if (sqlite3_db_config(r->conn, SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0, NULL) != SQLITE_OK) return -1;
+  sqlite3_busy_timeout(r->conn, 2000);
+  if (sqlite3_exec(r->conn, "PRAGMA query_only = ON; PRAGMA cell_size_check = ON; PRAGMA cache_size = -16384;", NULL, NULL,
+                   NULL) != SQLITE_OK) return -1;
+  sqlite3_progress_handler(r->conn, 1000, db_reader_progress, r);
+  for (uint32_t i = 0; i < Q_COUNT; i++) {
+    ASSERT(DB_Q[i] != NULL);
+    if (sqlite3_prepare_v3(r->conn, DB_Q[i], -1, SQLITE_PREPARE_PERSISTENT, &r->q[i], NULL) != SQLITE_OK) {
+      fprintf(stderr, "db_reader_open: query %u: %s\n", i, sqlite3_errmsg(r->conn));
+      return -1;
+    }
+  }
+  return 0;
+}
+
+void db_reader_close(DbReader *r) {
+  ASSERT(r != NULL);
+  for (uint32_t i = 0; i < Q_COUNT; i++) sqlite3_finalize(r->q[i]);
+  sqlite3_close(r->conn);
+  memset(r, 0, sizeof *r);
+}
+
+int32_t db_reader_query(DbReader *r, uint32_t q, uint32_t a, uint32_t b, DbText text, const uint8_t token_hash[32],
+                        uint64_t now_ms, uint64_t budget_ms, DbRowFn fn, void *ctx) {
+  ASSERT(r != NULL && r->conn != NULL && budget_ms > 0u);
+  if (q >= Q_COUNT) return -1;
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  r->deadline_ns = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec + budget_ms * 1000000ull;
+  int end = 0;
+  int32_t n = db_query_st(r->q[q], a, b, text, token_hash, now_ms, fn, ctx, &end);
+  return end == SQLITE_DONE || end == SQLITE_ROW ? n : -1;
 }
 
 const char *db_image_type(const uint8_t *p, uint32_t n) {

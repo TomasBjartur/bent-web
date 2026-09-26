@@ -35,6 +35,19 @@ req/s on one core.
   checks each write is visible at once to a signed-out reader, and was
   mutation-tested (removing the edit case makes it fail).
 - SQLite's default page cache (2 MB) made 13% of the time `pread`.
+- **Negative: micro-benchmarks lied three times.** A per-request read
+  transaction on a second connection, `mmap`, and malloc tuning each made
+  single pages faster and the mixed load slower or no faster (a second
+  connection's page cache is emptied by every write on the first). Only
+  CPU time per request under the full mix, with builds alternated,
+  decided anything; throughput on this VM drifts too much.
+- **One event loop means one slow step stalls everything.** An event loop
+  overlaps waiting (sockets), not work: a SQLite query or a page render
+  runs to completion before anything else moves. A one-letter search
+  prefix took 300 ms. Fixes, in order of generality: bound each request's
+  work (20 comment threads a page, prefix rules), run the input-dependent
+  query (search) on a helper thread with a deadline, and (not yet) more
+  than one event loop.
 
 ---
 

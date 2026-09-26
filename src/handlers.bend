@@ -156,6 +156,107 @@ def first_row(+rows: List<&2, List<&2, String>>) -> List<&2, String>:
     case Con{r, t}:
       r
 
+# COMMENT PAGES: comment rows (Q_COMMENTS) come in thread order, up to 21
+# threads; a page shows 20 (a thread: a top-level comment, depth 0, and
+# the rows after it until the next one).
+def thread_flags(rows: List<&2, List<&2, String>>) -> List<&2, Bool>:
+  match rows:
+    case Nil{}:
+      Nil{}
+    case Con{+r, t}:
+      Con{Nat.is_eq(Pages.depth_of(Pages.col(r, 1n)), 0n), thread_flags(t)}
+
+# The rows of the first k threads (flags: thread_flags of the rows).
+def threads_take(rows: List<&2, List<&2, String>>, flags: List<&2, Bool>, k: Nat) -> List<&2, List<&2, String>>:
+  match rows:
+    case Nil{}:
+      Nil{}
+    case Con{r, t}:
+      match flags:
+        case Nil{}:
+          Nil{}
+        case Con{f, fs}:
+          match f:
+            case True{}:
+              match k:
+                case 0n:
+                  Nil{}
+                case 1n+j:
+                  Con{r, threads_take(t, fs, j)}
+            case False{}:
+              Con{r, threads_take(t, fs, k)}
+
+# The id of the last thread in rows (d if none).
+def last_thread(rows: List<&2, List<&2, String>>, flags: List<&2, Bool>, +d: String) -> String:
+  match rows:
+    case Nil{}:
+      d
+    case Con{+r, t}:
+      match flags:
+        case Nil{}:
+          d
+        case Con{f, fs}:
+          match f:
+            case True{}:
+              last_thread(t, fs, Pages.col(r, 0n))
+            case False{}:
+              last_thread(t, fs, d)
+
+# The "More comments" link after page (taken from rows), if rows had more:
+# the next page starts after page's last thread, up to upto.
+def threads_more(+pid: String, +rows: List<&2, List<&2, String>>, +page: List<&2, List<&2, String>>, +upto: String) -> String:
+  Pages.more_or_none(Nat.is_lt(List.length(&2, List<&2, String>, page), List.length(&2, List<&2, String>, rows)), pid, last_thread(page, thread_flags(page), "0"), upto)
+
+# GET /comments/<post>?after=<thread>&upto=<comment>: the next page of
+# threads, as a Datastar patch (frag=1) or a page. Readers of the post.
+def h_comments4(s: Socket, +token: String, +who: U32, +pid: U32, +can_mod: Bool, +frag: Bool, +upto: String, +count: String, +view: List<&2, List<&2, String>>, +rows: List<&2, List<&2, String>>) -> IO(Unit):
+  match frag:
+    case True{}:
+      do IO<Unit>:
+        +pg : Pages.Page = Pages.page_of(Pages.more_segs(signed(who), can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), threads_take(rows, thread_flags(rows), 20n), threads_more(U32.show(pid), rows, threads_take(rows, thread_flags(rows), 20n), upto)), "")
+        x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 2, Pages.page_texts(pg), Pages.page_bodies(pg), token, "", "")
+        done(x)
+    case False{}:
+      do IO<Unit>:
+        +pg : Pages.Page = Pages.page_of(Pages.more_page(signed(who), can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), first_row(view), threads_take(rows, thread_flags(rows), 20n), threads_more(U32.show(pid), rows, threads_take(rows, thread_flags(rows), 20n), upto)), "")
+        x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, Pages.page_texts(pg), Pages.page_bodies(pg), token, "", "")
+        done(x)
+
+# upto 0 (absent): no bound.
+def upto_text(zero: Bool, +n: U32) -> String:
+  match zero:
+    case True{}:
+      ""
+    case False{}:
+      U32.show(n)
+
+def h_comments3(s: Socket, +token: String, +who: U32, +pid: U32, +can_mod: Bool, +after: U32, +upto: U32, +frag: Bool, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
+  match m:
+    case None{}:
+      fail(s, token, who, 404)
+    case Some{p}:
+      do IO<Unit>:
+        view : List<&2, List<&2, String>> <- Db.query(Db.q_post_view(), pid, 0, "", token)
+        social : List<&2, List<&2, String>> <- Db.query(Db.q_post_social(), pid, 0, "", token)
+        rows : List<&2, List<&2, String>> <- Db.query(Db.q_comments(), pid, after, upto_text(U32.is_zero(upto), upto), token)
+        h_comments4(s, token, who, pid, can_mod, frag, upto_text(U32.is_zero(upto), upto), first_col(social, 2n), view, rows)
+
+def form_num(+xs: List<&2, Text.Field>, +key: String) -> U32:
+  Maybe.default(&2, U32, U32.read(Maybe.default(&2, String, Text.form_raw(xs, key), "")), 0)
+
+# DATASTAR RESPONSES
+# ------------------
+# ?frag=1 (from Datastar): answer with patches (content type 2: a stream of
+# Datastar events, src/effects/db.c page_sse) instead of a page or a
+# redirect.
+def wants_frag(+xs: List<&2, Text.Field>) -> Bool:
+  String.eq(Maybe.default(&2, String, Text.form_raw(xs, "frag"), ""), "1")
+
+def h_comments(s: Socket, +token: String, +who: U32, +pid: U32, +query: String) -> IO(Unit):
+  do IO<Unit>:
+    +f : Spec.Facts <- Db.facts(who, 0, pid)
+    h_comments3(s, token, who, pid, is_some_permit(Authz.authorize(f, Spec.EditPost{pid})), form_num(form(query), "after"), form_num(form(query), "upto"), wants_frag(form(query)), Authz.authorize(f, Spec.ReadPost{pid}))
+
 # A signed-out visitor's post page is the same for all of them: cached
 # under p0:<id> (dropped by each write to the post, its likes or comments,
 # and by blog-wide changes: see src/effects/db.c app_post_gen).
@@ -180,9 +281,10 @@ def h_post4(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +n
       do IO<Unit>:
         +social : List<&2, List<&2, String>> <- Db.query(Db.q_post_social(), pid, 0, "", token)
         tags : List<&2, List<&2, String>> <- Db.query(Db.q_post_tags(), pid, 0, "", token)
-        last : List<&2, List<&2, String>> <- Db.query(Db.q_last_comment(), pid, 0, "", token)
-        comments : List<&2, List<&2, String>> <- Db.query(Db.q_comments(), pid, 0, "", token)
-        h_post5(Bool.not(signed(who)), s, token, pid, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.tag_chips(tags) ++ Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), first_col(last, 0n), comments), Con{Pages.T{Pages.layout_bottom()}, Nil{}})}}}, ""))
+        +last : List<&2, List<&2, String>> <- Db.query(Db.q_last_comment(), pid, 0, "", token)
+        +comments : List<&2, List<&2, String>> <- Db.query(Db.q_comments(), pid, 0, "", token)
+        +page : List<&2, List<&2, String>> = threads_take(comments, thread_flags(comments), 20n)
+        h_post5(Bool.not(signed(who)), s, token, pid, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.tag_chips(tags) ++ Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), first_col(last, 0n), page, threads_more(U32.show(pid), comments, page, first_col(last, 0n))), Con{Pages.T{Pages.layout_bottom()}, Nil{}})}}}, ""))
 
 def h_post3(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +notice: Bool, m: Maybe<&2, Authz.Permit>) -> IO(Unit):
   match m:
@@ -236,17 +338,6 @@ def h_upload(s: Socket, +token: String, +who: U32, +pid: U32, +body: String) -> 
   do IO<Unit>:
     f : Spec.Facts <- Db.facts(who, 0, pid)
     h_upload2(s, token, who, body, Authz.authorize(f, Spec.UploadImage{pid}))
-
-def form_num(+xs: List<&2, Text.Field>, +key: String) -> U32:
-  Maybe.default(&2, U32, U32.read(Maybe.default(&2, String, Text.form_raw(xs, key), "")), 0)
-
-# DATASTAR RESPONSES
-# ------------------
-# ?frag=1 (from Datastar): answer with patches (content type 2: a stream of
-# Datastar events, src/effects/db.c page_sse) instead of a page or a
-# redirect.
-def wants_frag(+xs: List<&2, Text.Field>) -> Bool:
-  String.eq(Maybe.default(&2, String, Text.form_raw(xs, "frag"), ""), "1")
 
 def frag_of(+query: String, +body: String) -> Bool:
   Bool.or(wants_frag(form(query)), wants_frag(form(body)))
@@ -1274,10 +1365,31 @@ def search_send(frag: Bool, s: Socket, +key: String, +who: U32, +q: String, +row
     case False{}:
       cache_send(s, key, Pages.layout("Search: " ++ q, signed(who), Pages.search_page(q, rows)))
 
+# Search runs off the event loop (Db.query_off): a slow one delays no other
+# request. If it failed, timed out or every search slot was busy, the
+# answer says so and is not cached.
+def search_busy(frag: Bool, s: Socket, +token: String, +who: U32) -> IO(Unit):
+  match frag:
+    case True{}:
+      stream1(s, token, Pages.patch("", "outer", Pages.search_busy()))
+    case False{}:
+      send(s, token, 503, Pages.layout("Search", signed(who), Pages.search_busy()))
+
+def h_search4(ok: Bool, s: Socket, +token: String, +who: U32, +q: String, +fq: String, +frag: Bool, +rows: List<&2, List<&2, String>>) -> IO(Unit):
+  match ok:
+    case True{}:
+      search_send(frag, s, cache_key("s", who, fq ++ frag_key(frag)), who, q, rows)
+    case False{}:
+      search_busy(frag, s, token, who)
+
+def h_search_got(r: U32 & List<&2, List<&2, String>>, s: Socket, +token: String, +who: U32, +q: String, +fq: String, +frag: Bool) -> IO(Unit):
+  (code, rows) = r
+  h_search4(U32.is_zero(code), s, token, who, q, fq, frag, rows)
+
 def h_search3(s: Socket, +token: String, +who: U32, +q: String, +fq: String, +frag: Bool) -> IO(Unit):
   do IO<Unit>:
-    +rows : List<&2, List<&2, String>> <- Db.query(Db.q_search(), 0, 0, fq, token)
-    search_send(frag, s, cache_key("s", who, fq ++ frag_key(frag)), who, q, rows)
+    r : U32 & List<&2, List<&2, String>> <- Db.query_off(Db.q_search(), 0, 0, fq, token)
+    h_search_got(r, s, token, who, q, fq, frag)
 
 def h_search_empty(frag: Bool, s: Socket, +token: String, +who: U32, +q: String) -> IO(Unit):
   match frag:
@@ -1296,7 +1408,7 @@ def h_search2(empty: Bool, s: Socket, +token: String, +who: U32, +q: String, +fq
         cached_or(r, s2 => h_search3(s2, token, who, q, fq, frag))
 
 def h_search.go(s: Socket, +token: String, +who: U32, +q: String, +frag: Bool) -> IO(Unit):
-  +fq = Text.fts_query(q)
+  +fq = Text.fts_query(q, frag)
   h_search2(String.is_empty(fq), s, token, who, q, fq, frag)
 
 def h_search(s: Socket, +token: String, +who: U32, +query: String) -> IO(Unit):
@@ -1351,6 +1463,8 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
       h_reply(s, token, who, id, query)
     case Route.RLive{+id}:
       h_live(s, token, who, id, query)
+    case Route.RComments{+id}:
+      h_comments(s, token, who, id, query)
     case Route.RTag{+t}:
       h_tag(s, token, who, t, query)
     case Route.RImage{+k}:

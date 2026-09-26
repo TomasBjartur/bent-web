@@ -70,11 +70,18 @@ static void __attribute__((constructor)) tick_use(void) {
 
 #ifdef CID(db_open)
 
+#ifdef CID(query_off)
+static int32_t off_open(const char *path);
+#endif
+
 Term db_open_run(Env e, Term *f, IoWork *w) {
   (void)w;
   u64 n = 0;
   char *path = io_cstr(e, f[0], &n);
   int32_t r = app_db_ready ? -1 : db_open(&app_db, path);
+#ifdef CID(query_off)
+  if (r == 0) r = off_open(path);
+#endif
   free(path);
   if (r != 0) return io_fail(e, EIO, "cannot open the database");
   app_db_ready = 1;
@@ -246,26 +253,47 @@ static void __attribute__((constructor)) apply_raw_use(void) {
 static char app_arena[APP_ARENA_BYTES];
 static uint32_t app_cell_off[APP_CELLS_MAX], app_cell_len[APP_CELLS_MAX], app_row_cols[DB_ROWS_MAX];
 
+// Where one query's rows go: an arena of arena_bytes, and per cell its
+// offset and length, per row its column count.
 typedef struct {
-  uint32_t used, cells, rows, overflow;
+  char *arena;
+  uint32_t *cell_off, *cell_len, *row_cols;
+  uint32_t arena_bytes, used, cells, rows, overflow;
 } AppRows;
 
 static void app_row(void *ctx, uint32_t ncols, const char *const *cols, const uint32_t *lens) {
   AppRows *a = ctx;
   ASSERT(a->rows < DB_ROWS_MAX && ncols <= DB_COLS_MAX);
   for (uint32_t i = 0; i < ncols; i++) {
-    if (lens[i] > APP_ARENA_BYTES - a->used) {
+    if (lens[i] > a->arena_bytes - a->used) {
       a->overflow = 1;
       return;
     }
-    memcpy(app_arena + a->used, cols[i], lens[i]);
-    app_cell_off[a->cells] = a->used;
-    app_cell_len[a->cells] = lens[i];
+    memcpy(a->arena + a->used, cols[i], lens[i]);
+    a->cell_off[a->cells] = a->used;
+    a->cell_len[a->cells] = lens[i];
     a->used += lens[i];
     a->cells++;
   }
-  app_row_cols[a->rows] = ncols;
+  a->row_cols[a->rows] = ncols;
   a->rows++;
+}
+
+// The rows as a Bend List<List<String>> (built back to front).
+static Term app_rows_term(Env e, const AppRows *a) {
+  ASSERT(a->cells <= APP_CELLS_MAX && a->rows <= DB_ROWS_MAX);
+  Term rows = term_pak(CID(Nil), 0);
+  uint32_t cell = a->cells;
+  for (uint32_t r = a->rows; r > 0u; r--) {
+    Term cols = term_pak(CID(Nil), 0);
+    for (uint32_t c = a->row_cols[r - 1u]; c > 0u; c--) {
+      cell--;
+      cols = io_node(e, CID(Con), io_str(e, a->arena + a->cell_off[cell], a->cell_len[cell]), cols);
+    }
+    rows = io_node(e, CID(Con), cols, rows);
+  }
+  ASSERT(cell == 0u);
+  return rows;
 }
 
 // f: q, a, b, text, token. Answers List<List<String>>; empty on error.
@@ -276,29 +304,112 @@ Term query_run(Env e, Term *f, IoWork *w) {
   app_token_hash(e, f[4], h);
   u64 tn = 0;
   char *text = io_cstr(e, f[3], &tn);
-  AppRows a = {0, 0, 0, 0};
+  AppRows a = {app_arena, app_cell_off, app_cell_len, app_row_cols, APP_ARENA_BYTES, 0, 0, 0, 0};
   int32_t n = tn > UINT32_MAX ? -1
     : db_query(&app_db, (uint32_t)f[0], (uint32_t)f[1], (uint32_t)f[2], (DbText){text, (uint32_t)tn},
                h, app_now_ms(), app_row, &a);
   free(text);
-  Term rows = term_pak(CID(Nil), 0);
-  if (n < 0 || a.overflow) return rows;
-  uint32_t cell = a.cells;
-  for (uint32_t r = a.rows; r > 0u; r--) {
-    Term cols = term_pak(CID(Nil), 0);
-    for (uint32_t c = app_row_cols[r - 1u]; c > 0u; c--) {
-      cell--;
-      cols = io_node(e, CID(Con), io_str(e, app_arena + app_cell_off[cell], app_cell_len[cell]), cols);
-    }
-    rows = io_node(e, CID(Con), cols, rows);
-  }
-  ASSERT(cell == 0u);
-  return rows;
+  if (n < 0 || a.overflow) return term_pak(CID(Nil), 0);
+  return app_rows_term(e, &a);
 }
 
 static void __attribute__((constructor)) query_use(void) {
   io_eff(CID(query), query_run, 0);
 }
+
+#ifdef CID(query_off)
+// OFF THE EVENT LOOP: query_off(q, a, b, text, token) is query run on a
+// helper thread, on one of SEARCH_SLOTS read-only connections, stopped
+// after SEARCH_BUDGET_MS. For queries whose cost depends on the data and
+// the input (search): one slow search then delays no other request. Only
+// this (loop) thread takes and frees slots; a helper thread uses only its
+// own slot. With every slot busy, or on error or timeout, the answer is 2
+// (busy) or 1 (failed) and no rows.
+#define SEARCH_SLOTS 4u
+#define SEARCH_BUDGET_MS 2000u
+#define SEARCH_ARENA_BYTES (256u * 1024u)
+#define SEARCH_TEXT_MAX 8192u  // a search's FTS query (src/text.bend fts_query: at most 8 words)
+
+typedef struct {
+  DbReader reader;
+  uint32_t busy;
+  uint32_t q, a, b;
+  char text[SEARCH_TEXT_MAX];
+  uint32_t text_len;
+  uint8_t hash[32];
+  uint64_t now_ms;
+  int32_t n;
+  char arena[SEARCH_ARENA_BYTES];
+  uint32_t cell_off[APP_CELLS_MAX], cell_len[APP_CELLS_MAX], row_cols[DB_ROWS_MAX];
+  AppRows rows;
+} OffSlot;
+
+static OffSlot off_slots[SEARCH_SLOTS];
+
+static int32_t off_open(const char *path) {
+  for (uint32_t i = 0; i < SEARCH_SLOTS; i++) {
+    if (db_reader_open(&off_slots[i].reader, path) != 0) return -1;
+  }
+  return 0;
+}
+
+static void off_call(IoWork *w) {
+  OffSlot *s = &off_slots[w->code];
+  ASSERT(w->code < SEARCH_SLOTS && s->busy == 1u);
+  s->rows = (AppRows){s->arena, s->cell_off, s->cell_len, s->row_cols, SEARCH_ARENA_BYTES, 0, 0, 0, 0};
+  s->n = db_reader_query(&s->reader, s->q, s->a, s->b, (DbText){s->text, s->text_len}, s->hash, s->now_ms,
+                         SEARCH_BUDGET_MS, app_row, &s->rows);
+}
+
+// Answers (status, rows): 0 done, 1 failed, 2 busy.
+static Term off_answer(Env e, uint32_t status, Term rows) {
+  ASSERT(status <= 2u);
+  return io_tup(e, (Term)status, rows);
+}
+
+static Term off_pack(Env e, IoWork *w) {
+  OffSlot *s = &off_slots[w->code];
+  ASSERT(w->code < SEARCH_SLOTS && s->busy == 1u);
+  Term r = s->n < 0 || s->rows.overflow ? off_answer(e, 1u, term_pak(CID(Nil), 0))
+                                        : off_answer(e, 0u, app_rows_term(e, &s->rows));
+  s->busy = 0;
+  return r;
+}
+
+Term query_off_run(Env e, Term *f, IoWork *w) {
+  ASSERT(app_db_ready);
+  uint32_t slot = SEARCH_SLOTS;
+  for (uint32_t i = 0; i < SEARCH_SLOTS; i++) {
+    if (off_slots[i].busy == 0u) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot == SEARCH_SLOTS) return off_answer(e, 2u, term_pak(CID(Nil), 0));
+  OffSlot *s = &off_slots[slot];
+  u64 tn = 0;
+  char *text = io_cstr(e, f[3], &tn);
+  if (tn > sizeof s->text) {
+    free(text);
+    return off_answer(e, 1u, term_pak(CID(Nil), 0));
+  }
+  memcpy(s->text, text, tn);
+  free(text);
+  s->text_len = (uint32_t)tn;
+  s->q = (uint32_t)f[0];
+  s->a = (uint32_t)f[1];
+  s->b = (uint32_t)f[2];
+  app_token_hash(e, f[4], s->hash);
+  s->now_ms = app_now_ms();
+  s->busy = 1;
+  w->code = slot;
+  return io_work(w, off_call, off_pack);
+}
+
+static void __attribute__((constructor)) query_off_use(void) {
+  io_eff(CID(query_off), query_off_run, 0);
+}
+#endif
 
 #endif
 
@@ -919,8 +1030,6 @@ static void __attribute__((constructor)) dns_txt_has_use(void) {
 // at: app_write_gen for feeds, app_post_gen for post pages (which a write
 // to one post drops one by one instead).
 // Direct-mapped: a key's slot is its hash; a new entry replaces the old.
-// 4096 slots of at most 64 KiB: 256 MiB of address space, touched (and so
-// resident) only as pages are cached. Bigger pages are not cached.
 // Two direct-mapped tables: 4096 slots of at most 64 KiB (256 MiB of
 // address space) and, for long pages such as a post with hundreds of
 // comments, 128 slots of at most 1 MiB (128 MiB). Both are touched (and so

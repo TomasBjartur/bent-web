@@ -21,17 +21,19 @@ Tools: `tests/load/make_data.py` (synthetic database), `tests/load/make_mix.py`
 
 | mix | conns | req/s | post p50 / p99 ms | blog p50 ms | search p50 ms | like p50 ms | errors | RSS MB |
 |---|---|---|---|---|---|---|---|---|
-| normal | 1 | **454** | 1.01 / 16.9 | 2.5 | 13.4 | 0.46 | 0 | 214 |
-| normal | 8 | **485** | 12.14 / 50.8 | 12.8 | 22.9 | 11.52 | 0 | 235 |
-| normal | 32 | **511** | 58.13 / 123.2 | 58.5 | 68.5 | 59.99 | 0 | 243 |
-| normal | 128 | **518** | 239.76 / 377.0 | 243.3 | 255.7 | 241.32 | 0 | 250 |
-| normal | 512 | **527** | 953.77 / 1191.4 | 951.1 | 972.4 | 960.27 | 0 | 255 |
-| writes_x5 | 32 | **485** | 58.41 / 125.4 | 61.0 | 70.6 | 56.14 | 0 | 258 |
+| normal | 1 | **598** | 1.24 / 5.8 | 2.2 | 5.7 | 0.46 | 0 | 216 |
+| normal | 8 | **770** | 9.57 / 19.8 | 10.6 | 15.0 | 9.35 | 0 | 238 |
+| normal | 32 | **798** | 38.81 / 71.2 | 39.9 | 43.8 | 38.37 | 0 | 247 |
+| normal | 128 | **838** | 150.43 / 198.0 | 152.4 | 157.4 | 148.72 | 0 | 254 |
+| normal | 512 | **857** | 585.55 / 685.4 | 585.9 | 590.2 | 588.73 | 0 | 256 |
+| writes_x5 | 32 | **788** | 37.24 / 99.7 | 38.6 | 43.1 | 36.28 | 0 | 259 |
 
 Throughput is flat from 1 to 512 concurrent connections: the server is
-CPU-bound at ~1.9 ms per request on average, and latency grows with the
-queue, with no errors and no timeouts. Runs on this VM vary by about 10%
-(the same build did 574 req/s at 32 connections in another run). RSS is
+CPU-bound at ~1.1 ms of CPU per request, and latency grows with the queue,
+with no errors and no timeouts. Throughput on this VM drifts by 10-30%
+between runs (the same binary did 551 and 429 req/s an hour apart), so
+builds are compared by **server CPU time per request** (from /proc, over
+15 s of the mix, builds alternated), which is steady to ~3%. RSS is
 higher than before by design: SQLite's page cache is now 128 MiB.
 
 ### Second round (profiled with `perf`)
@@ -115,6 +117,47 @@ time and reading SQLite's query plans:
 Also found by writing the test: the load generator's first runs hit the
 server while it was still migrating (it now waits for `/healthz`).
 
+### Third round (CPU per request)
+
+| change | CPU ms/request |
+|---|---|
+| after the second round | 1.76 |
+| 20 comment threads per page, "More comments" for the rest | 1.26 |
+| search: no prefix for submitted searches or words under 3 characters; 3-character prefix index | 1.07-1.10 |
+| search on a helper thread (below) | 1.09-1.10 (same) |
+
+- **Measured per request type**, each alone: signed-in post pages cost
+  3.1 ms (never cached, and readers go to the popular posts, which have
+  the most comments: 300 at ~40 us each). A page now renders 20 threads;
+  "More comments" brings the next 20 in place (Datastar) or as a page.
+  This also removed a gap: comments after the 300th were never shown.
+- **Search prefixes.** Search as you type makes the last word a prefix,
+  and FTS5 gathers every match of a prefix before taking the newest:
+  `"river"*` 11 ms against 1.3 ms for the word, and `"b"*` **300 ms**, on
+  the one event loop, reachable by typing one letter. Now a submitted
+  search matches whole words, a prefix needs 3 characters, and
+  3-character prefixes are indexed (migration v13; +8% database size,
+  30 s to rebuild on 100k posts).
+- **Search runs off the event loop.** The server has one event loop: a
+  SQLite call runs on it to completion, and nothing else moves meanwhile.
+  Search, the one query whose cost depends on the input and the data, now
+  runs on a helper thread (`query_off`: 4 slots, each with its own
+  read-only connection, stopped after 2 s; with all 4 busy the answer is
+  "busy", 503, uncached). A cheap request during a burst of 400 uncached
+  searches: p50 41 ms before, 1.9 ms after.
+- **Negative: three changes that won in isolation and lost under load.**
+  (1) A second, read-only connection holding one read transaction per
+  request (the per-query transaction start and end were ~25% of an
+  uncached post page): 0.72 -> 0.56 ms per post alone, but 8% slower under
+  the mix, because SQLite empties a connection's page cache whenever
+  another connection writes, and every like did. (2) `mmap_size`: slightly
+  slower under the mix. (3) glibc `M_TRIM_THRESHOLD`/`M_TOP_PAD`: no change.
+  All reverted. Single-request timings run with no writes, so they miss
+  exactly this; only the mix decides.
+- **Negative: joining a page's texts from the right** (each copied once)
+  was 4% slower than from the left: the first text of each run is free
+  from the left, and most runs are one or two texts.
+
 ## What limits it now
 
 - **Rendering through Bend Strings**: ~40% of the time is Bend building
@@ -129,8 +172,10 @@ server while it was still migrating (it now waits for `/healthz`).
   requests and ~8% of the time.
 - **One core.** The server has one event loop; the machine has two cores,
   one used by the load generator (in production, one used by Caddy).
-- **Comments past 300** on one post are not shown (the thread query is
-  capped). They need a "more comments" link.
+- **Custom domains** redirect other paths to the main host, so live
+  comments and "More comments" do not work on a custom domain yet.
+- **One thread of 300+ replies** is cut at 300 rows (the next page starts
+  after it).
 - **Writes are cheap**: likes and comments ~0.5 ms, saves ~6 ms (Markdown
   rendering and search indexing), all serialized by SQLite's single
   writer without errors at 5x the normal write rate.

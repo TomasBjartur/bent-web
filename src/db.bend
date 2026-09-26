@@ -53,6 +53,12 @@ def apply_raw(token: String, who: U32, blog: U32, role: U32, has_post: U32, post
 def query(q: U32, a: U32, b: U32, text: String, token: String) -> IO(List<&2, List<&2, String>>):
   import "./effects/db.c"
 
+# query on a helper thread (src/effects/db.c query_off), for queries whose
+# cost depends on the data and the input: (0 done, 1 failed or timed out,
+# 2 busy; rows).
+def query_off(q: U32, a: U32, b: U32, text: String, token: String) -> IO(U32 & List<&2, List<&2, String>>):
+  import "./effects/db.c"
+
 # Sends texts[0] body[0] texts[1] ... texts[n]. Each body is a post id whose
 # stored HTML C splices in only if published or the session is a member.
 def page(sock: Socket, status: U32, ctype: U32, texts: List<&2, String>, bodies: List<&2, U32>, token: String, cookie: String, location: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):

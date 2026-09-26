@@ -650,23 +650,36 @@ def fts.count(ok: Bool, +n: U32) -> U32:
 def fts.room(+w: String, +n: U32) -> Bool:
   Bool.and(Bool.not(String.is_empty(w)), U32.is_lt(n, 8))
 
-def fts.last(ok: Bool, +w: String, +out: String) -> String:
+# The last word, as a prefix (pre) or a word.
+def fts.tail(pre: Bool, +w: String) -> String:
+  match pre:
+    case True{}:
+      fts.term(w) ++ "*"
+    case False{}:
+      fts.term(w)
+
+# The last word is a prefix only while typing (pre), and only from 3
+# characters: a short prefix matches nearly every post, and SQLite gathers
+# all of its matches before it can take the newest ("b"* took 300 ms on
+# 100k posts, on the one event loop). The index has 3-character prefixes.
+def fts.last(ok: Bool, +pre: Bool, +w: String, +out: String) -> String:
   match ok:
     case True{}:
-      fts.join(out, fts.term(w) ++ "*")
+      fts.join(out, fts.tail(Bool.and(pre, Nat.is_le(3n, String.length(w))), w))
     case False{}:
       out
 
 # At a separator the word so far is added (if any, and if there is room).
-def fts.go(s: String, +w: String, +out: String, +n: U32) -> String:
+def fts.go(s: String, +w: String, +out: String, +n: U32, +pre: Bool) -> String:
   match s:
     case SNil{}:
-      fts.last(fts.room(w, n), w, out)
+      fts.last(fts.room(w, n), pre, w, out)
     case SCon{+h, t}:
-      fts.go(t, fts.word(fts.is_sep(h), h, w), fts.add(Bool.and(fts.is_sep(h), fts.room(w, n)), w, out), fts.count(Bool.and(fts.is_sep(h), fts.room(w, n)), n))
+      fts.go(t, fts.word(fts.is_sep(h), h, w), fts.add(Bool.and(fts.is_sep(h), fts.room(w, n)), w, out), fts.count(Bool.and(fts.is_sep(h), fts.room(w, n)), n), pre)
 
-def fts_query(s: String) -> String:
-  fts.go(s, SNil{}, "", 0)
+# pre: the last word may be a prefix (search as you type).
+def fts_query(s: String, +pre: Bool) -> String:
+  fts.go(s, SNil{}, "", 0, pre)
 
 # COMMENTS
 # --------

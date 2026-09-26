@@ -212,6 +212,39 @@ def main():
                 break
         check("own comment sent without a reload and shown", seen and eb.js("window.__marker") == 42 and eb.js("document.querySelector('#comments textarea').value") == "")
 
+        # More than 20 threads: "More comments" loads the rest in place, and
+        # a comment arriving live afterwards still lands after them.
+        q = sqlite3.connect(dbpath)
+        au = q.execute("SELECT id FROM user ORDER BY id LIMIT 1").fetchone()[0]
+        for i in range(25):
+            q.execute("INSERT INTO comment(post_id, parent_id, author_id, body_md, body_html, created_ms) VALUES (?, NULL, ?, ?, ?, 1)",
+                      (pid, au, f"bulk {i}", f"<p>bulk {i}</p>"))
+        q.commit()
+        q.close()
+        eb.ws.call("Page.navigate", {"url": f"{BASE}/b/team/doc"})
+        time.sleep(1.5)
+        eb.js("window.__marker = 43")
+        count = "document.querySelectorAll('#thread .comment[data-parent=\"0\"]').length"
+        before = eb.js(count)
+        eb.js("document.querySelector('#more-comments a').click()")
+        after = before
+        for _ in range(30):
+            time.sleep(0.2)
+            after = eb.js(count)
+            if after and after > before:
+                break
+        check("more comments load in place", before == 20 and after == 27 and eb.js("window.__marker") == 43
+              and eb.js("document.getElementById('more-comments')") is None, (before, after))
+        http("POST", f"/comment/{pid}", a, {"body": "Live after paging"})
+        seen = False
+        for _ in range(40):
+            time.sleep(0.2)
+            if (eb.js("document.getElementById('thread').innerText") or "").rstrip().endswith("Live after paging") or \
+               "Live after paging" in (eb.js("[...document.querySelectorAll('#thread > .comment')].pop().innerText") or ""):
+                seen = True
+                break
+        check("a live comment after paging comes last", seen and eb.js("window.__marker") == 43)
+
         # Search as you type, and "Older posts" in place (Datastar), in Chrome.
         for i in range(32):
             _, loc2, _ = http("POST", "/dash/team/posts", a, {"title": f"Batch {i:02d} zebra"})
