@@ -18,7 +18,9 @@
 // buf[0..len) holds no CRLFCRLF yet. Scans only [from - 3, len), so a
 // caller that appends chunks can pass the previous length as `from` and
 // the total work stays linear.
-// PRE:  len <= HEAD_BYTES_MAX, from <= len.
+// PRE:  len <= HEAD_BYTES_MAX, from <= len, and no CRLFCRLF lies entirely
+//       within buf[0..from) (true when from is the length passed to the
+//       previous call and that call returned 0, or when from is 0).
 // POST: result == 0, or 4 <= result <= len and buf[result-4..result) is
 //       "\r\n\r\n" and no earlier CRLFCRLF starts at or after from - 3.
 static inline uint32_t head_end(const uint8_t *buf, uint32_t len, uint32_t from) {
