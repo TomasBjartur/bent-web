@@ -67,7 +67,28 @@ static DbResult apply(Who *w, DbFacts f, DbWrite x, uint32_t *id) {
   return db_apply(&db, w->hash, NOW, &f, &x, id ? id : &dummy);
 }
 
+static int excerpt_is(const char *html, const char *want) {
+  char out[1024];
+  db_excerpt(html, (uint32_t)strlen(html), out, sizeof out);
+  if (strcmp(out, want) != 0) fprintf(stderr, "excerpt: got [%s] want [%s]\n", out, want);
+  return strcmp(out, want) == 0;
+}
+
 int main(void) {
+  CHECK(excerpt_is("<p>Hi <strong>there</strong>.</p><p>Next</p>", "Hi there. Next"));
+  CHECK(excerpt_is("<p><img src=\"/img/0123456789abcdef0123456789abcdef\" alt=\"Screenshot 2026\" loading=\"lazy\"></p><p>Words</p>", "Words"));
+  CHECK(excerpt_is("<p>a &lt;b&gt; &amp; &quot;c&quot; &#39;d&#39;</p>", "a <b> & \"c\" 'd'"));
+  CHECK(excerpt_is("<p><a href=\"https://x.io\" rel=\"nofollow noopener ugc\">link text</a></p>", "link text"));
+  CHECK(excerpt_is("", ""));
+  {
+    char big[4000], out[2048];
+    for (int i = 0; i < 3999; i++) big[i] = i % 2 ? 'x' : 0x20;
+    big[3999] = 0;
+    uint32_t n = db_excerpt(big, 3999, out, sizeof out);
+    CHECK(n <= 240u);
+    const char *u = "<p>\xC3\xA9\xC3\xA9\xC3\xA9</p>";  // e-acute: 2 bytes each
+    CHECK(excerpt_is(u, "\xC3\xA9\xC3\xA9\xC3\xA9"));
+  }
   const char *path = "/tmp/claude-db-core-test.db";
   unlink(path);
   if (db_open(&db, path) != 0) {

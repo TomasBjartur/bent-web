@@ -94,7 +94,7 @@ int main(void) {
   }
 
   // Sign-up: token, outbox mail with link, challenge bound to it, register.
-  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("ann@x.io"), T("Ann"), ORIGIN, NOW) == AUTH_OK);
+  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("ann@x.io"), T("Ann"), T(""), ORIGIN, NOW) == AUTH_OK);
   uint8_t tok[32];
   CHECK(latest_token("ann@x.io", tok));
   uint32_t purpose = 0;
@@ -116,28 +116,32 @@ int main(void) {
   CHECK(auth_token_check(&db, tok, NOW, &purpose) == AUTH_INVALID);
 
   // Sign-up again with the same email: taken.
-  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("ann@x.io"), T("Ann2"), ORIGIN, NOW) == AUTH_EMAIL_TAKEN);
-  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("ANN@x.io"), T("Ann3"), ORIGIN, NOW) == AUTH_EMAIL_TAKEN);
+  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("ann@x.io"), T("Ann2"), T(""), ORIGIN, NOW) == AUTH_EMAIL_TAKEN);
+  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("ANN@x.io"), T("Ann3"), T(""), ORIGIN, NOW) == AUTH_EMAIL_TAKEN);
 
   // Recovery for an unknown email: silent, nothing sent.
   int before = outbox_count();
-  CHECK(auth_email_token(&db, AUTH_RECOVER, T("nobody@x.io"), T(""), ORIGIN, NOW) == AUTH_OK);
+  CHECK(auth_email_token(&db, AUTH_RECOVER, T("nobody@x.io"), T(""), T(""), ORIGIN, NOW) == AUTH_OK);
   CHECK(outbox_count() == before);
 
   // Rate limit: at most 3 mails per email per hour.
-  CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), ORIGIN, NOW) == AUTH_OK);
-  CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), ORIGIN, NOW + 1) == AUTH_OK);
-  CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), ORIGIN, NOW + 2) == AUTH_RATE_LIMITED);
-  CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), ORIGIN, NOW + 3700000) == AUTH_OK);
+  CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), T(""), ORIGIN, NOW) == AUTH_OK);
+  CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), T(""), ORIGIN, NOW + 1) == AUTH_OK);
+  CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), T(""), ORIGIN, NOW + 2) == AUTH_RATE_LIMITED);
+  CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), T(""), ORIGIN, NOW + 3700000) == AUTH_OK);
 
   // An origin that could inject into the mail is refused.
-  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("bo@x.io"), T("Bo"), T("https://x\n\nClick evil"), NOW) == AUTH_INVALID);
+  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("bo@x.io"), T("Bo"), T(""), T("https://x\n\nClick evil"), NOW) == AUTH_INVALID);
+  // Handles: a sign-up for a handle someone has is refused.
+  CHECK(sqlite3_exec(db.conn, "UPDATE user SET handle = 'annie' WHERE email = 'ann@x.io'", NULL, NULL, NULL) == SQLITE_OK);
+  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("cy@x.io"), T("Cy"), T("annie"), ORIGIN, NOW) == AUTH_HANDLE_TAKEN);
+  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("cy@x.io"), T("Cy"), T("cyrus"), ORIGIN, NOW) == AUTH_OK);
 
   // Challenge binding: a register challenge for token A cannot complete token B.
-  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("cy@x.io"), T("Cy"), ORIGIN, NOW) == AUTH_OK);
+  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("cy@x.io"), T("Cy"), T(""), ORIGIN, NOW) == AUTH_OK);
   uint8_t tok_c[32];
   CHECK(latest_token("cy@x.io", tok_c));
-  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("di@x.io"), T("Di"), ORIGIN, NOW) == AUTH_OK);
+  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("di@x.io"), T("Di"), T(""), ORIGIN, NOW) == AUTH_OK);
   uint8_t tok_d[32];
   CHECK(latest_token("di@x.io", tok_d));
   uint8_t chal_c[32], chal_c_hash[32];
@@ -203,7 +207,7 @@ int main(void) {
   CHECK(LOGIN(lch, key, 9, NOW) == AUTH_OK);
 
   // Recovery: a new passkey for the existing account.
-  CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), ORIGIN, NOW + 3700001) == AUTH_OK);
+  CHECK(auth_email_token(&db, AUTH_RECOVER, T("ann@x.io"), T(""), T(""), ORIGIN, NOW + 3700001) == AUTH_OK);
   uint8_t tok_r[32];
   CHECK(latest_token("ann@x.io", tok_r));
   CHECK(auth_token_check(&db, tok_r, NOW + 3700001, &purpose) == AUTH_OK && purpose == AUTH_RECOVER);
@@ -216,7 +220,7 @@ int main(void) {
   CHECK(auth_register(&db, tok_r, chal_hash, cred_r, sizeof cred_r, k2.x, k2.y, 0, NOW + 3700001, &ruser, session) == AUTH_OK);
   CHECK(ruser == cu);
   // A duplicate credential id is refused.
-  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("ed@x.io"), T("Ed"), ORIGIN, NOW) == AUTH_OK);
+  CHECK(auth_email_token(&db, AUTH_SIGNUP, T("ed@x.io"), T("Ed"), T(""), ORIGIN, NOW) == AUTH_OK);
   uint8_t tok_e[32];
   CHECK(latest_token("ed@x.io", tok_e));
   CHECK(auth_challenge(&db, CHAL_REGISTER, tok_e, NOW, chal) == AUTH_OK);

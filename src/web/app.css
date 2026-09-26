@@ -178,6 +178,8 @@ h2 { font-size: 1.35rem; margin: 40px 0 12px; }
 .domain code.select { user-select: all; }
 .domain .row form { display: inline; }
 
+.handle { color: var(--faint); font-weight: 400; font-size: 0.9em; margin-left: 2px; }
+
 /* TAGS */
 
 .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 32px; }

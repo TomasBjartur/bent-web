@@ -1056,7 +1056,7 @@ def h_author3(s: Socket, +token: String, +who: U32, +uid: U32, +page: U32, +name
     case Con{+r, t}:
       do IO<Unit>:
         rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_author(), uid, page_offset(page), "", token)
-        cache_send(s, cache_key("u", who, U32.show(uid) ++ page_key(page)), Pages.layout(Pages.col(r, 0n), signed(who), Pages.author_page(U32.show(uid), Pages.col(r, 0n), page, rows)))
+        cache_send(s, cache_key("u", who, U32.show(uid) ++ page_key(page)), Pages.layout(Pages.col(r, 0n), signed(who), Pages.author_page(U32.show(uid), Pages.col(r, 0n), Pages.col(r, 1n), page, rows)))
 
 def h_author2(s: Socket, +token: String, +who: U32, +uid: U32, +page: U32) -> IO(Unit):
   do IO<Unit>:

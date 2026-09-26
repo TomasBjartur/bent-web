@@ -92,7 +92,7 @@ enum {
   Q_RECENT_PUBLIC,      // -> blog_slug, post_slug, title, blog_title, author, date, excerpt, minutes, author_id,
                         //    rfc822 date  (published only)
   Q_POST_VIEW,          // a=post -> slug, title, published, blog_slug, blog_title, author, date, minutes,
-                        //    author_id  (published, or member)
+                        //    author_id, author handle  (published, or member)
   Q_MY_BLOGS,           // -> id, slug, title, role, published count, draft count  (the session's user)
   Q_POSTS_MEMBER,       // a=blog -> id, slug, title, published, date, author, scheduled date or ''
                         //    (member only)
@@ -102,11 +102,11 @@ enum {
   Q_AUTHORS,            // a=blog -> user_id, name, email, role  (member only)
   Q_OPS,                // a=post -> ops as one wire text  (member only)
   Q_OP_COUNT,           // a=post -> number of ops  (member only)
-  Q_AUTHOR_PUBLIC,      // a=user -> name  (only if they have a published post)
+  Q_AUTHOR_PUBLIC,      // a=user -> name, handle  (only if they have a published post)
   Q_POSTS_BY_AUTHOR,    // a=user -> as Q_RECENT_PUBLIC  (published only)
   Q_SEARCH,             // text=FTS5 query -> as Q_RECENT_PUBLIC  (published only, newest first)
   Q_POST_SOCIAL,        // a=post -> likes, liked by the session's user (0/1), comments  (published, or member)
-  Q_COMMENTS,           // a=post -> id, depth, author_id, author, date, deleted, mine (0/1), parent
+  Q_COMMENTS,           // a=post -> id, depth, author_id, author, date, deleted, mine (0/1), parent, handle
                         //    in thread order (published, or member)
   Q_COMMENT_INFO,       // a=comment -> post_id, author_id, author, date, deleted  (published, or member)
   Q_POST_TAGS,          // a=post -> tag  (published, or member)
@@ -151,7 +151,7 @@ enum {
   ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
   ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
   ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT, ST_SLUG_TAKEN, ST_POST_RENAME,
-  ST_DOMAIN_SET, ST_DOMAIN_TAKE, ST_DOMAIN_OK, ST_DOMAIN_CLEAR, ST_IMG_POST_COUNT, ST_IMG_RECENT, ST_IMG_NEW, ST_IMG_GET, ST_TAGS_CLEAR, ST_TAG_ADD, ST_SCHEDULE, ST_UNSCHEDULE, ST_DUE, ST_PUBLISH_DUE, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
+  ST_DOMAIN_SET, ST_DOMAIN_TAKE, ST_DOMAIN_OK, ST_DOMAIN_CLEAR, ST_IMG_POST_COUNT, ST_IMG_RECENT, ST_IMG_NEW, ST_IMG_GET, ST_TAGS_CLEAR, ST_TAG_ADD, ST_HANDLE_TAKEN, ST_USER_HANDLE, ST_SCHEDULE, ST_UNSCHEDULE, ST_DUE, ST_PUBLISH_DUE, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
   ST_COUNT
 };
 
@@ -197,6 +197,10 @@ static inline int db_write_is_public(const DbFacts *f, const DbWrite *w) {
       return 0;
   }
 }
+
+// Plain text for a feed excerpt from a post's stored HTML (see db_core.c).
+// Returns its length in bytes; out gets a NUL.
+uint32_t db_excerpt(const char *html, uint32_t n, char *out, uint32_t cap);
 
 // Stores an image for a post, as a write: the floor (a member of the post's
 // blog), then in one IMMEDIATE transaction the facts are re-checked, the
@@ -273,6 +277,7 @@ typedef enum {
   AUTH_EMAIL_TAKEN = 3,
   AUTH_COUNTER = 4,      // signature counter did not advance (cloned key?)
   AUTH_ERROR = 5,
+  AUTH_HANDLE_TAKEN = 6,
 } AuthResult;
 
 #define AUTH_SIGNUP 1u
@@ -290,12 +295,14 @@ typedef enum {
 // the link `origin`/verify?t=<token> in one transaction. For AUTH_RECOVER
 // with no such account nothing is written and AUTH_OK is returned (no
 // account enumeration). At most EMAIL_TOKENS_PER_HOUR per email.
-AuthResult auth_email_token(Db *db, uint32_t purpose, DbText email, DbText name, DbText origin, uint64_t now_ms);
+// handle: the new account's @handle (sign-up; "" for recovery), checked to be
+// free now and again when the account is made.
+AuthResult auth_email_token(Db *db, uint32_t purpose, DbText email, DbText name, DbText handle, DbText origin, uint64_t now_ms);
 
 // As auth_email_token for AUTH_SIGNUP, and also writes the token (64 hex
 // characters) to token_hex: for test deployments with no mail sender
 // (BLOG_SIGNUP_DIRECT), where sign-up continues straight to the passkey.
-AuthResult auth_signup_direct(Db *db, DbText email, DbText name, DbText origin, uint64_t now_ms, uint8_t token_hex[64]);
+AuthResult auth_signup_direct(Db *db, DbText email, DbText name, DbText handle, DbText origin, uint64_t now_ms, uint8_t token_hex[64]);
 
 // Whether an email token is valid (unused, unexpired); fills purpose.
 AuthResult auth_token_check(Db *db, const uint8_t token_hash[32], uint64_t now_ms, uint32_t *purpose);

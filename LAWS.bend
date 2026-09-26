@@ -354,6 +354,17 @@ law text_body_ok:
   for t: Text.Body
   {TextSpec.body_ok(body_text(t)) == True{} : Bool}
 
+def handle_text(h: Text.Handle) -> String:
+  match h:
+    case Text.Handle{s, p}:
+      s
+
+# LAW: a handle is 3..30 of a-z, 0-9 and '_', starting with a letter
+# (ASCII only: no case or look-alike variants of another user's handle).
+law text_handle_ok:
+  for h: Text.Handle
+  {TextSpec.handle_ok(handle_text(h)) == True{} : Bool}
+
 def domain_text(d: Text.Domain) -> String:
   match d:
     case Text.Domain{s, p}:

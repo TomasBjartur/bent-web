@@ -47,7 +47,7 @@ static const char *const DB_SQL[ST_COUNT] = {
   // Bodies live in post_body (v10); the post row keeps a short excerpt and
   // the length, computed here from the first 1200 characters.
   [ST_BODY_NEW] = "INSERT INTO post_body(post_id, body_md, body_html) VALUES (?1, '', '')",
-  [ST_POST_EDIT] = ("UPDATE post SET title = ?2, updated_ms = ?5, excerpt = " POST_EXCERPT_OF("?3") ", "
+  [ST_POST_EDIT] = ("UPDATE post SET title = ?2, updated_ms = ?5, excerpt = excerpt_of_html(?4), "
                     "body_len = length(?3) WHERE id = ?1"),
   [ST_BODY_SET] = "UPDATE post_body SET body_md = ?2, body_html = ?3 WHERE post_id = ?1",
   [ST_POST_PUBLISH] = ("UPDATE post SET published = ?2, updated_ms = ?3, "
@@ -64,9 +64,10 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_POST_RENAME] = ("UPDATE post SET slug = ?2 WHERE id = ?1 AND published_ms IS NULL "
                       "AND substr(slug, 1, 6) = 'draft-'"),
   [ST_TOKEN_RECENT] = "SELECT count(*) FROM email_token WHERE email = ?1 AND created_ms > ?2",
-  [ST_TOKEN_NEW] = ("INSERT INTO email_token(hash, purpose, email, name, user_id, created_ms, expires_ms) "
-                    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"),
-  [ST_TOKEN_GET] = "SELECT purpose, email, name, user_id FROM email_token WHERE hash = ?1 AND used = 0 AND expires_ms > ?2",
+  [ST_TOKEN_NEW] = ("INSERT INTO email_token(hash, purpose, email, name, user_id, created_ms, expires_ms, handle) "
+                    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"),
+  [ST_TOKEN_GET] = ("SELECT purpose, email, name, user_id, coalesce(handle, '') FROM email_token "
+                    "WHERE hash = ?1 AND used = 0 AND expires_ms > ?2"),
   [ST_TOKEN_USE] = "UPDATE email_token SET used = 1 WHERE hash = ?1 AND used = 0 AND expires_ms > ?2",
   [ST_OUTBOX_NEW] = "INSERT INTO outbox(to_email, subject, body, created_ms) VALUES (?1, ?2, ?3, ?4)",
   [ST_USER_ID_BY_EMAIL] = "SELECT id FROM user WHERE email = ?1",
@@ -94,6 +95,8 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_IMG_NEW] = ("INSERT INTO image(key, post_id, author_id, type, bytes, created_ms) "
                   "VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
   [ST_IMG_GET] = "SELECT type, bytes FROM image WHERE key = ?1",
+  [ST_HANDLE_TAKEN] = "SELECT 1 FROM user WHERE handle = ?1",
+  [ST_USER_HANDLE] = "UPDATE user SET handle = ?2 WHERE id = ?1",
   [ST_TAGS_CLEAR] = "DELETE FROM post_tag WHERE post_id = ?1",
   [ST_TAG_ADD] = "INSERT OR IGNORE INTO post_tag(post_id, tag) VALUES (?1, ?2)",
   [ST_LIKE_ADD] = "INSERT OR IGNORE INTO post_like(post_id, user_id, created_ms) VALUES (?1, ?2, ?3)",
@@ -144,8 +147,8 @@ static const char *const DB_Q[Q_COUNT] = {
                       "ORDER BY p.published_ms DESC LIMIT 31 OFFSET ?2"),
   [Q_RECENT_PUBLIC] = ("SELECT " FEED_COLS " FROM post p JOIN blog b ON b.id = p.blog_id WHERE p.published = 1 "
                        "ORDER BY p.published_ms DESC LIMIT 30"),
-  [Q_POST_VIEW] = ("SELECT p.slug, p.title, p.published, b.slug, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_MINUTES ", p.author_id "
-                   "FROM post p JOIN blog b ON b.id = p.blog_id "
+  [Q_POST_VIEW] = ("SELECT p.slug, p.title, p.published, b.slug, b.title, " POST_AUTHOR ", " POST_DATE ", " POST_MINUTES ", p.author_id, "
+                   "coalesce((SELECT handle FROM user WHERE id = p.author_id), '') FROM post p JOIN blog b ON b.id = p.blog_id "
                    "WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")"),
   [Q_MY_BLOGS] = ("SELECT b.id, b.slug, b.title, m.role, "
                   "(SELECT count(*) FROM post WHERE blog_id = b.id AND published = 1), "
@@ -167,7 +170,7 @@ static const char *const DB_Q[Q_COUNT] = {
   [Q_OP_COUNT] = ("SELECT count(*) FROM op WHERE post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)")),
   // Names are shown only for people who have published something: user
   // ids are sequential, so otherwise anyone could list every account.
-  [Q_AUTHOR_PUBLIC] = ("SELECT u.name FROM user u WHERE u.id = ?1 AND EXISTS "
+  [Q_AUTHOR_PUBLIC] = ("SELECT u.name, coalesce(u.handle, '') FROM user u WHERE u.id = ?1 AND EXISTS "
                        "(SELECT 1 FROM post p WHERE p.author_id = u.id AND p.published = 1)"),
   // ?3 is an FTS5 expression built by Text.fts_query (quoted terms only).
   // Newest matches first, found by FTS5 alone (it walks its index in rowid
@@ -194,7 +197,7 @@ static const char *const DB_Q[Q_COUNT] = {
                   "ON c.parent_id = t.id WHERE t.depth < 50 ORDER BY 3 LIMIT 300) "
                   "SELECT c.id, t.depth, c.author_id, coalesce(u.name, ''), " COMMENT_DATE ", c.deleted, "
                   "EXISTS (SELECT 1 FROM session s WHERE s.user_id = c.author_id AND s.token_hash = ?8 AND s.expires_ms > ?9), "
-                  "coalesce(c.parent_id, 0) "
+                  "coalesce(c.parent_id, 0), coalesce(u.handle, '') "
                   "FROM t CROSS JOIN comment c ON c.id = t.id LEFT JOIN user u ON u.id = c.author_id "
                   "WHERE EXISTS (SELECT 1 FROM post p WHERE p.id = ?1 AND (p.published = 1 OR " MEMBER_OF("p.blog_id") ")) "
                   "ORDER BY t.path LIMIT 300"),
@@ -323,8 +326,120 @@ static const char *const DB_MIGRATIONS[] = {
   " DELETE FROM post_fts WHERE rowid = new.id;"
   " INSERT INTO post_fts(rowid, title, body_md) VALUES (new.id, new.title, (SELECT body_md FROM post_body WHERE post_id = new.id)); END;"
   "CREATE TRIGGER post_fts_del AFTER DELETE ON post BEGIN DELETE FROM post_fts WHERE rowid = old.id; END;",
+  // v11: excerpts from the rendered HTML (db_excerpt), so Markdown syntax
+  // (image paths, link targets) never shows in feeds.
+  "UPDATE post SET excerpt = excerpt_of_html((SELECT body_html FROM post_body WHERE post_id = post.id));",
+  // v12: @handles, unique (spec/text.bend handle_ok). Existing accounts get
+  // one made from their name, with the id added where two collide.
+  "ALTER TABLE user ADD COLUMN handle TEXT CHECK (handle IS NULL OR (length(handle) BETWEEN 3 AND 30"
+  " AND handle NOT GLOB '*[^a-z0-9_]*' AND substr(handle, 1, 1) BETWEEN 'a' AND 'z'));"
+  "UPDATE user SET handle = handle_of_name(name, id);"
+  "UPDATE user SET handle = substr(handle, 1, 20) || '_' || id WHERE id NOT IN (SELECT min(id) FROM user GROUP BY handle);"
+  "CREATE UNIQUE INDEX user_handle ON user(handle);"
+  "ALTER TABLE email_token ADD COLUMN handle TEXT;",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
+
+// A post's excerpt from its stored HTML: the text, with every tag replaced
+// by a space (so images vanish and links keep their words), the entities
+// the escaper makes decoded, runs of white space made one space, at most
+// EXCERPT_CHARS characters (whole UTF-8 sequences). The HTML is always
+// spec/markup.bend's serialization (LAWS.bend markup_rendered): '<' only
+// ever starts a tag, and '&' only an entity.
+#define EXCERPT_CHARS 240u
+#define EXCERPT_SCAN_MAX 8192u
+
+uint32_t db_excerpt(const char *html, uint32_t n, char *out, uint32_t cap) {
+  ASSERT(out != NULL && cap >= 4u);
+  static const struct { const char *e; uint32_t n; char c; } ents[] = {
+    {"&lt;", 4, '<'}, {"&gt;", 4, '>'}, {"&amp;", 5, '&'}, {"&quot;", 6, '"'}, {"&#39;", 5, '\''},
+    {"&#10;", 5, ' '}, {"&#9;", 4, ' '},
+  };
+  uint32_t len = 0, chars = 0;
+  int space = 1;  // no leading space
+  for (uint32_t i = 0; i < n && i < EXCERPT_SCAN_MAX && chars < EXCERPT_CHARS;) {
+    char c = html[i];
+    if (c == '<') {
+      // Inline tags (strong, em, code, a) join words; others separate them.
+      uint32_t t = i + 1u < n && html[i + 1u] == '/' ? i + 2u : i + 1u;
+      int inl = (n - t >= 7u && memcmp(html + t, "strong>", 7) == 0) || (n - t >= 3u && memcmp(html + t, "em>", 3) == 0) ||
+                (n - t >= 5u && memcmp(html + t, "code>", 5) == 0) || (n - t >= 2u && (memcmp(html + t, "a ", 2) == 0 || memcmp(html + t, "a>", 2) == 0));
+      while (i < n && html[i] != '>') i++;
+      i++;
+      if (inl) continue;
+      c = ' ';
+    } else if (c == ' ' || c == '\n' || c == '\t') {
+      i++;
+    } else if (c == '&') {
+      uint32_t k = 0;
+      for (; k < sizeof ents / sizeof ents[0]; k++) {
+        if (n - i >= ents[k].n && memcmp(html + i, ents[k].e, ents[k].n) == 0) break;
+      }
+      if (k < sizeof ents / sizeof ents[0]) {
+        c = ents[k].c;
+        i += ents[k].n;
+      } else {
+        i++;
+      }
+    } else {
+      // A whole UTF-8 sequence, or nothing if it does not fit.
+      uint32_t sl = ((unsigned char)c & 0x80u) == 0 ? 1u : ((unsigned char)c & 0xE0u) == 0xC0u ? 2u
+                  : ((unsigned char)c & 0xF0u) == 0xE0u ? 3u : 4u;
+      if (i + sl > n || len + sl + 1u > cap) break;
+      memcpy(out + len, html + i, sl);
+      len += sl;
+      i += sl;
+      chars++;
+      space = 0;
+      continue;
+    }
+    if (c == ' ' || c == '\n' || c == '\t') {
+      if (!space && len + 2u <= cap) {
+        out[len++] = ' ';
+        chars++;
+        space = 1;
+      }
+    } else if (len + 2u <= cap) {
+      out[len++] = c;
+      chars++;
+      space = 0;
+    }
+  }
+  while (len > 0u && out[len - 1u] == ' ') len--;
+  out[len] = 0;
+  return len;
+}
+
+// A handle made from a display name (for accounts that predate handles):
+// ASCII letters and digits lowered, anything else one '_', starting with a
+// letter, at most 24 characters; "user<id>" if too little is left.
+static void db_handle_fn(sqlite3_context *cx, int argc, sqlite3_value **argv) {
+  (void)argc;
+  const unsigned char *name = sqlite3_value_text(argv[0]);
+  int n = sqlite3_value_bytes(argv[0]);
+  char out[40];
+  uint32_t len = 0;
+  for (int i = 0; name != NULL && i < n && len < 24u; i++) {
+    unsigned char c = name[i];
+    if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
+    int ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    if (len == 0u && !(c >= 'a' && c <= 'z')) continue;
+    if (ok) out[len++] = (char)c;
+    else if (out[len - 1u] != '_') out[len++] = '_';
+  }
+  while (len > 0u && out[len - 1u] == '_') len--;
+  if (len < 3u) len = (uint32_t)snprintf(out, sizeof out, "user%lld", (long long)sqlite3_value_int64(argv[1]));
+  sqlite3_result_text(cx, out, (int)len, SQLITE_TRANSIENT);
+}
+
+static void db_excerpt_fn(sqlite3_context *cx, int argc, sqlite3_value **argv) {
+  (void)argc;
+  const char *html = (const char *)sqlite3_value_text(argv[0]);
+  int n = sqlite3_value_bytes(argv[0]);
+  char out[EXCERPT_CHARS * 4u + 1u];
+  uint32_t len = html != NULL && n > 0 ? db_excerpt(html, (uint32_t)n, out, sizeof out) : 0u;
+  sqlite3_result_text(cx, len > 0u ? out : "", (int)len, SQLITE_TRANSIENT);
+}
 
 static int32_t db_migrate(Db *db) {
   sqlite3_stmt *st;
@@ -369,6 +484,10 @@ int32_t db_open(Db *db, const char *path) {
     "PRAGMA optimize = 0x10002;";
   if (sqlite3_exec(db->conn, pragmas, NULL, NULL, NULL) != SQLITE_OK) return -1;
   if (sqlite3_exec(db->conn, DB_SCHEMA, NULL, NULL, NULL) != SQLITE_OK) return -1;
+  if (sqlite3_create_function(db->conn, "excerpt_of_html", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, NULL,
+                              db_excerpt_fn, NULL, NULL) != SQLITE_OK) return -1;
+  if (sqlite3_create_function(db->conn, "handle_of_name", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, NULL,
+                              db_handle_fn, NULL, NULL) != SQLITE_OK) return -1;
   if (db_migrate(db) != 0) return -1;
   for (uint32_t i = 0; i < ST_COUNT; i++) {
     ASSERT(DB_SQL[i] != NULL);
@@ -701,6 +820,7 @@ static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *
       sqlite3_bind_int64(st, 1, w->target);
       bind_text(st, 2, w->title);
       bind_text(st, 3, w->body_md);
+      bind_text(st, 4, w->body_html);
       sqlite3_bind_int64(st, 5, (sqlite3_int64)now_ms);
       if ((r = db_rc(db_exec(st))) != DB_OK) return r;
       st = db->st[ST_BODY_SET];
@@ -1055,21 +1175,29 @@ static int32_t auth_mail_text(char *out, size_t cap, uint32_t purpose, DbText or
   return n > 0 && (size_t)n < cap ? n : -1;
 }
 
-static AuthResult auth_token_issue(Db *db, uint32_t purpose, DbText email, DbText name, DbText origin, uint64_t now_ms,
+static AuthResult auth_token_issue(Db *db, uint32_t purpose, DbText email, DbText name, DbText handle, DbText origin, uint64_t now_ms,
                                    uint8_t *token_out);
 
-AuthResult auth_email_token(Db *db, uint32_t purpose, DbText email, DbText name, DbText origin, uint64_t now_ms) {
-  return auth_token_issue(db, purpose, email, name, origin, now_ms, NULL);
+AuthResult auth_email_token(Db *db, uint32_t purpose, DbText email, DbText name, DbText handle, DbText origin, uint64_t now_ms) {
+  return auth_token_issue(db, purpose, email, name, handle, origin, now_ms, NULL);
 }
 
-AuthResult auth_signup_direct(Db *db, DbText email, DbText name, DbText origin, uint64_t now_ms, uint8_t token_hex[64]) {
-  return auth_token_issue(db, AUTH_SIGNUP, email, name, origin, now_ms, token_hex);
+AuthResult auth_signup_direct(Db *db, DbText email, DbText name, DbText handle, DbText origin, uint64_t now_ms, uint8_t token_hex[64]) {
+  return auth_token_issue(db, AUTH_SIGNUP, email, name, handle, origin, now_ms, token_hex);
 }
 
-static AuthResult auth_token_issue(Db *db, uint32_t purpose, DbText email, DbText name, DbText origin, uint64_t now_ms,
-                                   uint8_t *token_out) {
+// Is handle someone's already? 1 yes, 0 no, -1 error.
+static int32_t auth_handle_taken(Db *db, DbText handle) {
+  sqlite3_stmt *st = db->st[ST_HANDLE_TAKEN];
+  bind_text(st, 1, handle);
+  uint32_t one = 0;
+  return db_one_u32(st, &one);
+}
+
+static AuthResult auth_token_issue(Db *db, uint32_t purpose, DbText email, DbText name, DbText handle, DbText origin,
+                                   uint64_t now_ms, uint8_t *token_out) {
   ASSERT(purpose == AUTH_SIGNUP || purpose == AUTH_RECOVER);
-  if (email.len == 0u || email.len > 254u || name.len > 64u || origin.len == 0u || origin.len > 200u) {
+  if (email.len == 0u || email.len > 254u || name.len > 64u || origin.len == 0u || origin.len > 200u || handle.len > 30u) {
     return AUTH_INVALID;
   }
   if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return AUTH_ERROR;
@@ -1085,6 +1213,11 @@ static AuthResult auth_token_issue(Db *db, uint32_t purpose, DbText email, DbTex
   int32_t found = db_one_u32(st, &user);
   if (found < 0) return auth_rollback(db, AUTH_ERROR);
   if (purpose == AUTH_SIGNUP && found == 1) return auth_rollback(db, AUTH_EMAIL_TAKEN);
+  if (purpose == AUTH_SIGNUP && handle.len > 0u) {
+    int32_t taken = auth_handle_taken(db, handle);
+    if (taken < 0) return auth_rollback(db, AUTH_ERROR);
+    if (taken == 1) return auth_rollback(db, AUTH_HANDLE_TAKEN);
+  }
   if (purpose == AUTH_RECOVER && found == 0) return auth_rollback(db, AUTH_OK);  // silent
   uint8_t raw[32], hash[32], hex[64];
   if (getrandom(raw, sizeof raw, 0) != (ssize_t)sizeof raw) return auth_rollback(db, AUTH_ERROR);
@@ -1101,6 +1234,7 @@ static AuthResult auth_token_issue(Db *db, uint32_t purpose, DbText email, DbTex
   else sqlite3_bind_null(st, 5);
   sqlite3_bind_int64(st, 6, (sqlite3_int64)now_ms);
   sqlite3_bind_int64(st, 7, (sqlite3_int64)(now_ms + EMAIL_TOKEN_TTL_MS));
+  bind_text(st, 8, handle);
   if (db_exec(st) != SQLITE_DONE) return auth_rollback(db, AUTH_ERROR);
   char text[1024];
   int32_t tn = auth_mail_text(text, sizeof text, purpose, origin, hex);
@@ -1237,6 +1371,10 @@ AuthResult auth_register(Db *db, const uint8_t token_hash[32], const uint8_t cha
   memcpy(email, sqlite3_column_text(st, 1), (size_t)el);
   memcpy(name, sqlite3_column_text(st, 2), (size_t)nl);
   uint32_t existing = (uint32_t)sqlite3_column_int64(st, 3);
+  char handle[32];
+  int hl = sqlite3_column_bytes(st, 4);
+  if (hl < 0 || (size_t)hl >= sizeof handle) hl = 0;
+  memcpy(handle, sqlite3_column_text(st, 4), (size_t)hl);
   sqlite3_reset(st);
   sqlite3_clear_bindings(st);
   if (auth_use_challenge(db, challenge_hash, CHAL_REGISTER, token_hash, now_ms) != 1) {
@@ -1248,8 +1386,19 @@ AuthResult auth_register(Db *db, const uint8_t token_hash[32], const uint8_t cha
   if (db_changes(db, st) != 1) return auth_rollback(db, AUTH_INVALID);
   uint32_t uid = existing;
   if (purpose == AUTH_SIGNUP) {
+    // The handle may have been taken since the token was made.
+    if (hl > 0) {
+      int32_t taken = auth_handle_taken(db, (DbText){handle, (uint32_t)hl});
+      if (taken != 0) return auth_rollback(db, taken < 0 ? AUTH_ERROR : AUTH_HANDLE_TAKEN);
+    }
     uid = db_user_new(db, (DbText){email, (uint32_t)el}, (DbText){name, (uint32_t)nl}, now_ms);
     if (uid == 0u) return auth_rollback(db, AUTH_EMAIL_TAKEN);
+    if (hl > 0) {
+      st = db->st[ST_USER_HANDLE];
+      sqlite3_bind_int64(st, 1, uid);
+      sqlite3_bind_text(st, 2, handle, hl, SQLITE_STATIC);
+      if (db_exec(st) != SQLITE_DONE) return auth_rollback(db, AUTH_HANDLE_TAKEN);
+    }
   }
   if (uid == 0u) return auth_rollback(db, AUTH_INVALID);
   st = db->st[ST_CRED_NEW];

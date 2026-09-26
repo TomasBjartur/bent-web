@@ -379,7 +379,7 @@ def run(dbpath):
     st, _, body, _ = req("GET", "/search?q=zebracorn")
     check("search finds the published post", st == 200 and "Searchable" in body, st)
     check("search never shows drafts", "Secret draft" not in body and "nobody may read" not in body)
-    check("result excerpt is escaped", "galloped" in body and "<b" not in body.split('class="feed"')[1] and "&amp; sang" in body)
+    check("result excerpt is escaped", "galloped" in body and "<b" not in body.split('class="feed"')[1] and "&amp; sang" in body, body.split('class="feed"')[1][:400] if 'class="feed"' in body else body[-400:])
     check("prefix search", "Searchable" in req("GET", "/search?q=zebrac")[2])
     check("case and accents folded", "Searchable" in req("GET", "/search?q=" + urllib.parse.quote("ZEBRACÓRN"))[2])
     for q in ['"', '""', 'zebracorn"', 'NEAR(', 'a OR', '*', '^', ')(', "'", '%00', 'x' * 600, ' ' * 50, '\x01zebracorn']:
@@ -524,6 +524,8 @@ def run(dbpath):
     check("over 1 MiB refused", st in (400, 413), st)
     req("POST", f"/edit/{tgid}", b, {"title": "Tagged", "body": f"A picture:\n\n![A red square]({path})\n\n![remote](https://evil.example/x.png)", "action": "publish"})
     _, _, body, _ = req("GET", "/b/bob-s-great-blog/tagged")
+    _, _, feed, _ = req("GET", "/b/bob-s-great-blog")
+    check("excerpt drops image syntax", "A picture:" in feed and "/img/" not in feed.split('class="feed"')[1] and "evil.example" not in feed, feed.split('class="feed"')[1][:500])
     check("post shows the stored image, not the remote one", f'<img src="{path}" alt="A red square" loading="lazy">' in body and "evil.example" not in body)
 
     # Custom domains: the owner sets one, proves it with DNS, and the blog

@@ -39,10 +39,10 @@ def direct(+c: Conf) -> Bool:
     case Conf{+o, +r, +h, +d}:
       d
 
-def auth_email(purpose: U32, email: String, name: String, origin: String) -> IO(U32):
+def auth_email(purpose: U32, email: String, name: String, origin: String, handle: String) -> IO(U32):
   import "./effects/auth.c"
 
-def auth_signup_direct(email: String, name: String, origin: String) -> IO(Result<&1, &1, U32 & String, String>):
+def auth_signup_direct(email: String, name: String, origin: String, handle: String) -> IO(Result<&1, &1, U32 & String, String>):
   import "./effects/auth.c"
 
 def auth_token_info(token: String) -> IO(List<&2, String>):
@@ -119,7 +119,7 @@ def col(r: List<&2, String>, n: Nat) -> String:
 # PAGES
 # -----
 def signup_page() -> String:
-  "<div class=\"center card\"><h1>Start writing</h1><p class=\"muted\">No password to remember: next, your device creates a passkey (fingerprint, face or PIN).</p><form method=\"post\" action=\"/signup\" class=\"stack\"><label>Your name <span class=\"hint\">Shown on your posts.</span><input name=\"name\" required maxlength=\"64\" autocomplete=\"name\"></label><label>Email <span class=\"hint\">Only for getting back in if you lose your device.</span><input name=\"email\" type=\"email\" required maxlength=\"254\" autocomplete=\"email\"></label><button class=\"primary big\">Continue</button></form><p class=\"meta\">Already have an account? <a href=\"/login\">Log in</a></p></div>"
+  "<div class=\"center card\"><h1>Start writing</h1><p class=\"muted\">No password to remember: next, your device creates a passkey (fingerprint, face or PIN).</p><form method=\"post\" action=\"/signup\" class=\"stack\"><label>Your name <span class=\"hint\">Shown on your posts.</span><input name=\"name\" required maxlength=\"64\" autocomplete=\"name\"></label><label>Username <span class=\"hint\">Unique: 3 to 30 of a-z, 0-9 and _, starting with a letter.</span><input name=\"handle\" required minlength=\"3\" maxlength=\"31\" pattern=\"@?[A-Za-z][A-Za-z0-9_]{2,29}\" autocapitalize=\"none\" autocomplete=\"username\" placeholder=\"e.g. maya\"></label><label>Email <span class=\"hint\">Only for getting back in if you lose your device.</span><input name=\"email\" type=\"email\" required maxlength=\"254\" autocomplete=\"email\"></label><button class=\"primary big\">Continue</button></form><p class=\"meta\">Already have an account? <a href=\"/login\">Log in</a></p></div>"
 
 def sent_page() -> String:
   "<div class=\"center card\"><h1>Check your email</h1><p class=\"muted\">If that address can be used, a link is on its way. It works once, for 30 minutes.</p></div>"
@@ -148,6 +148,18 @@ def h_signup_page(s: Socket, +token: String, +who: U32) -> IO(Unit):
 def h_login_page(s: Socket, +token: String, +who: U32) -> IO(Unit):
   html(s, token, 200, U32.is_ne(who, 0), "Log in", login_page())
 
+# A taken handle is said (handles are public anyway); whether an email has
+# an account is not, when email is how sign-up works.
+def taken_page() -> String:
+  "<div class=\"center card\"><h1>That username is taken</h1><p class=\"muted\">Go back and choose another.</p></div>"
+
+def signup_refused(handle: Bool, s: Socket, +token: String) -> IO(Unit):
+  match handle:
+    case True{}:
+      html(s, token, 409, False{}, "Username taken", taken_page())
+    case False{}:
+      html(s, token, 409, False{}, "Not available", "<div class=\"center card\"><h1>That did not work</h1><p class=\"muted\">This email may already have an account (<a href=\"/login\">log in</a>), or too many attempts were made. Try again later.</p></div>")
+
 def h_signup_direct(s: Socket, +token: String, r: Result<&1, &1, U32 & String, String>) -> IO(Unit):
   match r:
     case Done{+t}:
@@ -155,35 +167,43 @@ def h_signup_direct(s: Socket, +token: String, r: Result<&1, &1, U32 & String, S
         x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 303, 0, one(""), Nil{}, token, "", "/verify?t=" ++ t)
         done(x)
     case Fail{err}:
-      html(s, token, 409, False{}, "Not available", "<div class=\"center card\"><h1>That did not work</h1><p class=\"muted\">This email may already have an account (<a href=\"/login\">log in</a>), or too many attempts were made. Try again later.</p></div>")
+      (+code, msg) = err
+      signup_refused(U32.is_eq(code, 6), s, token)
 
-def h_signup3(b: Bool, s: Socket, +c: Conf, +token: String, +email: String, +name: String) -> IO(Unit):
+def signup_sent(handle: Bool, s: Socket, +token: String) -> IO(Unit):
+  match handle:
+    case True{}:
+      html(s, token, 409, False{}, "Username taken", taken_page())
+    case False{}:
+      html(s, token, 200, False{}, "Check your email", sent_page())
+
+def h_signup3(b: Bool, s: Socket, +c: Conf, +token: String, +email: String, +name: String, +handle: String) -> IO(Unit):
   match b:
     case True{}:
       do IO<Unit>:
-        r : Result<&1, &1, U32 & String, String> <- auth_signup_direct(email, name, origin(c))
+        r : Result<&1, &1, U32 & String, String> <- auth_signup_direct(email, name, origin(c), handle)
         h_signup_direct(s, token, r)
     case False{}:
       do IO<Unit>:
-        code : U32 <- auth_email(1, email, name, origin(c))
-        html(s, token, 200, False{}, "Check your email", sent_page())
+        +code : U32 <- auth_email(1, email, name, origin(c), handle)
+        signup_sent(U32.is_eq(code, 6), s, token)
 
-def h_signup2(s: Socket, +c: Conf, +token: String, em: Maybe<&2, Text.Email>, nm: Maybe<&2, Text.Name>) -> IO(Unit):
-  match em nm:
-    case Some{x} Some{y}:
-      h_signup3(direct(c), s, c, token, Text.Email.text(x), Text.Name.text(y))
-    case _ _:
+def h_signup2(s: Socket, +c: Conf, +token: String, em: Maybe<&2, Text.Email>, nm: Maybe<&2, Text.Name>, hd: Maybe<&2, Text.Handle>) -> IO(Unit):
+  match em nm hd:
+    case Some{x} Some{y} Some{z}:
+      h_signup3(direct(c), s, c, token, Text.Email.text(x), Text.Name.text(y), Text.Handle.text(z))
+    case _ _ _:
       html(s, token, 400, False{}, "Error", Pages.error_body(400))
 
 def h_signup(s: Socket, +c: Conf, +token: String, +body: String) -> IO(Unit):
   +xs = form(body)
-  h_signup2(s, c, token, Text.form_email(xs, "email"), Text.form_name(xs, "name"))
+  h_signup2(s, c, token, Text.form_email(xs, "email"), Text.form_name(xs, "name"), Text.form_handle(xs, "handle"))
 
 def h_recover2(s: Socket, +c: Conf, +token: String, em: Maybe<&2, Text.Email>) -> IO(Unit):
   match em:
     case Some{x}:
       do IO<Unit>:
-        code : U32 <- auth_email(2, Text.Email.text(x), "", origin(c))
+        code : U32 <- auth_email(2, Text.Email.text(x), "", origin(c), "")
         html(s, token, 200, False{}, "Check your email", sent_page())
     case None{}:
       html(s, token, 400, False{}, "Error", Pages.error_body(400))

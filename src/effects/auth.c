@@ -14,20 +14,22 @@
 
 #ifdef CID(auth_email)
 
-// f: purpose, email, name, origin. Answers an AuthResult code.
+// f: purpose, email, name, origin, handle. Answers an AuthResult code.
 Term auth_email_run(Env e, Term *f, IoWork *w) {
   (void)w;
   ASSERT(app_db_ready);
-  u64 n1 = 0, n2 = 0, n3 = 0;
+  u64 n1 = 0, n2 = 0, n3 = 0, n4 = 0;
   char *email = io_cstr(e, f[1], &n1), *name = io_cstr(e, f[2], &n2), *origin = io_cstr(e, f[3], &n3);
+  char *handle = io_cstr(e, f[4], &n4);
   AuthResult r = AUTH_INVALID;
-  if (n1 <= 254u && n2 <= 64u && n3 <= 200u) {
+  if (n1 <= 254u && n2 <= 64u && n3 <= 200u && n4 <= 30u) {
     r = auth_email_token(&app_db, (uint32_t)f[0], (DbText){email, (uint32_t)n1}, (DbText){name, (uint32_t)n2},
-                         (DbText){origin, (uint32_t)n3}, app_now_ms());
+                         (DbText){handle, (uint32_t)n4}, (DbText){origin, (uint32_t)n3}, app_now_ms());
   }
   free(email);
   free(name);
   free(origin);
+  free(handle);
   return (Term)(uint32_t)r;
 }
 
@@ -222,22 +224,24 @@ static void __attribute__((constructor)) auth_login_raw_use(void) {
 
 #ifdef CID(auth_signup_direct)
 
-// f: email, name, origin. Answers the sign-up token (hex), or fails with
-// the AuthResult code. Only used when BLOG_SIGNUP_DIRECT=1.
+// f: email, name, origin, handle. Answers the sign-up token (hex), or fails
+// with the AuthResult code. Only used when BLOG_SIGNUP_DIRECT=1.
 Term auth_signup_direct_run(Env e, Term *f, IoWork *w) {
   (void)w;
   ASSERT(app_db_ready);
-  u64 n1 = 0, n2 = 0, n3 = 0;
+  u64 n1 = 0, n2 = 0, n3 = 0, n4 = 0;
   char *email = io_cstr(e, f[0], &n1), *name = io_cstr(e, f[1], &n2), *origin = io_cstr(e, f[2], &n3);
+  char *handle = io_cstr(e, f[3], &n4);
   uint8_t hex[64];
   AuthResult r = AUTH_INVALID;
-  if (n1 <= 254u && n2 <= 64u && n3 <= 200u) {
+  if (n1 <= 254u && n2 <= 64u && n3 <= 200u && n4 <= 30u) {
     r = auth_signup_direct(&app_db, (DbText){email, (uint32_t)n1}, (DbText){name, (uint32_t)n2},
-                           (DbText){origin, (uint32_t)n3}, app_now_ms(), hex);
+                           (DbText){handle, (uint32_t)n4}, (DbText){origin, (uint32_t)n3}, app_now_ms(), hex);
   }
   free(email);
   free(name);
   free(origin);
+  free(handle);
   if (r != AUTH_OK) return io_fail(e, (uint32_t)r, NULL);
   Term s = io_str(e, (const char *)hex, 64);
   explicit_bzero(hex, sizeof hex);

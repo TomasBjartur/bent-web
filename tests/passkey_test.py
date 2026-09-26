@@ -204,7 +204,7 @@ def main():
 
 def run(db):
     # Sign-up.
-    st, body, _ = req("POST", "/signup", {"email": "Ann@Example.com", "name": "Ann"})
+    st, body, _ = req("POST", "/signup", {"email": "Ann@Example.com", "name": "Ann", "handle": "Ann"})
     check("signup: generic answer", st == 200 and "Check your email" in body, st)
     t = latest_link(db, "ann@example.com")
     check("signup: link mailed (address lower-cased)", t is not None)
@@ -275,7 +275,7 @@ def run(db):
 
     # Registration attacks.
     def fresh(email):
-        req("POST", "/signup", {"email": email, "name": "X"})
+        req("POST", "/signup", {"email": email, "name": "X", "handle": "x" + secrets.token_hex(4)})
         return latest_link(db, email)
 
     for name, kw in [
@@ -312,9 +312,21 @@ def run(db):
     st, s_ = register(tt, Key(), cid)
     check("reg: existing credential id rejected", st == 403 and s_ is None, st)
 
+    # Handles are unique: Ann took "ann" (typed "Ann"); every variant of it
+    # is refused, before any email or passkey.
+    check("handle stored lowercased", db.execute("SELECT handle FROM user WHERE email = 'Ann@Example.com'").fetchall() == [("ann",)])
+    for h in ["ann", "ANN", "@Ann", " ann "]:
+        st, body, _ = req("POST", "/signup", {"email": f"other{len(h)}{h.strip('@ ')}@example.com", "name": "Ann", "handle": h})
+        check(f"taken handle {h!r} refused", st == 409 and "username is taken" in body, (st, body[-200:]))
+    for h in ["an", "1ann", "ann-b", "annа", "a" * 31]:
+        st, _, _ = req("POST", "/signup", {"email": "new@example.com", "name": "N", "handle": h})
+        check(f"bad handle {h!r} refused", st == 400, st)
+    check("same display name is fine (the handle tells them apart)",
+          req("POST", "/signup", {"email": "ann2@example.com", "name": "Ann", "handle": "ann_two"})[0] == 200)
+
     # Enumeration and rate limits.
     before = mail_count(db, "ann@example.com")
-    st, body, _ = req("POST", "/signup", {"email": "ann@example.com", "name": "Imposter"})
+    st, body, _ = req("POST", "/signup", {"email": "ann@example.com", "name": "Imposter", "handle": "imposter"})
     check("signup with a taken email: same answer", st == 200 and "Check your email" in body)
     check("signup with a taken email: no mail", mail_count(db, "ann@example.com") == before)
     st, body, _ = req("POST", "/recover", {"email": "nobody@example.com"})
@@ -339,9 +351,9 @@ def run(db):
 
     # Input validation on sign-up.
     for bad in ["no-at-sign", "a@b@c", "<x>@y.z", "a b@c.d", "@x.io", "x@", "a@b.c\r\nBcc: v@x"]:
-        st, _, _ = req("POST", "/signup", {"email": bad, "name": "X"})
+        st, _, _ = req("POST", "/signup", {"email": bad, "name": "X", "handle": "xyz"})
         check(f"bad email rejected: {bad!r}", st == 400, st)
-    st, _, _ = req("POST", "/signup", {"email": "ok@example.com", "name": "a\x01b"})
+    st, _, _ = req("POST", "/signup", {"email": "ok@example.com", "name": "a\x01b", "handle": "okay"})
     check("control char in name rejected", st == 400, st)
     body = db.execute("SELECT body FROM outbox ORDER BY id DESC LIMIT 1").fetchone()[0]
     check("mail link uses the configured origin", body.count(ORIGIN + "/verify?t=") == 1)

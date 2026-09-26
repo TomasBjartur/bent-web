@@ -368,6 +368,11 @@ def Laws.route_custom_reads(slug, h):
         case Http.DELETE{}:
           {==}
 
+def Laws.text_handle_ok(h):
+  match h:
+    case Text.Handle{s, p}:
+      p
+
 def Laws.text_domain_ok(d):
   match d:
     case Text.Domain{s, p}:

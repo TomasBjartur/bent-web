@@ -40,6 +40,11 @@ type Field is Data:
 type Domain is Data:
   Domain{text: String, pf: {Spec.domain_ok(text) == True{} : Bool}}
 
+# HANDLES
+# -------
+type Handle is Data:
+  Handle{text: String, pf: {Spec.handle_ok(text) == True{} : Bool}}
+
 def mk_title.go(b: Bool, +s: String, e: {Spec.title_ok(s) == b : Bool}) -> Maybe<&2, Title>:
   match b:
     case True{}:
@@ -817,3 +822,32 @@ def dom_norm(+s: String) -> String:
 
 def form_domain(+xs: List<&2, Field>, +key: String) -> Maybe<&2, Domain>:
   mk_domain(dom_norm(lower(String.trim(Maybe.default(&2, String, decode_of(form_get(xs, key)), "")))))
+
+def Handle.text(h: Handle) -> String:
+  match h:
+    case Handle{s, p}:
+      s
+
+def mk_handle.go(b: Bool, +s: String, e: {Spec.handle_ok(s) == b : Bool}) -> Maybe<&2, Handle>:
+  match b:
+    case True{}:
+      Some{Handle{s, e}}
+    case False{}:
+      None{}
+
+def mk_handle(+s: String) -> Maybe<&2, Handle>:
+  mk_handle.go(Spec.handle_ok(s), s, {==})
+
+def handle_norm.go(at: Bool, +s: String) -> String:
+  match at:
+    case True{}:
+      String.drop(s, 1n)
+    case False{}:
+      s
+
+# The form field: trimmed, lowered, an "@" in front dropped.
+def handle_norm(+s: String) -> String:
+  handle_norm.go(String.starts_with(s, "@"), s)
+
+def form_handle(+xs: List<&2, Field>, +key: String) -> Maybe<&2, Handle>:
+  mk_handle(handle_norm(lower(String.trim(Maybe.default(&2, String, decode_of(form_get(xs, key)), "")))))

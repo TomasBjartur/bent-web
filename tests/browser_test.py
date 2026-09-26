@@ -70,6 +70,7 @@ def run(dbpath):
     go(BASE + "/signup")
     js("document.querySelector('input[name=email]').value = 'eve@example.com';"
        "document.querySelector('input[name=name]').value = 'Eve';"
+       "document.querySelector('input[name=handle]').value = 'eve';"
        "document.querySelector('form').submit()")
     time.sleep(0.8)
     check("sign-up form submitted", "Check your email" in (js("document.body.innerText") or ""), js("document.body.innerText"))

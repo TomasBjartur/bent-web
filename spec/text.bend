@@ -164,3 +164,27 @@ def dom_ends(s: String) -> Bool:
 
 def domain_ok(+s: String) -> Bool:
   Bool.and(Bool.and(Nat.is_le(4n, String.length(s)), Nat.is_le(String.length(s), 253n)), Bool.and(all_dom_chars(s), Bool.and(dom_has_dot(s), Bool.and(dom_ends(s), Bool.and(dom_pairs(s, '.'), dom_labels(s, 0))))))
+
+# A handle (@name): 3..30 of a-z 0-9 '_', starting with a letter. Unique
+# per account (the database's UNIQUE index; case cannot differ, and being
+# ASCII it has no look-alike letters from other scripts).
+def handle_char(+c: Char) -> Bool:
+  +x = Char.to_u32(c)
+  Bool.or(Http.in_range(x, 97, 122), Bool.or(Http.in_range(x, 48, 57), U32.is_eq(x, 95)))
+
+def all_handle_chars(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{+h, t}:
+      Bool.and(handle_char(h), all_handle_chars(t))
+
+def handle_starts(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      False{}
+    case SCon{+h, t}:
+      Http.in_range(Char.to_u32(h), 97, 122)
+
+def handle_ok(+s: String) -> Bool:
+  Bool.and(Bool.and(Nat.is_le(3n, String.length(s)), Nat.is_le(String.length(s), 30n)), Bool.and(handle_starts(s), all_handle_chars(s)))

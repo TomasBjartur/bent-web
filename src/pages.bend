@@ -170,8 +170,19 @@ def error_text(+status: U32) -> String:
 def error_body(+status: U32) -> String:
   "<div class=\"center card\"><h1>" ++ (error_title(status) ++ ("</h1><p class=\"muted\">" ++ (error_text(status) ++ "</p><p><a class=\"btn\" href=\"/\">Go home</a></p></div>")))
 
+def handle_tag.go(none: Bool, +h: String) -> String:
+  match none:
+    case True{}:
+      ""
+    case False{}:
+      " <span class=\"handle\">@" ++ (e(h) ++ "</span>")
+
 # FEEDS
 # -----
+# "@handle" after a name (accounts from before handles may have none).
+def handle_tag(+h: String) -> String:
+  handle_tag.go(String.is_empty(h), h)
+
 def author_link(+id: String, +name: String) -> String:
   "<a href=\"/u/" ++ (e(id) ++ ("\">" ++ (e(name) ++ "</a>")))
 
@@ -277,7 +288,7 @@ def published_notice(b: Bool, +id: String) -> String:
 # view: [post slug, title, published, blog slug, blog title, author, date,
 # minutes, author id]. notice: just published by this member.
 def post_before(+view: List<&2, String>, +id: String, can_edit: Bool, notice: Bool) -> String:
-  published_notice(notice, id) ++ "<article class=\"article\"><header><a class=\"pub\" href=\"/b/" ++ (e(col(view, 3n)) ++ ("\">" ++ (e(col(view, 4n)) ++ ("</a><h1>" ++ (e(col(view, 1n)) ++ ("</h1><div class=\"byline\"><strong>" ++ (author_link(col(view, 8n), col(view, 5n)) ++ ("</strong><span class=\"dot\"></span>" ++ (date(col(view, 6n)) ++ ("<span class=\"dot\"></span>" ++ (minutes(col(view, 7n)) ++ (draft_badge(String.eq(col(view, 2n), "0")) ++ (edit_link(can_edit, id) ++ "</div></header><div class=\"body\">")))))))))))))
+  published_notice(notice, id) ++ "<article class=\"article\"><header><a class=\"pub\" href=\"/b/" ++ (e(col(view, 3n)) ++ ("\">" ++ (e(col(view, 4n)) ++ ("</a><h1>" ++ (e(col(view, 1n)) ++ ("</h1><div class=\"byline\"><strong>" ++ (author_link(col(view, 8n), col(view, 5n)) ++ ("</strong>" ++ (handle_tag(col(view, 9n)) ++ ("<span class=\"dot\"></span>" ++ (date(col(view, 6n)) ++ ("<span class=\"dot\"></span>" ++ (minutes(col(view, 7n)) ++ (draft_badge(String.eq(col(view, 2n), "0")) ++ (edit_link(can_edit, id) ++ "</div></header><div class=\"body\">")))))))))))))))
 
 def post_after(+view: List<&2, String>, +social: String) -> String:
   "</div>" ++ social ++ "<footer><a href=\"/b/" ++ (e(col(view, 3n)) ++ ("\">← More from " ++ (e(col(view, 4n)) ++ "</a><a href=\"/\">Recent posts</a></footer></article>")))
@@ -484,8 +495,8 @@ def edit_page(+id: String, +rep: String, +md: List<&2, String>, +tags: String) -
 # AUTHOR PAGE
 # -----------
 # rows: as recent_items.
-def author_page(+uid: String, +name: String, +page: U32, +rows: List<&2, List<&2, String>>) -> String:
-  "<header class=\"masthead\"><h1>" ++ (e(name) ++ ("</h1><p class=\"muted\">Posts by " ++ (e(name) ++ ("</p></header>" ++ (feed_or_empty(rows_take(rows, 30n), "Nothing published yet.") ++ pager("/u/" ++ uid, page, rows))))))
+def author_page(+uid: String, +name: String, +handle: String, +page: U32, +rows: List<&2, List<&2, String>>) -> String:
+  "<header class=\"masthead\"><h1>" ++ (e(name) ++ ("</h1><p class=\"muted\">" ++ (handle_tag(handle) ++ (" · Posts by " ++ (e(name) ++ ("</p></header>" ++ (feed_or_empty(rows_take(rows, 30n), "Nothing published yet.") ++ pager("/u/" ++ uid, page, rows))))))))
 
 # RSS
 # ---
@@ -665,7 +676,7 @@ def comment_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool
     case Nil{}:
       Con{T{closes(comment_open_count(prev))}, Nil{}}
     case Con{+r, t}:
-      Con{T{closes(comment_close_before(prev, depth_of(col(r, 1n)))) ++ ("<div class=\"comment\" id=\"c" ++ (e(col(r, 0n)) ++ ("\"><div class=\"meta\">" ++ (author_link(col(r, 2n), col(r, 3n)) ++ ("<span class=\"dot\"></span><a href=\"#c" ++ (e(col(r, 0n)) ++ ("\">" ++ (date(col(r, 4n)) ++ "</a></div><div class=\"cbody\">"))))))))}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{"</div><div class=\"cactions\">" ++ (reply_link(signed, col(r, 0n)) ++ (delete_comment(Bool.and(Bool.not(String.eq(col(r, 5n), "1")), Bool.or(can_mod, String.eq(col(r, 6n), "1"))), col(r, 0n)) ++ "</div><div class=\"replies\">"))}, comment_segs(t, signed, can_mod, Some{depth_of(col(r, 1n))})}}}
+      Con{T{closes(comment_close_before(prev, depth_of(col(r, 1n)))) ++ ("<div class=\"comment\" id=\"c" ++ (e(col(r, 0n)) ++ ("\"><div class=\"meta\">" ++ (author_link(col(r, 2n), col(r, 3n)) ++ (handle_tag(col(r, 8n)) ++ ("<span class=\"dot\"></span><a href=\"#c" ++ (e(col(r, 0n)) ++ ("\">" ++ (date(col(r, 4n)) ++ "</a></div><div class=\"cbody\">")))))))))}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{"</div><div class=\"cactions\">" ++ (reply_link(signed, col(r, 0n)) ++ (delete_comment(Bool.and(Bool.not(String.eq(col(r, 5n), "1")), Bool.or(can_mod, String.eq(col(r, 6n), "1"))), col(r, 0n)) ++ "</div><div class=\"replies\">"))}, comment_segs(t, signed, can_mod, Some{depth_of(col(r, 1n))})}}}
 
 def comments_section(+signed: Bool, +can_mod: Bool, +pid: String, +count: String, rows: List<&2, List<&2, String>>) -> List<&2, Seg>:
   Con{T{"<section class=\"comments\" id=\"comments\"><h2>Comments</h2>" ++ comment_form(signed, pid)}, List.append(&2, Seg, comment_segs(rows, signed, can_mod, None{}), Con{T{"</section>"}, Nil{}})}
