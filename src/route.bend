@@ -24,6 +24,7 @@ type Route is Data:
   RAddAuthor{blog: String}
   RRemoveAuthor{blog: String, user: U32}
   RLogout{}
+  RStatic{name: String}
   RNotFound{}
 type Plan is Data:
   Read{route: Route}
@@ -63,6 +64,8 @@ def get2(k: Nat, +b: String) -> Route:
       RDashBlog{b}
     case 3n:
       REdit{id_of(b)}
+    case 4n:
+      RStatic{b}
     case _:
       RNotFound{}
 def get3(k: Nat, +b: String, +c: String) -> Route:
@@ -82,7 +85,7 @@ def route_get(xs: List<&2, String>) -> Route:
         case Con{+b, u}:
           match u:
             case Nil{}:
-              get2(Nat.add(eq(a, "b"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.mul(eq(a, "edit"), 3n))), b)
+              get2(Nat.add(eq(a, "b"), Nat.add(Nat.mul(eq(a, "dash"), 2n), Nat.add(Nat.mul(eq(a, "edit"), 3n), Nat.mul(eq(a, "s"), 4n)))), b)
             case Con{+c, v}:
               match v:
                 case Nil{}:

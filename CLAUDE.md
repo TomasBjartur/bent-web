@@ -145,6 +145,17 @@ result.
 
 ## Status
 
-Phase 0 spike: **done, verdict GO** (details in `docs/FINDINGS.md`).
-`spike/` holds throwaway measurement code (not C_STYLE-compliant).
-`src/html.bend` + `LAWS.bend`/`PROOF.bend` hold the first real, proved code.
+- Phase 0 spike: done, GO.
+- Phase 1 (secure core): done. Parser, authz, DB, sessions, CSRF, pages.
+  See `docs/FINDINGS.md` for guarantees, numbers and gaps.
+- Next: passkey login + email recovery; Markdown; the local-first editor.
+
+## Checks (run all before committing)
+
+- `bend PROOF.bend` (also run by `./build.sh`)
+- `tools/lint.sh`
+- `bend tests/http_test.bend`, `bend tests/text_test.bend`
+- `tests/c/build.sh` (unit + sanitizers, fuzz, CBMC; needs `CBMC=`)
+- `./build.sh && python3 tests/app_test.py`
+- with a server running: `tests/server_test.py`, `tests/fuzz_server.py`
+- `spike/` holds throwaway measurement code (not C_STYLE-compliant).

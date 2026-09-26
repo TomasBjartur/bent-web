@@ -99,7 +99,7 @@ enum {
   ST_SESSION_USER, ST_SESSION_NEW, ST_ROLE, ST_POST_FACTS,
   ST_USER_NEW, ST_USER_BY_EMAIL,
   ST_BLOG_NEW, ST_MEMBER_NEW, ST_BLOG_TITLE, ST_BLOG_DELETE, ST_MEMBER_DELETE,
-  ST_POST_NEW, ST_POST_EDIT, ST_POST_PUBLISH, ST_POST_DELETE, ST_BODY,
+  ST_POST_NEW, ST_POST_EDIT, ST_POST_PUBLISH, ST_POST_DELETE, ST_BODY, ST_SESSION_DELETE,
   ST_COUNT
 };
 
@@ -131,6 +131,9 @@ uint32_t db_session_user(Db *db, const uint8_t token_hash[32], uint64_t now_ms);
 // Creates a session for user, returning its raw token in token_out (the
 // database stores only its hash). Returns 0 on success.
 int32_t db_session_new(Db *db, uint32_t user, uint64_t now_ms, uint64_t ttl_ms, uint8_t token_out[32]);
+
+// Deletes the session with this token hash (logout). Returns 0 on success.
+int32_t db_session_end(Db *db, const uint8_t token_hash[32]);
 
 // Loads facts for (who, blog, post). post 0 means no post; blog 0 with a
 // post means "the post's blog".

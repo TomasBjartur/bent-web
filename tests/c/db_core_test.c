@@ -126,6 +126,12 @@ int main(void) {
   CHECK(apply(&a, facts(&a, blog, 0), (DbWrite){.kind = A_REMOVE_AUTHOR, .target = blog, .user = a.id}, NULL) == DB_DENIED);
   CHECK(facts(&a, blog, 0).role == ROLE_OWNER);
 
+  // Logout ends the session server-side.
+  Who d = user("d@x.io");
+  CHECK(db_session_user(&db, d.hash, NOW) == d.id);
+  CHECK(db_session_end(&db, d.hash) == 0);
+  CHECK(db_session_user(&db, d.hash, NOW) == 0u);
+
   // Expired session.
   CHECK(db_session_user(&db, a.hash, NOW + 3600001) == 0u);
   DbFacts af = facts(&a, blog, 0);

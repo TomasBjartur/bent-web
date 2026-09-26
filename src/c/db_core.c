@@ -35,6 +35,7 @@ static const char *const DB_SQL[ST_COUNT] = {
   [ST_POST_EDIT] = "UPDATE post SET title = ?2, body_md = ?3, body_html = ?4, updated_ms = ?5 WHERE id = ?1",
   [ST_POST_PUBLISH] = "UPDATE post SET published = ?2, updated_ms = ?3 WHERE id = ?1",
   [ST_POST_DELETE] = "DELETE FROM post WHERE id = ?1",
+  [ST_SESSION_DELETE] = "DELETE FROM session WHERE token_hash = ?1",
   [ST_BODY] = ("SELECT p.body_html FROM post p WHERE p.id = ?1 AND (p.published = 1 OR EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id WHERE m.blog_id = p.blog_id AND s.token_hash = ?2 AND s.expires_ms > ?3))"),
 };
 
@@ -157,6 +158,12 @@ int32_t db_session_new(Db *db, uint32_t user, uint64_t now_ms, uint64_t ttl_ms, 
   sqlite3_bind_int64(st, 2, user);
   sqlite3_bind_int64(st, 3, (sqlite3_int64)now_ms);
   sqlite3_bind_int64(st, 4, (sqlite3_int64)(now_ms + ttl_ms));
+  return db_exec(st) == SQLITE_DONE ? 0 : -1;
+}
+
+int32_t db_session_end(Db *db, const uint8_t token_hash[32]) {
+  sqlite3_stmt *st = db->st[ST_SESSION_DELETE];
+  sqlite3_bind_blob(st, 1, token_hash, 32, SQLITE_STATIC);
   return db_exec(st) == SQLITE_DONE ? 0 : -1;
 }
 

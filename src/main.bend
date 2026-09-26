@@ -3,6 +3,10 @@ import Base
 import ./http.bend as Http
 import ./net.bend as Net
 import ./app.bend as App
+import ./db.bend as Db
+import ./route.bend as Route
+import ./session.bend as Session
+import ./handlers.bend as Handlers
 
 def head_timeout() -> U32:
   10000
@@ -28,17 +32,29 @@ def net_fail(s: Socket, err: U32 & String) -> IO(Unit):
   (code, msg) = err
   +c = code
   fail_answer(U32.is_ge(c, 400), s, c)
-def with_body(h: Http.Head, prefix: String, r: Socket & Result<&1, &1, U32 & String, String>) -> IO(Unit):
+def head_hdrs(h: Http.Head) -> Http.Hdrs:
+  match h:
+    case Http.Head{m, p, q, hdrs}:
+      hdrs
+def handle.go(s: Socket, +h: Http.Head, +body: String, +token: String) -> IO(Unit):
+  do IO<Unit>:
+    +who : U32 <- Db.session_user(token)
+    Handlers.exec(s, Route.plan(h), token, who, body)
+# A complete request: find the session, plan, execute.
+def handle(s: Socket, +h: Http.Head, +body: String) -> IO(Unit):
+  +token = Session.token(head_hdrs(h))
+  handle.go(s, h, body, token)
+def with_body(+h: Http.Head, +prefix: String, r: Socket & Result<&1, &1, U32 & String, String>) -> IO(Unit):
   (s, res) = r
   match res:
     case Fail{err}:
       net_fail(s, err)
     case Done{more}:
-      send(s, App.handle(h, prefix ++ more))
-def body_need.go(enough: Bool, s: Socket, h: Http.Head, +prefix: String, +clen: U32, +have: U32) -> IO(Unit):
+      handle(s, h, prefix ++ more)
+def body_need.go(enough: Bool, s: Socket, +h: Http.Head, +prefix: String, +clen: U32, +have: U32) -> IO(Unit):
   match enough:
     case True{}:
-      send(s, App.handle(h, String.take(prefix, U32.to_nat(clen))))
+      handle(s, h, String.take(prefix, U32.to_nat(clen)))
     case False{}:
       do IO<Unit>:
         r : Socket & Result<&1, &1, U32 & String, String> <- Net.read_body(s, (clen - have : U32), body_timeout())
@@ -46,7 +62,7 @@ def body_need.go(enough: Bool, s: Socket, h: Http.Head, +prefix: String, +clen: 
 # The body is Content-Length bytes: `prefix` came with the head; read the rest.
 # Bytes beyond Content-Length would belong to a next request; with
 # Connection: close they are dropped.
-def body_need(s: Socket, h: Http.Head, +prefix: String, +clen: U32) -> IO(Unit):
+def body_need(s: Socket, +h: Http.Head, +prefix: String, +clen: U32) -> IO(Unit):
   +have = U32.from_nat(String.length(prefix))
   body_need.go(U32.is_le(clen, have), s, h, prefix, clen, have)
 def clen_of(h: Http.Hdrs) -> U32:
@@ -102,10 +118,18 @@ def port_of(r: Result<&1, &1, U32 & String, String>) -> U32:
       8080
     case Done{s}:
       Maybe.default(&2, U32, U32.read(s), 8080)
+def db_path(r: Result<&1, &1, U32 & String, String>) -> String:
+  match r:
+    case Fail{e}:
+      "blog.db"
+    case Done{p}:
+      p
 def main() -> IO(Unit):
   do IO<Unit>:
     env : Result<&1, &1, U32 & String, String> <- IO.get_env("PORT")
     +port : U32 = port_of(env)
+    dbenv : Result<&1, &1, U32 & String, String> <- IO.get_env("BLOG_DB")
+    IO.try(Unit, Db.db_open(db_path(dbenv)))
     l : Listener <- IO.try(Listener, Net.listen(port))
     IO.print("listening on 127.0.0.1:" ++ U32.show(port))
     serve(l)

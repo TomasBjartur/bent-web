@@ -8,13 +8,16 @@ import random, socket, sys
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8090
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 5000
 rng = random.Random(int(sys.argv[3]) if len(sys.argv) > 3 else 1)
-KNOWN = {200, 400, 404, 405, 408, 413, 431, 501, 503, 505}
+KNOWN = {200, 303, 400, 403, 404, 405, 408, 409, 413, 431, 500, 501, 503, 505}
 
 SEEDS = [
     b"GET / HTTP/1.1\r\nHost: x\r\n\r\n",
     b"GET /healthz?a=1&b=2 HTTP/1.1\r\nHost: x\r\nCookie: s=abc\r\n\r\n",
     b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello",
     b"DELETE /a/b HTTP/1.1\r\nOrigin: https://x\r\nSec-Fetch-Site: same-origin\r\n\r\n",
+    b"POST /blogs HTTP/1.1\r\nSec-Fetch-Site: same-origin\r\nCookie: sid=00\r\nContent-Length: 20\r\n\r\nslug=a-b&title=Hello",
+    b"GET /b/x/y HTTP/1.1\r\nCookie: sid=0000000000000000000000000000000000000000000000000000000000000000\r\n\r\n",
+    b"POST /edit/1 HTTP/1.1\r\nSec-Fetch-Site: same-origin\r\nContent-Length: 18\r\n\r\ntitle=a&body=%E2%82",
 ]
 TOKENS = [b"\r\n", b"\n", b"\r", b"\x00", b" ", b":", b"/", b"..", b"%2e", b"?", b"&", b"=",
           b"Content-Length: 3", b"Transfer-Encoding: chunked", b"Host: y", b"\xff", b"\t",

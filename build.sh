@@ -26,10 +26,22 @@ if [ ! -f build/sqlite3.o ] || [ vendor/sqlite/sqlite3.c -nt build/sqlite3.o ]; 
     vendor/sqlite/sqlite3.c -o build/sqlite3.o 2>/dev/null
 fi
 
+if [ ! -f build/libbearssl.a ]; then
+  echo "== bearssl"
+  mkdir -p build/bearssl
+  for f in vendor/bearssl/src/*.c vendor/bearssl/src/*/*.c; do
+    $CC -O2 -fPIE -fstack-protector-strong -Ivendor/bearssl/inc -Ivendor/bearssl/src \
+      -c "$f" -o "build/bearssl/$(echo "$f" | tr / _).o" 2>/dev/null
+  done
+  ar="$(dirname "$(command -v clang 2>/dev/null || echo /usr/bin/clang)")/llvm-ar"
+  [ -x "$ar" ] || ar="${AR:-ar}"
+  "$ar" rcs build/libbearssl.a build/bearssl/*.o
+fi
+
 echo "== server"
 # -ftrivial-auto-var-init=zero is omitted here: it makes clang run out of
 # registers on Bend's runtime (clang 19). Our standalone cores keep it.
 HARDEN="-fstack-protector-strong -D_FORTIFY_SOURCE=3 -fno-strict-aliasing -fPIE"
-$CC -std=c11 -O2 $HARDEN -Wno-everything build/server.c build/sqlite3.o \
+$CC -std=c11 -O2 $HARDEN -Wno-everything build/server.c build/sqlite3.o build/libbearssl.a \
   -lpthread -lm -pie -Wl,-z,relro,-z,now -o build/server
 echo "built build/server"

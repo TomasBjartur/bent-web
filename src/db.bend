@@ -26,6 +26,10 @@ def session_user(token: String) -> IO(U32):
 # A new session for a user; answers its token (64 hex characters).
 def session_new(user: U32) -> IO(Result<&1, &1, U32 & String, String>):
   import "./effects/db.c"
+# Ends a session (logout).
+def session_end(token: String) -> IO(Unit):
+  import "./effects/db.c"
+
 # [who, blog, role, has_post, post, post_blog, post_pub]
 def load_facts(who: U32, blog: U32, post: U32) -> IO(List<&2, U32>):
   import "./effects/db.c"

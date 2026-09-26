@@ -125,6 +125,24 @@ static void __attribute__((constructor)) session_new_use(void) {
 
 #endif
 
+#ifdef CID(session_end)
+
+// Ends a session (logout). Ill-formed tokens are ignored.
+Term session_end_run(Env e, Term *f, IoWork *w) {
+  (void)w;
+  ASSERT(app_db_ready);
+  uint8_t h[32];
+  app_token_hash(e, f[0], h);
+  (void)db_session_end(&app_db, h);
+  return term_pak(CID(Unit), 0);
+}
+
+static void __attribute__((constructor)) session_end_use(void) {
+  io_eff(CID(session_end), session_end_run, 0);
+}
+
+#endif
+
 // FACTS AND WRITES
 // ----------------
 
@@ -291,6 +309,8 @@ static const char *const page_ctypes[] = {
   "text/plain; charset=utf-8",
   "text/event-stream",
   "application/json",
+  "text/css; charset=utf-8",
+  "text/javascript; charset=utf-8",
 };
 
 // A redirect target: starts with "/", not "//", only unreserved characters

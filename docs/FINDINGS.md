@@ -2,6 +2,78 @@
 
 Results of the experiment, including negative ones. Newest first.
 
+---
+
+## 2026-09-26 — Phase 1: the secure core works end to end
+
+What exists: a strict HTTP parser, authorization, database, sessions, CSRF
+defense and pages for blogs, posts, drafts and authors. Login (passkeys)
+is not built yet; tests create sessions directly in SQLite.
+
+### Guarantees, and what each rests on
+
+| Guarantee | How | Kind |
+|---|---|---|
+| Escaped text never contains `< > " '` or controls | `html_esc_safe` | proved about the code |
+| Parsed paths never contain `.`/`..`, encoded bytes; header values never CR/LF | refinement types (`http_*_ok`) | proved about the code |
+| `Transfer-Encoding` always rejected, any case | `http_te_rejected` | proved about the code (per header line) |
+| A read header can never be set twice | `http_no_dup` | proved about the code |
+| Every Permit was allowed by the policy | `authz_permit_ok` | proved about the code |
+| Policy: anon read-only, no cross-blog writes, owner-only management, no self-removal, drafts private, members-only writes | `authz_*` | proved about the spec |
+| Cross-site POST never reaches a write; only POST writes | `route_csrf`, `route_only_post_writes` | proved about the code |
+| User text is valid scalars without controls | `text_*_ok` | proved about the code |
+| A Permit's facts are true when the write happens | `db_apply` re-check in `BEGIN IMMEDIATE` | tested (forged, stale, TOCTOU) |
+| Drafts are unreadable to non-members through any query | SQL floor on every private query | tested |
+| Owner membership survives any bug above | schema triggers | tested |
+| Head scanning and session tokens are memory safe and correct | CBMC | bounded proof (16-byte heads; all tokens) |
+
+### Numbers
+
+- 21 laws, `bend PROOF.bend` in ~0.6 s.
+- Mutation testing: 32 of 33 plausible bugs across all laws caught; the
+  one miss (members-only writes) became a new law.
+- Tests: 36 parser, 34 text, 49 end-to-end, 16 integration, C unit tests
+  under ASan/UBSan, 4 CBMC harnesses, libFuzzer, 20k-request server fuzz.
+- Throughput before the DB layer: 8,787 req/s vs 10,127 for a do-nothing
+  C server (loopback, 2 cores).
+
+### Findings
+
+- **A law is only as strong as its predicates' location.** Predicates in
+  code under test get weakened along with the code (found by mutation).
+  All predicates now live in `spec/` (human-owned) or `LAWS.bend`.
+- **Refinement types are the cheapest proofs.** Smart constructors carry a
+  proof of the spec check; invariants then hold everywhere by typing, and
+  forging one fails to type-check. Most HTTP and text laws cost ~5 lines.
+- **In-band markers were a latent draft leak.** Replaced by typed segments
+  plus an SQL floor on the body fetch.
+- **Unary `Nat` literals blow the checker's stack** (`1048576` via
+  `U32.to_nat`). Use `U32` for large limits.
+- **BearSSL v0.6 was the wrong pin**: later upstream commits fix P-256
+  carry bugs and a buffer overflow. Pinned upstream master instead.
+- **`-ftrivial-auto-var-init=zero` breaks clang on Bend's runtime** (runs
+  out of registers). Dropped for the combined build only.
+- **`head_end` had an unstated precondition**, found by a unit test and
+  now documented; the fuzzer and CBMC check the calling protocol.
+- **Lingering close is necessary**: without it, a 431 for an oversized
+  head was destroyed by a TCP reset before the client read it.
+- Bend ergonomics: definition order, no mutual recursion (pass the class
+  of the next character as an argument instead), no `let` before a
+  `match`, binder order in matches, `+`/`-` quantities. `tools/bend_order.py`
+  sorts definitions automatically.
+
+### Known gaps (to do)
+
+- Login: passkeys and email recovery.
+- Markdown rendering (bodies are escaped plain text for now).
+- The editor: local-first with a CRDT.
+- Responses and query results still `malloc` (C_STYLE wants pools).
+- Multi-core serving (`SO_REUSEPORT` is set; one process per core not yet
+  run or measured).
+- Rate limiting.
+- Deterministic simulation.
+
+
 Machine for all numbers below: cloud container, 2 vCPUs (x86-64), 3 GB RAM.
 Server pinned to core 0, load generator (`spike/loadgen`) to core 1, loopback,
 `Connection: close`, 32 connections, 5 s. Bend 2.0.29, clang 19.1.7.
