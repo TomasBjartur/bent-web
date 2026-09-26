@@ -4,7 +4,10 @@
 # One-time root steps are in deploy/README.md.
 set -eu
 cd "$(dirname "$0")/.."
-HOST="${BENT_HOST:-172-236-228-71.sslip.io}"
+HOST="${BENT_HOST:-slopstack.tomasbjartur.com}"
+# Test deployment without a mail sender: sign-up goes straight to the
+# passkey (no email verification, no recovery). Set to 0 once mail works.
+DIRECT="${BLOG_SIGNUP_DIRECT:-1}"
 ./build.sh
 mkdir -p "$HOME/bent" "$HOME/bent-data" "$HOME/.config/systemd/user"
 chmod 700 "$HOME/bent-data"
@@ -16,6 +19,7 @@ BLOG_DB=$HOME/bent-data/blog.db
 BLOG_ORIGIN=https://$HOST
 BLOG_RP_ID=$HOST
 BENT_HOST=$HOST
+BLOG_SIGNUP_DIRECT=$DIRECT
 BEND_NO_TELEMETRY=1
 ENV
 install -m 644 deploy/bent.service deploy/caddy.service "$HOME/.config/systemd/user/"

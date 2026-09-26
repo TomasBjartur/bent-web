@@ -506,7 +506,19 @@ static int32_t auth_mail_text(char *out, size_t cap, uint32_t purpose, DbText or
   return n > 0 && (size_t)n < cap ? n : -1;
 }
 
+static AuthResult auth_token_issue(Db *db, uint32_t purpose, DbText email, DbText name, DbText origin, uint64_t now_ms,
+                                   uint8_t *token_out);
+
 AuthResult auth_email_token(Db *db, uint32_t purpose, DbText email, DbText name, DbText origin, uint64_t now_ms) {
+  return auth_token_issue(db, purpose, email, name, origin, now_ms, NULL);
+}
+
+AuthResult auth_signup_direct(Db *db, DbText email, DbText name, DbText origin, uint64_t now_ms, uint8_t token_hex[64]) {
+  return auth_token_issue(db, AUTH_SIGNUP, email, name, origin, now_ms, token_hex);
+}
+
+static AuthResult auth_token_issue(Db *db, uint32_t purpose, DbText email, DbText name, DbText origin, uint64_t now_ms,
+                                   uint8_t *token_out) {
   ASSERT(purpose == AUTH_SIGNUP || purpose == AUTH_RECOVER);
   if (email.len == 0u || email.len > 254u || name.len > 64u || origin.len == 0u || origin.len > 200u) {
     return AUTH_INVALID;
@@ -530,6 +542,7 @@ AuthResult auth_email_token(Db *db, uint32_t purpose, DbText email, DbText name,
   auth_sha256(raw, 32, hash);
   token_encode(raw, hex);
   explicit_bzero(raw, sizeof raw);
+  if (token_out != NULL) memcpy(token_out, hex, sizeof hex);
   st = db->st[ST_TOKEN_NEW];
   sqlite3_bind_blob(st, 1, hash, 32, SQLITE_TRANSIENT);
   sqlite3_bind_int64(st, 2, purpose);

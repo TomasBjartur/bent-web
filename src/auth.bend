@@ -23,15 +23,26 @@ import ./webauthn.bend as WA
 # -------------
 # origin: e.g. "https://blog.example" (what browsers report).
 # rp_id: e.g. "blog.example". rp_hash: SHA-256 of rp_id, hex.
+# direct: test mode without a mail sender (BLOG_SIGNUP_DIRECT=1): sign-up
+# goes straight to creating a passkey; the email is not verified and there
+# is no recovery.
 type Conf is Data:
-  Conf{origin: String, rp_id: String, rp_hash: String}
+  Conf{origin: String, rp_id: String, rp_hash: String, direct: Bool}
 
 def origin(+c: Conf) -> String:
   match c:
-    case Conf{+o, +r, +h}:
+    case Conf{+o, +r, +h, +d}:
       o
 
+def direct(+c: Conf) -> Bool:
+  match c:
+    case Conf{+o, +r, +h, +d}:
+      d
+
 def auth_email(purpose: U32, email: String, name: String, origin: String) -> IO(U32):
+  import "./effects/auth.c"
+
+def auth_signup_direct(email: String, name: String, origin: String) -> IO(Result<&1, &1, U32 & String, String>):
   import "./effects/auth.c"
 
 def auth_token_info(token: String) -> IO(List<&2, String>):
@@ -60,18 +71,18 @@ def auth_login_raw(challenge: String, id: String, msg: String, sig: String) -> I
 
 def expect(+c: Conf) -> WSpec.Expect:
   match c:
-    case Conf{+o, +r, +h}:
+    case Conf{+o, +r, +h, +d}:
       WSpec.Expect{o, h}
 
 def rp_id(+c: Conf) -> String:
   match c:
-    case Conf{+o, +r, +h}:
+    case Conf{+o, +r, +h, +d}:
       r
 
-def conf(+origin: String, +rp_id: String) -> IO(Conf):
+def conf(+origin: String, +rp_id: String, +direct: Bool) -> IO(Conf):
   do IO<Conf>:
     +h : String <- sha256_hex(B.hex(rp_id))
-    return Conf{origin, rp_id, h}
+    return Conf{origin, rp_id, h, direct}
 
 # RESPONSES
 # ---------
@@ -134,12 +145,30 @@ def h_signup_page(s: Socket, +token: String, +who: U32) -> IO(Unit):
 def h_login_page(s: Socket, +token: String, +who: U32) -> IO(Unit):
   html(s, token, 200, U32.is_ne(who, 0), "Log in", login_page())
 
+def h_signup_direct(s: Socket, +token: String, r: Result<&1, &1, U32 & String, String>) -> IO(Unit):
+  match r:
+    case Done{+t}:
+      do IO<Unit>:
+        x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 303, 0, one(""), Nil{}, token, "", "/verify?t=" ++ t)
+        done(x)
+    case Fail{err}:
+      html(s, token, 409, False{}, "Not available", "<h1>That did not work</h1><p>This email may already have an account, or too many attempts were made. Try again later.</p>")
+
+def h_signup3(b: Bool, s: Socket, +c: Conf, +token: String, +email: String, +name: String) -> IO(Unit):
+  match b:
+    case True{}:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, String> <- auth_signup_direct(email, name, origin(c))
+        h_signup_direct(s, token, r)
+    case False{}:
+      do IO<Unit>:
+        code : U32 <- auth_email(1, email, name, origin(c))
+        html(s, token, 200, False{}, "Check your email", sent_page())
+
 def h_signup2(s: Socket, +c: Conf, +token: String, em: Maybe<&2, Text.Email>, nm: Maybe<&2, Text.Name>) -> IO(Unit):
   match em nm:
     case Some{x} Some{y}:
-      do IO<Unit>:
-        code : U32 <- auth_email(1, Text.Email.text(x), Text.Name.text(y), origin(c))
-        html(s, token, 200, False{}, "Check your email", sent_page())
+      h_signup3(direct(c), s, c, token, Text.Email.text(x), Text.Name.text(y))
     case _ _:
       html(s, token, 400, False{}, "Error", Pages.error_body(400))
 

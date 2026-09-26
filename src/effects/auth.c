@@ -219,3 +219,33 @@ static void __attribute__((constructor)) auth_login_raw_use(void) {
 }
 
 #endif
+
+#ifdef CID(auth_signup_direct)
+
+// f: email, name, origin. Answers the sign-up token (hex), or fails with
+// the AuthResult code. Only used when BLOG_SIGNUP_DIRECT=1.
+Term auth_signup_direct_run(Env e, Term *f, IoWork *w) {
+  (void)w;
+  ASSERT(app_db_ready);
+  u64 n1 = 0, n2 = 0, n3 = 0;
+  char *email = io_cstr(e, f[0], &n1), *name = io_cstr(e, f[1], &n2), *origin = io_cstr(e, f[2], &n3);
+  uint8_t hex[64];
+  AuthResult r = AUTH_INVALID;
+  if (n1 <= 254u && n2 <= 64u && n3 <= 200u) {
+    r = auth_signup_direct(&app_db, (DbText){email, (uint32_t)n1}, (DbText){name, (uint32_t)n2},
+                           (DbText){origin, (uint32_t)n3}, app_now_ms(), hex);
+  }
+  free(email);
+  free(name);
+  free(origin);
+  if (r != AUTH_OK) return io_fail(e, (uint32_t)r, NULL);
+  Term s = io_str(e, (const char *)hex, 64);
+  explicit_bzero(hex, sizeof hex);
+  return io_done(e, s);
+}
+
+static void __attribute__((constructor)) auth_signup_direct_use(void) {
+  io_eff(CID(auth_signup_direct), auth_signup_direct_run, 0);
+}
+
+#endif

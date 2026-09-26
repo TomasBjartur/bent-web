@@ -20,9 +20,13 @@ sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
 deploy/install.sh            # builds, installs to ~/bent, restarts
 ```
 
-The site is `https://172-236-228-71.sslip.io` (a wildcard DNS name that
-resolves to this IP; passkeys need a domain, not an IP). Set `BENT_HOST`
-to use a real domain once DNS points here.
+The site is `https://slopstack.tomasbjartur.com` (DNS: A record
+`slopstack` -> 172.236.228.71). Passkeys are bound to this domain.
+
+**Test mode:** `BLOG_SIGNUP_DIRECT=1` (the default in install.sh) skips the
+email step: sign-up goes straight to creating a passkey. Emails are not
+verified and there is no account recovery. Set it to 0 once a mail sender
+exists.
 
 ## Operations
 

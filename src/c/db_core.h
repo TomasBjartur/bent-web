@@ -201,6 +201,11 @@ typedef enum {
 // account enumeration). At most EMAIL_TOKENS_PER_HOUR per email.
 AuthResult auth_email_token(Db *db, uint32_t purpose, DbText email, DbText name, DbText origin, uint64_t now_ms);
 
+// As auth_email_token for AUTH_SIGNUP, and also writes the token (64 hex
+// characters) to token_hex: for test deployments with no mail sender
+// (BLOG_SIGNUP_DIRECT), where sign-up continues straight to the passkey.
+AuthResult auth_signup_direct(Db *db, DbText email, DbText name, DbText origin, uint64_t now_ms, uint8_t token_hex[64]);
+
 // Whether an email token is valid (unused, unexpired); fills purpose.
 AuthResult auth_token_check(Db *db, const uint8_t token_hash[32], uint64_t now_ms, uint32_t *purpose);
 
