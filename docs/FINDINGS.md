@@ -4,6 +4,40 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-26: Profiling: strict evaluation and appends
+
+The first profile of the server (`perf`, DWARF call stacks) under the
+load test's mix. Details and numbers in docs/LOAD.md; 344 -> ~510-570
+req/s on one core.
+
+- **Negative (Bend): strictness hides waste.** A handler passed both the
+  full page and the "load more" fragment to a function that sends one of
+  them. In a lazy language that is free; Bend is strict, so every
+  uncached feed page rendered its 30 rows twice. Nothing at the call site
+  looks wrong. Fix: pass functions (thunks). Rule: never pass a rendered
+  alternative as an argument; pass a function.
+- **Negative (Bend): `++` copies its left side.** `a ++ b` walks and
+  copies `a`. Templates were right-nested (cheap), but a big finished
+  string was the left side of an append at each wrapper, so a 15 KB feed
+  was copied four times, with an allocation and a free per character.
+  Fix: renderers take the text that follows them (`f(x, rest)`, as the
+  proved escaper always did), and `e(x) ++ rest` became `Html.esc(x,
+  rest)` (135 places, mechanically). Feed pages: 10 ms -> 2.2 ms. The
+  escaper itself was not the problem (a benchmark: ~20 ns per character).
+- **Converting a page to C costs as much as rendering it.** `io_cstr`
+  (Bend's runtime) walks the cons list one cell at a time: ~15% of all
+  time. This is the design rule ("bulk text never becomes a Bend String")
+  measured again; what remains is template chrome and comment metadata.
+- **Cache coverage, not cache speed.** The most-read posts had the most
+  comments and so were over the cache's 64 KiB slot size: never cached.
+  And any save of any published post dropped every cached post page. Now
+  big pages have their own table, and a post write drops one page. A test
+  checks each write is visible at once to a signed-out reader, and was
+  mutation-tested (removing the edit case makes it fail).
+- SQLite's default page cache (2 MB) made 13% of the time `pread`.
+
+---
+
 ## 2026-09-26: Features, a load test, live comments
 
 **Load test** (docs/LOAD.md): 15 -> 450 req/s on 100k posts after eight

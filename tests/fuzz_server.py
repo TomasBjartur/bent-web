@@ -11,9 +11,9 @@ rng = random.Random(int(sys.argv[3]) if len(sys.argv) > 3 else 1)
 KNOWN = {200, 303, 400, 403, 404, 405, 408, 409, 413, 431, 500, 501, 503, 505}
 
 SEEDS = [
-    b"GET / HTTP/1.1\r\nHost: x\r\n\r\n",
-    b"GET /healthz?a=1&b=2 HTTP/1.1\r\nHost: x\r\nCookie: s=abc\r\n\r\n",
-    b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello",
+    b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    b"GET /healthz?a=1&b=2 HTTP/1.1\r\nHost: localhost\r\nCookie: s=abc\r\n\r\n",
+    b"POST /p HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello",
     b"DELETE /a/b HTTP/1.1\r\nOrigin: https://x\r\nSec-Fetch-Site: same-origin\r\n\r\n",
     b"POST /blogs HTTP/1.1\r\nSec-Fetch-Site: same-origin\r\nCookie: sid=00\r\nContent-Length: 20\r\n\r\nslug=a-b&title=Hello",
     b"GET /b/x/y HTTP/1.1\r\nCookie: sid=0000000000000000000000000000000000000000000000000000000000000000\r\n\r\n",

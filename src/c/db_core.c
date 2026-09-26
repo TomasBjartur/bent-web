@@ -489,6 +489,9 @@ int32_t db_open(Db *db, const char *path) {
     "PRAGMA synchronous = NORMAL;"
     "PRAGMA foreign_keys = ON;"
     "PRAGMA cell_size_check = ON;"
+    // 128 MiB of page cache (the default is 2 MB): the one connection
+    // serves every read, and a page read from the OS is a syscall.
+    "PRAGMA cache_size = -131072;"
     "PRAGMA optimize = 0x10002;";
   if (sqlite3_exec(db->conn, pragmas, NULL, NULL, NULL) != SQLITE_OK) return -1;
   if (sqlite3_exec(db->conn, DB_SCHEMA, NULL, NULL, NULL) != SQLITE_OK) return -1;

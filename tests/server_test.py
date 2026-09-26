@@ -43,10 +43,10 @@ def check(name, got, want):
     fails += 0 if ok else 1
     print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"   got {got!r} want {want!r}"))
 
-check("simple GET", status(raw(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")), 200)
-check("head split over 3 packets", status(raw(None, [b"GET /hea", b"lthz HTTP/1.1\r\nHo", b"st: x\r\n\r\n"], delay=0.05)), 200)
-check("CRLFCRLF split across packets", status(raw(None, [b"GET / HTTP/1.1\r\nHost: x\r\n\r", b"\n"], delay=0.05)), 200)
-check("bare LF", status(raw(b"GET / HTTP/1.1\nHost: x\n\n\r\n\r\n")), 400)
+check("simple GET", status(raw(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")), 200)
+check("head split over 3 packets", status(raw(None, [b"GET /hea", b"lthz HTTP/1.1\r\nHo", b"st: localhost\r\n\r\n"], delay=0.05)), 200)
+check("CRLFCRLF split across packets", status(raw(None, [b"GET / HTTP/1.1\r\nHost: localhost\r\n\r", b"\n"], delay=0.05)), 200)
+check("bare LF", status(raw(b"GET / HTTP/1.1\nHost: localhost\n\n\r\n\r\n")), 400)
 check("NUL in path", status(raw(b"GET /a\x00b HTTP/1.1\r\n\r\n")), 400)
 check("invalid UTF-8 in header", status(raw(b"GET / HTTP/1.1\r\nX-A: \xff\xfe\r\n\r\n")), 400)
 check("POST without Sec-Fetch-Site -> 403 (CSRF law)", status(raw(b"POST /logout HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello")), 403)

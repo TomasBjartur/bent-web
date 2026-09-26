@@ -21,17 +21,57 @@ Tools: `tests/load/make_data.py` (synthetic database), `tests/load/make_mix.py`
 
 | mix | conns | req/s | post p50 / p99 ms | blog p50 ms | search p50 ms | like p50 ms | errors | RSS MB |
 |---|---|---|---|---|---|---|---|---|
-| normal | 1 | **437** | 0.85 / 11.9 | 5.4 | 12.6 | 0.31 | 0 | 61 |
-| normal | 8 | **454** | 16.19 / 42.1 | 18.6 | 24.0 | 15.26 | 0 | 73 |
-| normal | 32 | **455** | 68.75 / 115.6 | 71.0 | 77.2 | 69.33 | 0 | 80 |
-| normal | 128 | **442** | 287.19 / 383.2 | 290.1 | 300.5 | 278.51 | 0 | 85 |
-| normal | 512 | **440** | 1136.54 / 1365.7 | 1139.6 | 1138.5 | 1140.01 | 0 | 88 |
-| writes_x5 | 32 | **436** | 67.04 / 118.5 | 73.2 | 79.3 | 65.03 | 0 | 91 |
+| normal | 1 | **454** | 1.01 / 16.9 | 2.5 | 13.4 | 0.46 | 0 | 214 |
+| normal | 8 | **485** | 12.14 / 50.8 | 12.8 | 22.9 | 11.52 | 0 | 235 |
+| normal | 32 | **511** | 58.13 / 123.2 | 58.5 | 68.5 | 59.99 | 0 | 243 |
+| normal | 128 | **518** | 239.76 / 377.0 | 243.3 | 255.7 | 241.32 | 0 | 250 |
+| normal | 512 | **527** | 953.77 / 1191.4 | 951.1 | 972.4 | 960.27 | 0 | 255 |
+| writes_x5 | 32 | **485** | 58.41 / 125.4 | 61.0 | 70.6 | 56.14 | 0 | 258 |
 
 Throughput is flat from 1 to 512 concurrent connections: the server is
-CPU-bound at ~2.2 ms per request on average, and latency grows with the
-queue, as it should, with no errors, no timeouts and no memory growth. The
-page cache holds the hot pages; the rest is rendering.
+CPU-bound at ~1.9 ms per request on average, and latency grows with the
+queue, with no errors and no timeouts. Runs on this VM vary by about 10%
+(the same build did 574 req/s at 32 connections in another run). RSS is
+higher than before by design: SQLite's page cache is now 128 MiB.
+
+### Second round (profiled with `perf`)
+
+The Datastar work (live comments, forms that patch in place) made post
+pages heavier (19.5 KB to 24.7 KB) and the same test fell from 455 to
+**344 req/s**. Profiling the server under this mix (`perf record`, with
+DWARF call stacks, since Bend's C has no frame pointers) found, in order
+of size:
+
+| change | req/s at 32 conns |
+|---|---|
+| start (after the Datastar pages) | 344 |
+| feed pages rendered once, appends removed (below) | 344 (feeds 10 ms to 2.2 ms each) |
+| big pages cached; a post edit drops only that post's page | 476 |
+| SQLite page cache 2 MB to 128 MiB | 511-574 |
+
+- **Every uncached feed page was rendered twice.** A handler passed both
+  the full page and the "load more" fragment to one function that sends
+  one of them; Bend is strict, so both were built. Now they are passed as
+  functions (`feed_send`). The single largest cost for feeds, and
+  invisible in the code: nothing looks wrong at the call site.
+- **Appends copy their left side.** `a ++ b` copies `a` (a cons list).
+  The rows of a feed were built right-nested (cheap), but the finished
+  15 KB list was then the left side of `++` at each wrapper
+  (`items ++ "</ul>"`, `feed ++ pager`, `body ++ layout_bottom()`): four
+  copies, each allocating and later freeing a cell per character. Feed
+  renderers now take the text that follows them (`recent_items(rows,
+  rest)`), as the escaper always did, and `e(x) ++ rest` became
+  `Html.esc(x, rest)` everywhere (135 places). Feed pages went from 10 ms
+  to 2.2 ms (the same page with no rows at all is 1.5-1.8 ms).
+- **Popular posts were never cached.** Cache slots held 64 KiB, and a post
+  with hundreds of comments is ~160 KB, so the most-read posts were
+  rendered on every view (13-20 ms each). A second table of 128 slots of
+  1 MiB holds them (0.4 ms from the cache). And each save of any published
+  post moved the global write generation, which dropped every cached post
+  page; now a write to a post drops only that post's page, and only
+  blog-wide changes move the post pages' generation (`app_post_gen`).
+- **SQLite read from the OS.** 13% of the time was `pread`: the default
+  page cache (2 MB) is small next to a 1.5 GB database. Now 128 MiB.
 
 ## How it got there (the first run did 15 req/s)
 
@@ -77,16 +117,20 @@ server while it was still migrating (it now waits for `/healthz`).
 
 ## What limits it now
 
-- **One core.** The server has one event loop; the machine has two
-  cores, one used by the load generator. Every request type is now in the
-  low milliseconds, so the next step is more processes (SO_REUSEPORT and
-  one database, with the cache invalidated across processes via SQLite's
-  `data_version`), not more query work.
-- **Rendering in Bend** (~90 ns per output character): an uncached blog
-  page is ~5 ms, a post page ~1 ms, a post with 300 comments ~12 ms. Popular
-  posts with many comments are re-rendered after every like or comment.
-  Options: paginate comments (show 100), or render comment sections per
-  thread and splice them from C like bodies.
-- **Writes are cheap**: likes and comments ~0.3-0.5 ms, saves ~6 ms
-  (Markdown rendering and search indexing), all serialized by SQLite's
-  single writer without errors at 5x the normal write rate.
+- **Rendering through Bend Strings**: ~40% of the time is Bend building
+  pages, ~15% converting them to C strings (`io_cstr` walks the cons list
+  one cell at a time). What is rendered is mostly signed-out post pages
+  of the long tail (20,000 distinct posts in 30,000 views: they miss any
+  cache) and signed-in post pages (never cached). The next step is fewer
+  characters through Bend: static template chunks spliced by C like
+  bodies, and per-comment HTML kept at write time.
+- **SQLite** (~30%): the comment thread query (a recursive CTE per post
+  page) and one body lookup per comment; search (FTS5) is 2.5% of
+  requests and ~8% of the time.
+- **One core.** The server has one event loop; the machine has two cores,
+  one used by the load generator (in production, one used by Caddy).
+- **Comments past 300** on one post are not shown (the thread query is
+  capped). They need a "more comments" link.
+- **Writes are cheap**: likes and comments ~0.5 ms, saves ~6 ms (Markdown
+  rendering and search indexing), all serialized by SQLite's single
+  writer without errors at 5x the normal write rate.

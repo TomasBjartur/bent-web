@@ -186,7 +186,7 @@ const char *db_image_type(const uint8_t *p, uint32_t n);
 // Can this successful write change a public (cacheable) page? Blog
 // edits and deletions, publishing and unpublishing, and edits or deletions
 // of published posts. Drafts, schedules, authors, likes and comments
-// (shown only on uncached post pages) cannot.
+// (shown only on post pages: see db_write_is_post_page) cannot.
 static inline int db_write_is_public(const DbFacts *f, const DbWrite *w) {
   switch (w->kind) {
     case A_EDIT_BLOG:
@@ -197,6 +197,28 @@ static inline int db_write_is_public(const DbFacts *f, const DbWrite *w) {
     case A_EDIT_POST:
     case A_DELETE_POST:
       return f->post_pub != 0u;
+    default:
+      return 0;
+  }
+}
+
+// Can this successful write change every post page of a blog (its title
+// is on each)? Then all cached post pages are dropped.
+static inline int db_write_is_blog_wide(const DbWrite *w) {
+  return w->kind == A_EDIT_BLOG || w->kind == A_DELETE_BLOG;
+}
+
+// Does this successful write change its post's page? Then that page is
+// dropped from the cache.
+static inline int db_write_is_post_page(const DbWrite *w) {
+  switch (w->kind) {
+    case A_LIKE_POST:
+    case A_COMMENT:
+    case A_DELETE_COMMENT:
+    case A_EDIT_POST:
+    case A_PUBLISH_POST:
+    case A_DELETE_POST:
+      return 1;
     default:
       return 0;
   }

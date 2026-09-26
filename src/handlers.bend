@@ -157,8 +157,8 @@ def first_row(+rows: List<&2, List<&2, String>>) -> List<&2, String>:
       r
 
 # A signed-out visitor's post page is the same for all of them: cached
-# under p0:<id> (dropped on each like or comment, and with every write to
-# public pages).
+# under p0:<id> (dropped by each write to the post, its likes or comments,
+# and by blog-wide changes: see src/effects/db.c app_post_gen).
 def h_post5(anon: Bool, s: Socket, +token: String, +pid: U32, +pg: Pages.Page) -> IO(Unit):
   match anon:
     case True{}:
@@ -1196,17 +1196,20 @@ def frag_key(+frag: Bool) -> String:
     case False{}:
       ""
 
-def feed_send(frag: Bool, s: Socket, +key: String, +title: String, +who: U32, +page: String, +more: String) -> IO(Unit):
+# page and more are functions, so only the one sent is rendered (Bend is
+# strict); page renders the body in front of the text it is given, so the
+# rows are never copied by an append.
+def feed_send(frag: Bool, s: Socket, +key: String, +title: String, +who: U32, page: String -> String, more: Unit -> String) -> IO(Unit):
   match frag:
     case True{}:
-      cache_send_t(s, key, 2, more)
+      cache_send_t(s, key, 2, more(Unit{}))
     case False{}:
-      cache_send(s, key, Pages.layout(title, signed(who), page))
+      cache_send(s, key, Pages.layout_top(title, signed(who)) ++ page(Pages.layout_bottom()))
 
 def h_home2(s: Socket, +token: String, +who: U32, +page: U32, +frag: Bool) -> IO(Unit):
   do IO<Unit>:
     +rows : List<&2, List<&2, String>> <- Db.query(Db.q_recent_public(), 0, page_offset(page), "", token)
-    feed_send(frag, s, cache_key("h", who, page_key(page) ++ frag_key(frag)), "Home", who, Pages.home_page(rows, signed(who), page), Pages.feed_more("/", page, rows, Pages.recent_items(Pages.rows_take(rows, 30n))))
+    feed_send(frag, s, cache_key("h", who, page_key(page) ++ frag_key(frag)), "Home", who, k => Pages.home_page(rows, signed(who), page, k), u => Pages.feed_more("/", page, rows, j => Pages.recent_items(Pages.rows_take(rows, 30n), j)))
 
 def h_home(s: Socket, +token: String, +who: U32, +query: String) -> IO(Unit):
   do IO<Unit>:
@@ -1220,7 +1223,7 @@ def h_blog2(s: Socket, +token: String, +who: U32, +page: U32, +frag: Bool, +blog
     case Con{+r, t}:
       do IO<Unit>:
         +rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_public(), num(Pages.col(r, 0n)), page_offset(page), "", token)
-        feed_send(frag, s, cache_key("b", who, Pages.col(r, 2n) ++ (page_key(page) ++ frag_key(frag))), Pages.col(r, 1n), who, Pages.blog_page(Pages.col(r, 2n), Pages.col(r, 1n), Pages.col(r, 3n), page, rows), Pages.feed_more("/b/" ++ Pages.col(r, 2n), page, rows, Pages.post_items(Pages.col(r, 2n), Pages.rows_take(rows, 30n))))
+        feed_send(frag, s, cache_key("b", who, Pages.col(r, 2n) ++ (page_key(page) ++ frag_key(frag))), Pages.col(r, 1n), who, k => Pages.blog_page(Pages.col(r, 2n), Pages.col(r, 1n), Pages.col(r, 3n), page, rows, k), u => Pages.feed_more("/b/" ++ Pages.col(r, 2n), page, rows, j => Pages.post_items(Pages.col(r, 2n), Pages.rows_take(rows, 30n), j)))
 
 def h_blog3(s: Socket, +token: String, +who: U32, +slug: String, +page: U32, +frag: Bool) -> IO(Unit):
   do IO<Unit>:
@@ -1235,7 +1238,7 @@ def h_blog(s: Socket, +token: String, +who: U32, +slug: String, +query: String) 
 def h_tag2(s: Socket, +token: String, +who: U32, +tag: String, +page: U32, +frag: Bool) -> IO(Unit):
   do IO<Unit>:
     +rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_tag(), 0, page_offset(page), tag, token)
-    feed_send(frag, s, cache_key("t", who, tag ++ (page_key(page) ++ frag_key(frag))), "#" ++ tag, who, Pages.tag_page(tag, page, rows), Pages.feed_more("/t/" ++ tag, page, rows, Pages.recent_items(Pages.rows_take(rows, 30n))))
+    feed_send(frag, s, cache_key("t", who, tag ++ (page_key(page) ++ frag_key(frag))), "#" ++ tag, who, k => Pages.tag_page(tag, page, rows, k), u => Pages.feed_more("/t/" ++ tag, page, rows, j => Pages.recent_items(Pages.rows_take(rows, 30n), j)))
 
 def h_tag(s: Socket, +token: String, +who: U32, +tag: String, +query: String) -> IO(Unit):
   do IO<Unit>:
@@ -1249,7 +1252,7 @@ def h_author3(s: Socket, +token: String, +who: U32, +uid: U32, +page: U32, +frag
     case Con{+r, t}:
       do IO<Unit>:
         +rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_by_author(), uid, page_offset(page), "", token)
-        feed_send(frag, s, cache_key("u", who, U32.show(uid) ++ (page_key(page) ++ frag_key(frag))), Pages.col(r, 0n), who, Pages.author_page(U32.show(uid), Pages.col(r, 0n), Pages.col(r, 1n), page, rows), Pages.feed_more("/u/" ++ U32.show(uid), page, rows, Pages.recent_items(Pages.rows_take(rows, 30n))))
+        feed_send(frag, s, cache_key("u", who, U32.show(uid) ++ (page_key(page) ++ frag_key(frag))), Pages.col(r, 0n), who, k => Pages.author_page(U32.show(uid), Pages.col(r, 0n), Pages.col(r, 1n), page, rows, k), u => Pages.feed_more("/u/" ++ U32.show(uid), page, rows, j => Pages.recent_items(Pages.rows_take(rows, 30n), j)))
 
 def h_author2(s: Socket, +token: String, +who: U32, +uid: U32, +page: U32, +frag: Bool) -> IO(Unit):
   do IO<Unit>:

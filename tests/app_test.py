@@ -358,7 +358,21 @@ def run(dbpath):
     check("cache: unpublished post gone from home", "Cache probe" not in req("GET", "/")[2])
     check("cache: and from its blog page", "Cache probe" not in req("GET", "/b/bob-s-great-blog")[2])
     req("POST", f"/edit/{cpid}", b, {"title": "Cache probe 2", "body": "x", "action": "publish"})
+    # A signed-out visitor's post page is cached too, and dropped by each
+    # write to that post (not by writes elsewhere).
+    purl = "/b/bob-s-great-blog/cache-probe"
+    st, _, body, _ = req("GET", purl)
+    req("GET", purl)
+    check("cache: post page served", st == 200 and "Cache probe 2" in body, st)
+    req("POST", f"/edit/{cpid}", b, {"title": "Cache probe 3", "body": "fresh words"})
+    body = req("GET", purl)[2]
+    check("cache: edited post page at once", "Cache probe 3" in body and "fresh words" in body)
+    req("POST", f"/edit/{cpid}/unpublish", b)
+    check("cache: unpublished post page gone at once", req("GET", purl)[0] == 404)
+    req("POST", f"/edit/{cpid}", b, {"title": "Cache probe 4", "body": "x", "action": "publish"})
+    check("cache: republished post page back", "Cache probe 4" in req("GET", purl)[2])
     req("POST", f"/edit/{cpid}/delete", b)
+    check("cache: deleted post page gone at once", req("GET", purl)[0] == 404)
     check("cache: deleted post gone", "Cache probe" not in req("GET", "/")[2] and "Cache probe" not in req("GET", "/b/bob-s-great-blog")[2])
     anon, signed_in = req("GET", "/")[2], req("GET", "/", b)[2]
     check("cache: anonymous home has no Log out", "Log out" not in anon and "Log in" in anon)

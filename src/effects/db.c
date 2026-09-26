@@ -25,6 +25,10 @@
 // One process owns the database; several would need a shared counter
 // (PRAGMA data_version).
 static uint64_t app_write_gen = 1;
+// Post pages (keys "p0:<id>") are valid at app_post_gen: a write to one post
+// drops only that post's page, and only blog-wide changes (a blog's title,
+// a blog's deletion, scheduled publishing) move this.
+static uint64_t app_post_gen = 1;
 static void page_cache_drop(const char *k, u64 n);
 static void live_wake(uint32_t post);
 static void live_init(void);
@@ -48,7 +52,10 @@ Term tick_run(Env e, Term *f, IoWork *w) {
   uint64_t now = app_now_ms();
   if (now >= app_next_tick) {
     app_next_tick = now + app_tick_ms;
-    if (db_publish_due(&app_db, now) > 0) app_write_gen++;
+    if (db_publish_due(&app_db, now) > 0) {
+      app_write_gen++;
+      app_post_gen++;
+    }
   }
   return term_pak(CID(Unit), 0);
 }
@@ -199,11 +206,13 @@ Term apply_raw_run(Env e, Term *f, IoWork *w) {
     uint32_t id = 0;
     DbResult res = db_apply(&app_db, h, app_now_ms(), &x, &wr, &id);
     if (res == DB_OK && db_write_is_public(&x, &wr)) app_write_gen++;
+    if (res == DB_OK && db_write_is_blog_wide(&wr)) app_post_gen++;
     // A new comment wakes whoever is waiting for this post's comments.
     if (res == DB_OK && wr.kind == A_COMMENT && x.has_post) live_wake(x.post);
-    // A like or comment changes only that post's page (cached for
-    // signed-out visitors under "p0:<post id>").
-    if (res == DB_OK && (wr.kind == A_LIKE_POST || wr.kind == A_COMMENT || wr.kind == A_DELETE_COMMENT) && x.has_post) {
+    // A like, a comment, or an edit, publication or deletion of a post
+    // changes only that post's page (cached for signed-out visitors under
+    // "p0:<post id>").
+    if (res == DB_OK && db_write_is_post_page(&wr) && x.has_post) {
       char k[32];
       int kn = snprintf(k, sizeof k, "p0:%u", x.post);
       ASSERT(kn > 0 && (size_t)kn < sizeof k);
@@ -906,28 +915,114 @@ static void __attribute__((constructor)) dns_txt_has_use(void) {
 // with the same key. Handlers put everything a page depends on into its
 // key (the path, and whether someone is signed in: the header differs);
 // pages that depend on who is asking (drafts, Edit links, dashboards) are
-// never cached. Entries are valid only at the write generation they were
-// stored at.
+// never cached. Entries are valid only at the generation they were stored
+// at: app_write_gen for feeds, app_post_gen for post pages (which a write
+// to one post drops one by one instead).
 // Direct-mapped: a key's slot is its hash; a new entry replaces the old.
 // 4096 slots of at most 64 KiB: 256 MiB of address space, touched (and so
 // resident) only as pages are cached. Bigger pages are not cached.
+// Two direct-mapped tables: 4096 slots of at most 64 KiB (256 MiB of
+// address space) and, for long pages such as a post with hundreds of
+// comments, 128 slots of at most 1 MiB (128 MiB). Both are touched (and so
+// resident) only as pages are cached. Bigger pages are not cached.
 #define PAGE_CACHE_SLOTS 4096u
+#define PAGE_CACHE_BIG_SLOTS 128u
 #define PAGE_CACHE_KEY_MAX 96u
 #define PAGE_CACHE_BYTES (64u * 1024u)
+#define PAGE_CACHE_BIG_BYTES (1024u * 1024u)
+_Static_assert(PAGE_CACHE_BYTES < PAGE_CACHE_BIG_BYTES, "big slots hold bigger pages");
 
 typedef struct {
   uint64_t gen;  // 0: empty
   uint32_t key_len, len, ctype;
   char key[PAGE_CACHE_KEY_MAX];
+} PageCacheHead;
+
+typedef struct {
+  PageCacheHead h;
   char bytes[PAGE_CACHE_BYTES];
 } PageCacheSlot;
 
-static PageCacheSlot page_cache[PAGE_CACHE_SLOTS];
+typedef struct {
+  PageCacheHead h;
+  char bytes[PAGE_CACHE_BIG_BYTES];
+} PageCacheBigSlot;
 
-static uint32_t page_cache_slot(const char *k, u64 n) {
+static PageCacheSlot page_cache[PAGE_CACHE_SLOTS];
+static PageCacheBigSlot page_cache_big[PAGE_CACHE_BIG_SLOTS];
+
+static uint32_t page_cache_hash(const char *k, u64 n) {
+  ASSERT(n <= PAGE_CACHE_KEY_MAX);
   uint32_t h = 2166136261u;
   for (u64 i = 0; i < n; i++) h = (h ^ (uint8_t)k[i]) * 16777619u;
-  return h % PAGE_CACHE_SLOTS;
+  return h;
+}
+
+// The generation a key's entry must have: post pages have their own.
+static uint64_t page_cache_gen(const char *k, u64 n) {
+  ASSERT(app_write_gen > 0u && app_post_gen > 0u);
+  return n > 3u && memcmp(k, "p0:", 3) == 0 ? app_post_gen : app_write_gen;
+}
+
+static int page_cache_is(const PageCacheHead *h, const char *k, u64 n, uint64_t gen) {
+  ASSERT(n > 0u && n <= PAGE_CACHE_KEY_MAX);
+  return h->gen == gen && h->key_len == n && memcmp(h->key, k, n) == 0;
+}
+
+// The entry for key (valid now), or NULL; bytes gets its body.
+static const PageCacheHead *page_cache_find(const char *k, u64 n, const char **bytes) {
+  ASSERT(n > 0u && n <= PAGE_CACHE_KEY_MAX);
+  uint32_t h = page_cache_hash(k, n);
+  uint64_t gen = page_cache_gen(k, n);
+  PageCacheSlot *c = &page_cache[h % PAGE_CACHE_SLOTS];
+  if (page_cache_is(&c->h, k, n, gen)) {
+    ASSERT(c->h.len <= PAGE_CACHE_BYTES);
+    *bytes = c->bytes;
+    return &c->h;
+  }
+  PageCacheBigSlot *b = &page_cache_big[h % PAGE_CACHE_BIG_SLOTS];
+  if (page_cache_is(&b->h, k, n, gen)) {
+    ASSERT(b->h.len <= PAGE_CACHE_BIG_BYTES);
+    *bytes = b->bytes;
+    return &b->h;
+  }
+  return NULL;
+}
+
+// Drops key's entry in both tables (a post's page after a write to it).
+static void page_cache_drop(const char *k, u64 n) {
+  if (n == 0u || n > PAGE_CACHE_KEY_MAX) return;
+  uint32_t h = page_cache_hash(k, n);
+  PageCacheHead *a = &page_cache[h % PAGE_CACHE_SLOTS].h;
+  PageCacheHead *b = &page_cache_big[h % PAGE_CACHE_BIG_SLOTS].h;
+  if (a->key_len == n && memcmp(a->key, k, n) == 0) a->gen = 0;
+  if (b->key_len == n && memcmp(b->key, k, n) == 0) b->gen = 0;
+}
+
+// Stores body under key at its current generation, if it fits; the other
+// table's entry for the key (an older size) is dropped.
+static void page_cache_store(const char *k, u64 n, uint32_t ctype, const char *body, u64 len) {
+  if (n == 0u || n > PAGE_CACHE_KEY_MAX || len > PAGE_CACHE_BIG_BYTES) return;
+  page_cache_drop(k, n);
+  uint32_t h = page_cache_hash(k, n);
+  PageCacheHead *head;
+  char *dst;
+  if (len <= PAGE_CACHE_BYTES) {
+    PageCacheSlot *c = &page_cache[h % PAGE_CACHE_SLOTS];
+    head = &c->h;
+    dst = c->bytes;
+  } else {
+    PageCacheBigSlot *b = &page_cache_big[h % PAGE_CACHE_BIG_SLOTS];
+    head = &b->h;
+    dst = b->bytes;
+  }
+  memcpy(head->key, k, n);
+  head->key_len = (uint32_t)n;
+  memcpy(dst, body, len);
+  head->len = (uint32_t)len;
+  head->ctype = ctype;
+  head->gen = page_cache_gen(k, n);
+  ASSERT(head->gen != 0u && head->len == len);
 }
 
 // Sends body (200, no cookie, content type ctype) on w's socket; takes
@@ -955,13 +1050,6 @@ static Term page_emit(Env e, IoWork *w, uint32_t ctype, PageOut *body) {
   return page_more(e, w);
 }
 
-// Drops key's entry (a post's cached page after a like or comment on it).
-static void page_cache_drop(const char *k, u64 n) {
-  if (n == 0u || n > PAGE_CACHE_KEY_MAX) return;
-  PageCacheSlot *c = &page_cache[page_cache_slot(k, n)];
-  if (c->key_len == n && memcmp(c->key, k, n) == 0) c->gen = 0;
-}
-
 #ifdef CID(cached)
 // cached(sock, key): sends the cached page for key and answers Done, or
 // sends nothing and answers Fail (then the handler renders it).
@@ -971,15 +1059,14 @@ Term cached_run(Env e, Term *f, IoWork *w) {
   char *key = io_cstr(e, f[1], &kn);
   Term r = 0;
   int hit = 0;
-  if (kn > 0u && kn <= PAGE_CACHE_KEY_MAX) {
-    PageCacheSlot *c = &page_cache[page_cache_slot(key, kn)];
-    if (c->gen == app_write_gen && c->key_len == kn && memcmp(c->key, key, kn) == 0) {
-      ASSERT(c->len <= PAGE_CACHE_BYTES);
-      PageOut body = {io_mem(malloc(c->len > 0u ? c->len : 1u)), 0, c->len > 0u ? c->len : 1u, 0};
-      page_put(&body, c->bytes, c->len);
-      r = page_emit(e, w, c->ctype, &body);
-      hit = 1;
-    }
+  const char *bytes = NULL;
+  const PageCacheHead *c = kn > 0u && kn <= PAGE_CACHE_KEY_MAX ? page_cache_find(key, kn, &bytes) : NULL;
+  if (c != NULL) {
+    ASSERT(bytes != NULL);
+    PageOut body = {io_mem(malloc(c->len > 0u ? c->len : 1u)), 0, c->len > 0u ? c->len : 1u, 0};
+    page_put(&body, bytes, c->len);
+    r = page_emit(e, w, c->ctype, &body);
+    hit = 1;
   }
   free(key);
   return hit ? r : io_tup(e, io_hand(w->hand), io_fail(e, 0, NULL));
@@ -1031,15 +1118,7 @@ Term page_cache_put_run(Env e, Term *f, IoWork *w) {
     free(body.buf);
     return io_tup(e, io_hand(w->hand), io_fail(e, 1, NULL));
   }
-  if (kn > 0u && kn <= PAGE_CACHE_KEY_MAX && body.len <= PAGE_CACHE_BYTES) {
-    PageCacheSlot *c = &page_cache[page_cache_slot(key, kn)];
-    memcpy(c->key, key, kn);
-    c->key_len = (uint32_t)kn;
-    memcpy(c->bytes, body.buf, body.len);
-    c->len = (uint32_t)body.len;
-    c->ctype = ctype;
-    c->gen = app_write_gen;
-  }
+  page_cache_store(key, kn, ctype, body.buf, body.len);
   free(key);
   return page_emit(e, w, ctype, &body);
 }
