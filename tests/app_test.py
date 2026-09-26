@@ -229,6 +229,26 @@ def run(dbpath):
     st, _, _, _ = req("GET", "/s/nope.js")
     check("unknown asset 404", st == 404, st)
 
+    # The feed cache: every write is visible at once, and signed-in and
+    # anonymous visitors get their own header.
+    for _ in range(2):
+        req("GET", "/"), req("GET", "/", b), req("GET", "/b/bob-s-great-blog")
+    st, loc, _, _ = req("POST", "/dash/bob-s-great-blog/posts", b, {"title": "Cache probe"})
+    cpid = loc.rsplit("/", 1)[1]
+    req("POST", f"/edit/{cpid}", b, {"title": "Cache probe", "body": "x", "action": "publish"})
+    check("cache: published post on home at once", "Cache probe" in req("GET", "/")[2])
+    check("cache: and on its blog page", "Cache probe" in req("GET", "/b/bob-s-great-blog")[2])
+    req("POST", f"/edit/{cpid}/unpublish", b)
+    check("cache: unpublished post gone from home", "Cache probe" not in req("GET", "/")[2])
+    check("cache: and from its blog page", "Cache probe" not in req("GET", "/b/bob-s-great-blog")[2])
+    req("POST", f"/edit/{cpid}", b, {"title": "Cache probe 2", "body": "x", "action": "publish"})
+    req("POST", f"/edit/{cpid}/delete", b)
+    check("cache: deleted post gone", "Cache probe" not in req("GET", "/")[2] and "Cache probe" not in req("GET", "/b/bob-s-great-blog")[2])
+    anon, signed_in = req("GET", "/")[2], req("GET", "/", b)[2]
+    check("cache: anonymous home has no Log out", "Log out" not in anon and "Log in" in anon)
+    check("cache: signed-in home has Log out", "Log out" in signed_in and "Log in" not in signed_in)
+    check("cache: anonymous again", "Log out" not in req("GET", "/")[2])
+
     # Security headers everywhere.
     _, _, _, head = req("GET", "/b/alice/first")
     check("CSP present", "Content-Security-Policy: default-src 'none'" in head)

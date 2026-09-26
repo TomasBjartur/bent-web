@@ -82,10 +82,33 @@ def blog_rows(+token: String, +slug: String) -> IO(List<&2, List<&2, String>>):
 
 # READS
 # -----
-def h_home(s: Socket, +token: String, +who: U32) -> IO(Unit):
+# Public feeds are cached (see Db.cached): the key holds everything the
+# page depends on, which is the path and whether someone is signed in.
+def cache_key(+kind: String, +who: U32, +rest: String) -> String:
+  kind ++ (U32.show(Bool.to_u32(signed(who))) ++ (":" ++ rest))
+
+def cache_send(s: Socket, +key: String, +html: String) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page_cache_put(s, key, one(html))
+    done(r)
+
+def h_home2(s: Socket, +token: String, +who: U32) -> IO(Unit):
   do IO<Unit>:
     rows : List<&2, List<&2, String>> <- Db.query(Db.q_recent_public(), 0, 0, "", token)
-    send(s, token, 200, Pages.layout("Home", signed(who), Pages.home_page(rows, signed(who))))
+    cache_send(s, cache_key("h", who, ""), Pages.layout("Home", signed(who), Pages.home_page(rows, signed(who))))
+
+def h_home.go(r: Socket & Result<&1, &1, U32 & String, Unit>, +token: String, +who: U32) -> IO(Unit):
+  (s, x) = r
+  match x:
+    case Done{u}:
+      Socket.close(s)
+    case Fail{err}:
+      h_home2(s, token, who)
+
+def h_home(s: Socket, +token: String, +who: U32) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("h", who, ""))
+    h_home.go(r, token, who)
 
 def h_blog2(s: Socket, +token: String, +who: U32, +blog: List<&2, List<&2, String>>) -> IO(Unit):
   match blog:
@@ -94,12 +117,25 @@ def h_blog2(s: Socket, +token: String, +who: U32, +blog: List<&2, List<&2, Strin
     case Con{+r, t}:
       do IO<Unit>:
         rows : List<&2, List<&2, String>> <- Db.query(Db.q_posts_public(), num(Pages.col(r, 0n)), 0, "", token)
-        send(s, token, 200, Pages.layout(Pages.col(r, 1n), signed(who), Pages.blog_page(Pages.col(r, 2n), Pages.col(r, 1n), Pages.col(r, 3n), rows)))
+        cache_send(s, cache_key("b", who, Pages.col(r, 2n)), Pages.layout(Pages.col(r, 1n), signed(who), Pages.blog_page(Pages.col(r, 2n), Pages.col(r, 1n), Pages.col(r, 3n), rows)))
 
-def h_blog(s: Socket, +token: String, +who: U32, +slug: String) -> IO(Unit):
+def h_blog3(s: Socket, +token: String, +who: U32, +slug: String) -> IO(Unit):
   do IO<Unit>:
     blog : List<&2, List<&2, String>> <- blog_rows(token, slug)
     h_blog2(s, token, who, blog)
+
+def h_blog.go(r: Socket & Result<&1, &1, U32 & String, Unit>, +token: String, +who: U32, +slug: String) -> IO(Unit):
+  (s, x) = r
+  match x:
+    case Done{u}:
+      Socket.close(s)
+    case Fail{err}:
+      h_blog3(s, token, who, slug)
+
+def h_blog(s: Socket, +token: String, +who: U32, +slug: String) -> IO(Unit):
+  do IO<Unit>:
+    r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("b", who, slug))
+    h_blog.go(r, token, who, slug)
 
 def is_some_permit(m: Maybe<&2, Authz.Permit>) -> Bool:
   match m:

@@ -16,6 +16,16 @@
 // cores by paths relative to build/.
 #include "../src/effects/app_common.h"
 
+// WRITE GENERATION
+// ----------------
+// Bumped by every successful apply_raw: every write that can change a
+// public page goes through it (src/db.bend's apply; tools/lint.sh). The
+// page cache below serves an entry only if it was stored at the current
+// generation, so a publish, unpublish, edit or delete is visible at once.
+// One process owns the database; several would need a shared counter
+// (PRAGMA data_version).
+static uint64_t app_write_gen = 1;
+
 // OPEN
 // ----
 
@@ -151,6 +161,7 @@ Term apply_raw_run(Env e, Term *f, IoWork *w) {
                   {slug, (uint32_t)n1}, {title, (uint32_t)n2}, {md, (uint32_t)n3}, {html, (uint32_t)n4}};
     uint32_t id = 0;
     DbResult res = db_apply(&app_db, h, app_now_ms(), &x, &wr, &id);
+    if (res == DB_OK) app_write_gen++;
     r = res == DB_OK ? io_done(e, (Term)id) : io_fail(e, (uint32_t)res, NULL);
   }
   free(slug);
@@ -398,6 +409,121 @@ static Term page_run(Env e, Term *f, IoWork *w) {
 #ifdef CID(page)
 static void __attribute__((constructor)) page_use(void) {
   io_eff(CID(page), page_run, 0);
+}
+#endif
+
+// PAGE CACHE
+// ----------
+// Rendered public pages (feeds), so a visitor's request does not render
+// dozens of rows through Bend Strings (~90 ns per character) each time.
+// WHAT MAY BE CACHED: a 200 HTML page that is the same for every request
+// with the same key. Handlers put everything a page depends on into its
+// key (the path, and whether someone is signed in: the header differs);
+// pages that depend on who is asking (drafts, Edit links, dashboards) are
+// never cached. Entries are valid only at the write generation they were
+// stored at.
+// Direct-mapped: a key's slot is its hash; a new entry replaces the old.
+#define PAGE_CACHE_SLOTS 32u
+#define PAGE_CACHE_KEY_MAX 96u
+#define PAGE_CACHE_BYTES (256u * 1024u)
+
+typedef struct {
+  uint64_t gen;  // 0: empty
+  uint32_t key_len, len;
+  char key[PAGE_CACHE_KEY_MAX];
+  char bytes[PAGE_CACHE_BYTES];
+} PageCacheSlot;
+
+static PageCacheSlot page_cache[PAGE_CACHE_SLOTS];
+
+static uint32_t page_cache_slot(const char *k, u64 n) {
+  uint32_t h = 2166136261u;
+  for (u64 i = 0; i < n; i++) h = (h ^ (uint8_t)k[i]) * 16777619u;
+  return h % PAGE_CACHE_SLOTS;
+}
+
+// Sends body (HTML, 200, no cookie) on w's socket; takes ownership of it.
+static Term page_emit(Env e, IoWork *w, PageOut *body) {
+  char head[1024];
+  int hn = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s\r\n",
+                    page_ctypes[0], (unsigned long long)body->len, NET_SECURITY_HEADERS, NET_NO_STORE);
+  ASSERT(hn > 0 && (size_t)hn < sizeof head);
+  u64 total = (u64)hn + body->len;
+  char *out = io_mem(malloc(total));
+  memcpy(out, head, (size_t)hn);
+  memcpy(out + hn, body->buf, body->len);
+  free(body->buf);
+  w->data = out;
+  w->size = total;
+  w->made = 0;
+  w->code = 0;
+  w->text = (char *)(uintptr_t)(io_tick() + 10000ull * 1000000ull);
+  return page_more(e, w);
+}
+
+#ifdef CID(cached)
+// cached(sock, key): sends the cached page for key and answers Done, or
+// sends nothing and answers Fail (then the handler renders it).
+Term cached_run(Env e, Term *f, IoWork *w) {
+  w->hand = (intptr_t)io_hand_v(f[0]);
+  u64 kn = 0;
+  char *key = io_cstr(e, f[1], &kn);
+  Term r = 0;
+  int hit = 0;
+  if (kn > 0u && kn <= PAGE_CACHE_KEY_MAX) {
+    PageCacheSlot *c = &page_cache[page_cache_slot(key, kn)];
+    if (c->gen == app_write_gen && c->key_len == kn && memcmp(c->key, key, kn) == 0) {
+      ASSERT(c->len <= PAGE_CACHE_BYTES);
+      PageOut body = {io_mem(malloc(c->len > 0u ? c->len : 1u)), 0, c->len > 0u ? c->len : 1u, 0};
+      page_put(&body, c->bytes, c->len);
+      r = page_emit(e, w, &body);
+      hit = 1;
+    }
+  }
+  free(key);
+  return hit ? r : io_tup(e, io_hand(w->hand), io_fail(e, 0, NULL));
+}
+
+static void __attribute__((constructor)) cached_use(void) {
+  io_eff(CID(cached), cached_run, 0);
+}
+#endif
+
+#ifdef CID(page_cache_put)
+// page_cache_put(sock, key, texts): sends texts as a 200 HTML page and
+// stores it under key at the current write generation (if it fits).
+Term page_cache_put_run(Env e, Term *f, IoWork *w) {
+  w->hand = (intptr_t)io_hand_v(f[0]);
+  u64 kn = 0;
+  char *key = io_cstr(e, f[1], &kn);
+  PageOut body = {io_mem(malloc(16384)), 0, 16384, 0};
+  Term texts = f[2], x, rest;
+  for (uint32_t i = 0; i < 100000u && app_uncons(e, CID(Con), texts, &x, &rest); i++) {
+    u64 n = 0;
+    char *s = io_cstr(e, x, &n);
+    page_put(&body, s, n);
+    free(s);
+    texts = rest;
+  }
+  if (body.overflow) {
+    free(key);
+    free(body.buf);
+    return io_tup(e, io_hand(w->hand), io_fail(e, 1, NULL));
+  }
+  if (kn > 0u && kn <= PAGE_CACHE_KEY_MAX && body.len <= PAGE_CACHE_BYTES) {
+    PageCacheSlot *c = &page_cache[page_cache_slot(key, kn)];
+    memcpy(c->key, key, kn);
+    c->key_len = (uint32_t)kn;
+    memcpy(c->bytes, body.buf, body.len);
+    c->len = (uint32_t)body.len;
+    c->gen = app_write_gen;
+  }
+  free(key);
+  return page_emit(e, w, &body);
+}
+
+static void __attribute__((constructor)) page_cache_put_use(void) {
+  io_eff(CID(page_cache_put), page_cache_put_run, 0);
 }
 #endif
 

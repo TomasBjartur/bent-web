@@ -9,24 +9,24 @@
     "weight": {
       "home": {
         "status": 200,
-        "html": 3438,
-        "html_gz": 753,
+        "html": 8526,
+        "html_gz": 1102,
         "js_files": 0,
         "js": 0,
         "js_gz": 20
       },
       "blog": {
         "status": 200,
-        "html": 3095,
-        "html_gz": 825,
+        "html": 8789,
+        "html_gz": 1081,
         "js_files": 0,
         "js": 0,
         "js_gz": 20
       },
       "post": {
         "status": 200,
-        "html": 2726,
-        "html_gz": 998,
+        "html": 3238,
+        "html_gz": 1223,
         "js_files": 0,
         "js": 0,
         "js_gz": 20
@@ -34,51 +34,51 @@
     },
     "server": {
       "home": {
-        "req_s": 2036.0,
-        "p50_us": 15643,
-        "p99_us": 16429,
+        "req_s": 8597.0,
+        "p50_us": 4080,
+        "p99_us": 4956,
         "errors": 0
       },
       "blog": {
-        "req_s": 2091.0,
-        "p50_us": 14928,
-        "p99_us": 22478,
+        "req_s": 8295.0,
+        "p50_us": 4091,
+        "p99_us": 5849,
         "errors": 0
       },
       "post": {
-        "req_s": 6834.0,
-        "p50_us": 4566,
-        "p99_us": 5401,
+        "req_s": 5190.0,
+        "p50_us": 6063,
+        "p99_us": 7032,
         "errors": 0
       }
     },
     "browser": {
       "home": {
-        "ttfb": 4.7,
-        "fcp": 156,
-        "lcp": 156,
-        "dcl": 78.3,
-        "load": 93.4,
-        "script_ms": 1.1,
-        "task_ms": 104.7
+        "ttfb": 3.3,
+        "fcp": 168,
+        "lcp": 168,
+        "dcl": 86.2,
+        "load": 96.5,
+        "script_ms": 0.1,
+        "task_ms": 121.2
       },
       "blog": {
-        "ttfb": 3.8,
-        "fcp": 152,
-        "lcp": 152,
-        "dcl": 74.5,
-        "load": 77.9,
+        "ttfb": 3.1,
+        "fcp": 172,
+        "lcp": 172,
+        "dcl": 80.5,
+        "load": 93.9,
         "script_ms": 0.1,
-        "task_ms": 98.7
+        "task_ms": 119.6
       },
       "post": {
-        "ttfb": 4.1,
-        "fcp": 152,
-        "lcp": 152,
-        "dcl": 76.3,
-        "load": 84.3,
-        "script_ms": 1.0,
-        "task_ms": 101.6
+        "ttfb": 4.7,
+        "fcp": 160,
+        "lcp": 160,
+        "dcl": 75.2,
+        "load": 80.5,
+        "script_ms": 0.1,
+        "task_ms": 122.7
       }
     }
   },
@@ -111,72 +111,72 @@
     },
     "server": {
       "home": {
-        "req_s": 186.0,
-        "p50_us": 166593,
-        "p99_us": 251480,
+        "req_s": 94.0,
+        "p50_us": 330053,
+        "p99_us": 408666,
         "errors": 0
       },
       "blog": {
-        "req_s": 236.0,
-        "p50_us": 124143,
-        "p99_us": 190316,
+        "req_s": 214.0,
+        "p50_us": 137748,
+        "p99_us": 203953,
         "errors": 0
       },
       "post": {
-        "req_s": 271.0,
-        "p50_us": 108519,
-        "p99_us": 160534,
+        "req_s": 263.0,
+        "p50_us": 113355,
+        "p99_us": 172030,
         "errors": 0
       }
     },
     "browser": {
       "home": {
-        "ttfb": 12.7,
-        "fcp": 204,
-        "lcp": 204,
-        "dcl": 129.6,
-        "load": 391.6,
-        "script_ms": 104.5,
-        "task_ms": 426.1
+        "ttfb": 29.3,
+        "fcp": 220,
+        "lcp": 220,
+        "dcl": 144.4,
+        "load": 409.9,
+        "script_ms": 108.6,
+        "task_ms": 449.6
       },
       "blog": {
-        "ttfb": 12.5,
+        "ttfb": 18,
         "fcp": 188,
         "lcp": 188,
-        "dcl": 111.5,
-        "load": 389.6,
-        "script_ms": 103.7,
-        "task_ms": 412.7
+        "dcl": 115.7,
+        "load": 391.4,
+        "script_ms": 106.1,
+        "task_ms": 444.4
       },
       "post": {
-        "ttfb": 10.5,
-        "fcp": 180,
-        "lcp": 180,
-        "dcl": 152.6,
-        "load": 379,
-        "script_ms": 102.4,
-        "task_ms": 418.2
+        "ttfb": 12.5,
+        "fcp": 200,
+        "lcp": 200,
+        "dcl": 97.3,
+        "load": 410.1,
+        "script_ms": 103.0,
+        "task_ms": 444.5
       }
     }
   },
   "coop_cost_from_about_blank": {
     "bend_post": {
-      "ttfb": 3.6,
-      "fcp": 164,
-      "lcp": 164,
-      "dcl": 84,
-      "load": 93.2,
+      "ttfb": 3,
+      "fcp": 176,
+      "lcp": 176,
+      "dcl": 81,
+      "load": 86.8,
       "script_ms": 0.1,
-      "task_ms": 103.5
+      "task_ms": 123.3
     },
     "next_post": {
-      "ttfb": 8.4,
+      "ttfb": 8.9,
       "fcp": 96,
       "lcp": 96,
-      "dcl": 56.5,
-      "load": 139.3,
-      "script_ms": 24.8,
-      "task_ms": 121.5
+      "dcl": 64.2,
+      "load": 139.2,
+      "script_ms": 25.4,
+      "task_ms": 115.1
     }
   }
 }

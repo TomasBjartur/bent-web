@@ -22,19 +22,25 @@ server, beats a React framework on real metrics. First measurement,
 
 | page | server req/s | p50 latency | JS shipped (gzip) | FCP = LCP | load event | main-thread script |
 |---|---|---|---|---|---|---|
-| post | **6,834** vs 271 (25×) | **4.6** vs 108 ms | **0** vs 561 KB (168) | **152** vs 180 ms | **84** vs 379 ms | **1** vs 102 ms |
-| blog | **2,091** vs 236 (9×) | **15** vs 124 ms | **0** vs 563 KB (168) | **152** vs 188 ms | **78** vs 390 ms | **0** vs 104 ms |
-| home | **2,036** vs 186 (11×) | **16** vs 167 ms | **0** vs 563 KB (168) | **156** vs 204 ms | **93** vs 392 ms | **1** vs 104 ms |
+| post | **5,190** vs 263 (20×) | **6.1** vs 113 ms | **0** vs 561 KB (168) | **160** vs 200 ms | **80** vs 410 ms | **0** vs 103 ms |
+| blog | **8,295** vs 214 (cached) | **4.1** vs 138 ms | **0** vs 563 KB (168) | **172** vs 188 ms | **94** vs 391 ms | **0** vs 106 ms |
+| home | **8,597** vs 94 (cached) | **4.1** vs 330 ms | **0** vs 563 KB (168) | **168** vs 220 ms | **96** vs 410 ms | **0** vs 109 ms |
+
+(Re-run after the UI pass. Home and blog pages are now served from our
+page cache, so their server numbers compare a cached page with an
+uncached Next page: see below. The post page is still rendered per
+request, and is the fair comparison: 20×. Before the cache, with the
+richer feed rows, home and blog were ~850 req/s here.)
 
 HTML is also smaller: 2.7–3.4 KB vs 11.7–15.2 KB (Next inlines its React
 Server Components payload).
 
 ## What this does and does not show
 
-- **Server throughput** compares per-request rendering. A Next deployment
-  would often cache or statically generate these pages (ISR/SSG), which
-  would close most of that gap for anonymous traffic. Ours has no page
-  cache either; both render every request.
+- **Server throughput** of post pages compares per-request rendering. Home
+  and blog pages come from our page cache (invalidated on every write);
+  Next's are rendered per request here. A Next deployment could cache
+  them too (ISR), which would close most of that gap.
 - **Next compresses responses** (gzip) and keeps connections alive; ours
   relies on the reverse proxy (Caddy) for compression. On localhost this
   does not matter; over a real network, compare the gzip column.
@@ -62,6 +68,17 @@ Server Components payload).
    visitor arriving from another site already gets a process swap from
    site isolation, so the benchmark starts from another site. We keep COOP:
    it protects signed-in users from cross-window attacks.
+
+4. **Feeds cost ~90 ns per output character in Bend.** The UI pass made
+   feed rows richer (publication, author, date, reading time, excerpt);
+   home fell from 2,036 to 873 req/s, and to 356 with real excerpts (the
+   benchmark's posts have none). SQL was 0.1 ms of the ~2.8 ms; the rest
+   was building Bend Strings. Rather than render fewer characters, the
+   rendered feed is cached in C (`src/effects/db.c`, `PAGE CACHE`): 32
+   static slots, keyed by path and signed-in state, valid only at the
+   write generation that every successful `apply_raw` bumps. 8,597 req/s.
+   Tests in `tests/app_test.py` check that publish, unpublish and delete
+   show at once and that signed-in and anonymous headers never mix.
 
 ## Not yet measured
 

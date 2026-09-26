@@ -57,6 +57,17 @@ def page(sock: Socket, status: U32, ctype: U32, texts: List<&2, String>, bodies:
 def sync_page(sock: Socket, token: String, who: U32, blog: U32, role: U32, has_post: U32, post: U32, post_blog: U32, post_pub: U32, target: U32, ops: String, since: U32) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
   import "./effects/db.c"
 
+# The page cache (src/effects/db.c): cached sends the page stored under
+# key and answers Done, or answers Fail if there is none for the current
+# write generation. page_cache_put sends texts as a 200 HTML page and
+# stores it. Only for pages that are the same for every request with that
+# key.
+def cached(sock: Socket, key: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+  import "./effects/db.c"
+
+def page_cache_put(sock: Socket, key: String, texts: List<&2, String>) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+  import "./effects/db.c"
+
 # Sends an embedded static file (0: the editor bundle).
 def asset(sock: Socket, id: U32) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
   import "./effects/db.c"
