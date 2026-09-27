@@ -310,6 +310,38 @@ details.more .center { text-align: left; }
 }
 .write textarea.title:focus, .write textarea.text:focus { box-shadow: none; }
 .write .help { color: var(--faint); font-size: 0.85rem; margin-top: 14px; }
+/* Editing modes (src/web/modes.js): Markdown or Visual, Vim keybindings. */
+.edit-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 18px 0 10px; position: sticky; top: 60px; z-index: 2; background: var(--bg); padding: 6px 0; border-bottom: 1px solid var(--line); }
+.edit-tools .segs { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.edit-tools .seg { border: 0; border-radius: 0; padding: 6px 12px; font-size: 0.85rem; background: transparent; color: var(--muted); }
+.edit-tools .seg[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.edit-tools .vim-toggle { border: 1px solid var(--line); border-radius: var(--radius); font-family: var(--mono); }
+.edit-tools .fmt-bar { display: inline-flex; gap: 2px; overflow-x: auto; max-width: 100%; scrollbar-width: none; }
+.edit-tools [hidden] { display: none; }
+/* Vim needs a keyboard with Esc: not offered on touch screens. */
+@media (pointer: coarse) { .edit-tools .vim-toggle, .vim-line { display: none; } }
+.edit-tools .fmt { padding: 5px 9px; font-size: 0.85rem; border-color: transparent; background: transparent; }
+.edit-tools .fmt:hover { background: var(--code-bg); }
+.edit-tools .fmt[data-cmd="bold"] { font-weight: 800; }
+.edit-tools .fmt[data-cmd="italic"] { font-style: italic; font-family: var(--serif); }
+.edit-tools .fmt[data-cmd="code"] { font-family: var(--mono); }
+.edit-tools .tools-end { margin-left: auto; display: inline-flex; align-items: center; gap: 10px; }
+.vim-line { font: 0.8rem/1 var(--mono); color: var(--muted); white-space: pre; }
+.vim-line.insert { color: var(--accent); }
+.write textarea.text.vim { caret-color: var(--accent); }
+.write textarea.text.vim::selection { background: var(--accent); color: var(--accent-fg); }
+.wys { min-height: 60vh; outline: none; padding: 4px 0 40vh; }
+.wys:focus-visible { outline: none; }
+.wys .wblock > :last-child { margin-bottom: 1.35em; }
+.wys blockquote > :last-child { margin-bottom: 0; }
+.wys .wraw { white-space: pre-wrap; font: 0.9rem/1.5 var(--mono); color: var(--muted); border-left: 3px solid var(--line); padding-left: 12px; margin-bottom: 1.35em; }
+.wys pre { white-space: pre-wrap; font: 0.9rem/1.5 var(--mono); background: var(--code-bg); padding: 12px 14px; border-radius: 6px; }
+dialog.modal { border: 1px solid var(--line); border-radius: 14px; padding: 26px 28px; max-width: 460px; width: calc(100vw - 32px); background: var(--surface); color: var(--fg); box-shadow: 0 20px 60px rgb(0 0 0 / 0.25); }
+dialog.modal::backdrop { background: rgb(0 0 0 / 0.35); }
+dialog.modal h2 { margin: 0 0 6px; font-size: 1.3rem; }
+dialog.modal p { margin: 0 0 10px; line-height: 1.55; }
+dialog.modal .warn { color: var(--danger); font-weight: 600; background: var(--accent-soft); padding: 10px 12px; border-radius: 8px; }
+dialog.modal .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; margin-top: 16px; }
 .write .help button.link { color: var(--accent); font-weight: 600; padding: 0; }
 .write .help code { font-family: var(--mono); background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
 .editor-bar .btn.quiet[aria-label] { font-size: 1.2rem; padding: 8px 12px; }

@@ -11,6 +11,7 @@
 // units. Everything here works on code point arrays and converts at the
 // edges.
 import { Doc } from "./fugue.js";
+import { setupModes, altOf } from "./modes.js";
 const SYNC_MS = 1500;
 const DEBOUNCE_MS = 250;
 
@@ -168,11 +169,8 @@ function start(ta) {
     throw new Error("too large");
   }
 
-  function altOf(name) {
-    return (name || "").replace(/\.[a-z0-9]+$/i, "").replace(/[\[\]\r\n]/g, " ").slice(0, 100).trim();
-  }
-
-  async function upload(file) {
+  // Uploads an image: its path, or null (the status says why).
+  async function uploadImage(file) {
     show("Adding the image…", "busy");
     try {
       const blob = await shrink(file);
@@ -185,16 +183,24 @@ function start(ta) {
       const text = (await res.text()).trim();
       if (!res.ok || !/^\/img\/[0-9a-f]{32}$/.test(text)) {
         show(text || "The image was not added", "off");
-        return;
+        return null;
       }
-      const md = "\n![" + altOf(file.name) + "](" + text + ")\n";
-      const at = ta.selectionStart;
-      ta.value = ta.value.slice(0, at) + md + ta.value.slice(ta.selectionEnd);
-      ta.setSelectionRange(at + md.length, at + md.length);
-      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      return text;
     } catch (e) {
       show("The image could not be added", "off");
+      return null;
     }
+  }
+
+  // Into the Markdown text, at the caret.
+  async function upload(file) {
+    const path = await uploadImage(file);
+    if (!path) return;
+    const md = "\n![" + altOf(file.name) + "](" + path + ")\n";
+    const at = ta.selectionStart;
+    ta.value = ta.value.slice(0, at) + md + ta.value.slice(ta.selectionEnd);
+    ta.setSelectionRange(at + md.length, at + md.length);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
   // A scheduled time, shown in the reader's own time zone.
@@ -236,6 +242,21 @@ function start(ta) {
   window.addEventListener("online", () => schedule(0));
   setInterval(() => schedule(0), SYNC_MS);
   schedule(0);
+
+  // Markdown or Visual mode, and Vim keybindings (modes.js). An edit made
+  // there replaces the text, as typing does.
+  const modes = setupModes(ta, {
+    set(next) {
+      if (next === ta.value) return;
+      ta.value = next;
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    save() {
+      if (form) form.requestSubmit();
+    },
+    upload: uploadImage,
+    show,
+  });
 
   // cls: "" all saved, "busy" work pending, "off" not reaching the server.
   function show(msg, cls) {
@@ -290,6 +311,7 @@ function start(ta) {
     ta.value = next;
     text = next;
     grow();
+    modes.remote(next);
     if (focused) {
       const arr = cps(next);
       ta.setSelectionRange(u16(arr, map(selA)), u16(arr, map(selB)));
@@ -350,6 +372,7 @@ function start(ta) {
       text = doc.text();
       ta.value = text;
       grow();
+      modes.remote(text);
       schedule(0);
     }
   }
