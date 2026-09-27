@@ -315,6 +315,36 @@ def main():
             if h1 != h2:
                 bad.append((md, md2, h1, h2))
         check("round trip: Markdown -> Visual -> Markdown renders the same", not bad, bad[:1])
+
+        # LARGE: a paste bigger than one sync request (the server takes
+        # 20000 operations at a time) goes up in several; before, it was
+        # refused forever and every keystroke re-encoded it.
+        _, loc2, _ = http("POST", "/dash/ed/posts", a, {"slug": "big", "title": "Big"})
+        pid2 = loc2.rsplit("/", 1)[1]
+        para = words(12) + "\n\n"
+        big = (para * (30000 // len(para) + 1))[:30000]
+        br.wait_saved()  # (unsent edits would hold the page: beforeunload)
+        br.js("localStorage.setItem('bent:vim', '0')")
+        br.open(f"{BASE}/edit/{pid2}")
+        br.js(f"(() => {{ const t = document.getElementById('editor'); t.focus(); t.value = {big!r}; t.dispatchEvent(new Event('input', {{bubbles: true}})); }})()")
+        check("a 30000-character paste syncs", br.wait_saved(60), br.js("document.getElementById('sync-status').textContent"))
+        n_ops = db.execute("SELECT count(*) FROM op WHERE post_id = ?", (pid2,)).fetchone()[0]
+        check("all of it reaches the server", n_ops == 30000, n_ops)
+        check("op_count kept by the triggers", db.execute("SELECT op_count FROM post WHERE id = ?", (pid2,)).fetchone()[0] == n_ops)
+        # Until the document has arrived, the textarea is read-only: an edit
+        # then was diffed against a partial (here: empty) document.
+        slow = br.ws.call("Page.addScriptToEvaluateOnNewDocument", {"source":
+            "{ const f = window.fetch; window.fetch = (u, o) => String(u).endsWith('/sync') && !window.__synced"
+            " ? new Promise((r) => setTimeout(r, 1500)).then(() => { window.__synced = true; return f(u, o); }) : f(u, o); }"})
+        br.open(f"{BASE}/edit/{pid2}")
+        ro = br.js("document.getElementById('editor').readOnly")
+        br.js("document.getElementById('editor').focus()")
+        br.keys("zz")
+        check("read-only until loaded; typing then is refused", ro is True and "zz" not in br.text(), (ro, br.text()[:40]))
+        time.sleep(2.5)
+        check("then editable, with the whole document", br.js("document.getElementById('editor').readOnly") is False and br.text() == big,
+              (br.js("document.getElementById('editor').readOnly"), len(br.text())))
+        br.ws.call("Page.removeScriptToEvaluateOnNewDocument", {"identifier": slow["identifier"]})
     finally:
         if br:
             br.close()

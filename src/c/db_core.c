@@ -59,7 +59,9 @@ static const char *const DB_SQL[ST_COUNT] = {
                  "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"),
   [ST_OP_SINCE] = ("SELECT seq, ctr, rep, kind, pctr, prep, side, ch FROM op WHERE post_id = ?1 AND seq > ?2 "
                    "ORDER BY seq"),
-  [ST_OP_COUNT] = "SELECT count(*) FROM op WHERE post_id = ?1",
+  // Kept by triggers (migration v15): count(*) scanned every operation of
+  // the post on each sync, 0.3 ms per thousand (a novel: ~1M, per keystroke).
+  [ST_OP_COUNT] = "SELECT op_count FROM post WHERE id = ?1",
   [ST_SLUG_TAKEN] = ("SELECT 1 FROM post WHERE blog_id = (SELECT blog_id FROM post WHERE id = ?1) "
                      "AND slug = ?2 AND id <> ?1"),
   [ST_POST_RENAME] = ("UPDATE post SET slug = ?2 WHERE id = ?1 AND published_ms IS NULL "
@@ -373,6 +375,14 @@ static const char *const DB_MIGRATIONS[] = {
   " window_ms INTEGER NOT NULL, n INTEGER NOT NULL CHECK (n >= 0));"
   // (And images by uploader: the per-account count and rate.)
   "CREATE INDEX image_author ON image(author_id, created_ms);",
+  // v15: each post's number of operations, for the POST_OPS_MAX check on
+  // every sync (count(*) grew with the document).
+  "ALTER TABLE post ADD COLUMN op_count INTEGER NOT NULL DEFAULT 0 CHECK (op_count >= 0);"
+  "UPDATE post SET op_count = (SELECT count(*) FROM op WHERE op.post_id = post.id);"
+  "CREATE TRIGGER op_count_ai AFTER INSERT ON op BEGIN"
+  " UPDATE post SET op_count = op_count + 1 WHERE id = new.post_id; END;"
+  "CREATE TRIGGER op_count_ad AFTER DELETE ON op BEGIN"
+  " UPDATE post SET op_count = op_count - 1 WHERE id = old.post_id; END;",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 

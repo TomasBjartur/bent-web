@@ -12,8 +12,19 @@
 // edges.
 import { Doc } from "./fugue.js";
 import { setupModes, altOf } from "./modes.js";
+import { prefix, suffix } from "./common.js";
 const SYNC_MS = 1500;
 const DEBOUNCE_MS = 250;
+// Operations per sync request: under the server's SYNC_OPS_MAX (20000,
+// src/c/db_core.h) and, at up to ~50 bytes each, under the 1 MiB request
+// limit. A large paste goes up in several requests.
+const SEND_OPS = 10000;
+// The unsent operations are copied to localStorage at most this often
+// (and when the page is hidden), not on every keystroke.
+const STORE_MS = 1000;
+// The server cuts a reply at SYNC_OUT_MAX (8 MiB, src/c/db_core.h); one
+// this long was cut, and the rest is asked for at once.
+const REPLY_FULL = 8 * 1024 * 1024 - 256;
 
 const ta = document.getElementById("editor");
 if (ta) start(ta);
@@ -43,6 +54,12 @@ function start(ta) {
   let busy = false;
   let timer = 0;
   let seeded = false;
+  // Until the server's operations have all arrived, the textarea shows the
+  // server-rendered text but the CRDT does not hold it yet: an edit then
+  // would be diffed against a partial document (and insert it all again),
+  // so the text is read-only until loaded.
+  let loaded = false;
+  ta.readOnly = true;
 
   // The textarea's value is now the CRDT's: the form saves the title only.
   ta.removeAttribute("name");
@@ -107,9 +124,11 @@ function start(ta) {
       for (const b of form.elements) if (b.tagName === "BUTTON") b.disabled = true;
       local();
       show("Saving…", "busy");
-      for (let i = 0; i < 20 && (busy || batches.length); i++) {
-        if (!busy) await sync();
-        else await new Promise((r) => setTimeout(r, 100));
+      // Until everything is sent, or a request fails (a large paste takes
+      // several requests).
+      for (let i = 0; i < 1000 && (busy || batches.length); i++) {
+        if (busy) await new Promise((r) => setTimeout(r, 100));
+        else if (!(await sync())) break;
       }
       // Saving a draft, or updating a post that is already published,
       // happens here, without leaving the page (the caret and the scroll
@@ -231,7 +250,7 @@ function start(ta) {
     if (!path) return;
     const md = "\n![" + altOf(file.name) + "](" + path + ")\n";
     const at = ta.selectionStart;
-    ta.value = ta.value.slice(0, at) + md + ta.value.slice(ta.selectionEnd);
+    ta.setRangeText(md, at, ta.selectionEnd);
     ta.setSelectionRange(at + md.length, at + md.length);
     ta.dispatchEvent(new Event("input", { bubbles: true }));
   }
@@ -281,8 +300,20 @@ function start(ta) {
   // there replaces the text, as typing does.
   const modes = setupModes(ta, {
     set(next) {
-      if (next === ta.value) return;
-      ta.value = next;
+      if (next === ta.value || ta.readOnly) return;
+      const d = diff(ta.value, next);
+      // Focused (Vim): as typing does, through the browser's own editing,
+      // which changes the range in place (and keeps the browser's undo).
+      // Chrome's setRangeText rebuilds the whole value: ~270 ms a key on
+      // a 1 MB document, against ~35 ms this way. It sends "input" itself.
+      if (document.activeElement === ta) {
+        ta.setSelectionRange(d.p, d.p + d.del);
+        if (document.execCommand(d.ins ? "insertText" : "delete", false, d.ins) && ta.value === next) return;
+        if (ta.value === next) return;
+        ta.value = next; // no execCommand here: the whole value
+      } else {
+        replace(d);
+      }
       ta.dispatchEvent(new Event("input", { bubbles: true }));
     },
     save() {
@@ -299,30 +330,36 @@ function start(ta) {
     status.className = "status" + (cls ? " " + cls : "");
   }
 
-  function cps(s) {
-    return Array.from(s);
+  // The edit that turns a into b (common.js), never splitting a surrogate
+  // pair.
+  function diff(a, b) {
+    let p = prefix(a, b);
+    if (p > 0 && high(a.charCodeAt(p - 1))) p--;
+    let s = suffix(a, b, p);
+    if (s > 0 && low(a.charCodeAt(a.length - s))) s--;
+    return { p, del: a.length - p - s, ins: b.slice(p, b.length - s) };
   }
 
-  // Code point index to UTF-16 index in s.
-  function u16(arr, i) {
+  function high(c) {
+    return c >= 0xd800 && c <= 0xdbff;
+  }
+
+  function low(c) {
+    return c >= 0xdc00 && c <= 0xdfff;
+  }
+
+  // Code points in s[from, to) (the CRDT counts code points, as
+  // Array.from does: a lone surrogate is one).
+  function points(s, from, to) {
     let n = 0;
-    for (let k = 0; k < i && k < arr.length; k++) n += arr[k].length;
+    for (let i = from; i < to; i++) if (!(low(s.charCodeAt(i)) && i > from && high(s.charCodeAt(i - 1)))) n++;
     return n;
   }
 
-  // The first differing prefix/suffix of two code point arrays.
-  function diff(a, b) {
-    let p = 0;
-    while (p < a.length && p < b.length && a[p] === b[p]) p++;
-    let s = 0;
-    while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
-    return { p, del: a.length - p - s, ins: b.slice(p, b.length - s).join("") };
-  }
-
   function local() {
-    const d = diff(cps(text), cps(ta.value));
+    const d = diff(text, ta.value);
     if (d.del === 0 && d.ins === "") return;
-    batches.push(doc.edit(rep, d.p, d.del, d.ins));
+    queue(doc.edit(rep, points(text, 0, d.p), points(text, d.p, d.p + d.del), d.ins));
     text = ta.value;
     save();
   }
@@ -331,29 +368,43 @@ function start(ta) {
   // place relative to the text around it.
   function remote(ops) {
     if (!doc.applyAll(ops)) return;
+    showDoc();
+  }
+
+  function showDoc() {
     const next = doc.text();
     if (next === ta.value) {
       text = next;
       return;
     }
-    const before = cps(ta.value);
-    const selA = cps(ta.value.slice(0, ta.selectionStart)).length;
-    const selB = cps(ta.value.slice(0, ta.selectionEnd)).length;
-    const d = diff(before, cps(next));
-    const map = (i) => (i <= d.p ? i : i >= d.p + d.del ? i - d.del + cps(d.ins).length : d.p + cps(d.ins).length);
+    const d = diff(ta.value, next);
+    const map = (i) => (i <= d.p ? i : i >= d.p + d.del ? i - d.del + d.ins.length : d.p + d.ins.length);
+    const selA = map(ta.selectionStart);
+    const selB = map(ta.selectionEnd);
     const focused = document.activeElement === ta;
-    ta.value = next;
+    replace(d);
     text = next;
     grow();
     modes.remote(next);
-    if (focused) {
-      const arr = cps(next);
-      ta.setSelectionRange(u16(arr, map(selA)), u16(arr, map(selB)));
-    }
+    if (focused) ta.setSelectionRange(selA, selB);
+  }
+
+  // Changes only the part of the textarea that differs. (Chrome still
+  // rebuilds the whole value, ~270 ms on a 1 MB document; the fast way,
+  // execCommand as in set(), would put another writer's edit into this
+  // writer's undo history, so remote edits stay on this path.)
+  function replace(d) {
+    if (d.del === 0 && d.ins === "") return;
+    ta.setRangeText(d.ins, d.p, d.p + d.del, "preserve");
   }
 
   function pending() {
     return batches.flat();
+  }
+
+  // New local operations, cut to request size.
+  function queue(ops) {
+    for (let i = 0; i < ops.length; i += SEND_OPS) batches.push(i === 0 && ops.length <= SEND_OPS ? ops : ops.slice(i, i + SEND_OPS));
   }
 
   function schedule(ms) {
@@ -364,8 +415,12 @@ function start(ta) {
   async function sync() {
     if (busy) return;
     busy = true;
-    inflight = batches.length;
-    const body = new URLSearchParams({ since: String(since), ops: Doc.encode(pending()) });
+    // Whole batches, oldest first, up to SEND_OPS operations.
+    let count = 0;
+    let more = false; // the reply was cut: ask again at once
+    inflight = 0;
+    while (inflight < batches.length && (inflight === 0 || count + batches[inflight].length <= SEND_OPS)) count += batches[inflight++].length;
+    const body = new URLSearchParams({ since: String(since), ops: Doc.encode(batches.slice(0, inflight).flat()) });
     if (batches.length) show("Saving…", "busy");
     try {
       const res = await fetch(url, {
@@ -376,23 +431,39 @@ function start(ta) {
       });
       if (!res.ok) {
         show(res.status === 403 ? "Not saved: are you logged out?" : "Could not save (" + res.status + ")", "off");
-        return;
+        return false;
       }
       const reply = await res.text();
       const nl = reply.lastIndexOf("\n");
       const got = Doc.decode(reply.slice(0, nl));
       since = Math.max(since, Number(reply.slice(nl + 1)) || 0);
       batches = batches.slice(inflight);
-      if (got) remote(inflight ? got : got.concat(pending()));
-      seed();
-      save();
+      more = nl > REPLY_FULL;
+      if (got) {
+        const ops = inflight ? got : got.concat(pending());
+        if (loaded) remote(ops);
+        else doc.applyAll(ops);
+      }
+      if (!more) {
+        seed(); // (needs the whole document)
+        if (!loaded) {
+          loaded = true;
+          showDoc();
+          ta.readOnly = false;
+        }
+      }
+      save(); // throttled: after each request of a long upload, it would be quadratic
       show(batches.length ? "Unsaved changes" : savedText(), batches.length ? "busy" : "");
     } catch (e) {
       show("Offline: changes are kept on this device", "off");
+      return false;
     } finally {
       busy = false;
-      if (batches.length) schedule(DEBOUNCE_MS);
+      // More to send: at once if this request was full, else after a pause.
+      if (more || (batches.length && count >= SEND_OPS)) schedule(0);
+      else if (batches.length) schedule(DEBOUNCE_MS);
     }
+    return true;
   }
 
   // A post written before the editor existed has no operations: seed them
@@ -402,7 +473,7 @@ function start(ta) {
     if (seeded) return;
     seeded = true;
     if (doc.order.length === 0 && initial !== "") {
-      batches.push(doc.edit(1, 0, 0, initial));
+      queue(doc.edit(1, 0, 0, initial));
       text = doc.text();
       ta.value = text;
       grow();
@@ -413,13 +484,30 @@ function start(ta) {
 
   // Only unsent operations are stored: the server has everything else, and
   // a long document would not fit in localStorage anyway.
-  function save() {
+  // Encoding every unsent operation costs time in proportion to them (a
+  // large paste not yet sent is megabytes), so not on every keystroke:
+  // at most every STORE_MS, and at once when the page is hidden.
+  let storeTimer = 0;
+  function save(now = false) {
+    if (!now) {
+      if (!storeTimer) storeTimer = setTimeout(() => save(true), STORE_MS);
+      return;
+    }
+    clearTimeout(storeTimer);
+    storeTimer = 0;
     try {
-      localStorage.setItem(key, JSON.stringify({ pending: Doc.encode(pending()) }));
+      if (batches.length) localStorage.setItem(key, JSON.stringify({ pending: Doc.encode(pending()) }));
+      else localStorage.removeItem(key);
     } catch (e) {
       // Storage full or disabled: the server still has everything sent.
     }
   }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && storeTimer) save(true);
+  });
+  window.addEventListener("pagehide", () => {
+    if (storeTimer) save(true);
+  });
 
   function restore() {
     let saved = null;
@@ -433,7 +521,7 @@ function start(ta) {
     // Unsent edits from last time: sent with the first sync; the document
     // they belong to arrives with it (since = 0), so the text is shown then.
     if (pe && pe.length) {
-      batches.push(pe);
+      queue(pe);
       seeded = true;
     }
   }

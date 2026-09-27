@@ -12,6 +12,8 @@
 // i a I A o O; v V (d x y c > < o ~); u, Ctrl-r (undo, redo) and . (repeat);
 // / ? n N (search); :w :wq :x (save), :<n> (go to line).
 
+import { prefix, suffix } from "./common.js";
+
 const isSpace = (c) => c === " " || c === "\t" || c === "\n" || c === "\r";
 const isWord = (c) => /[\p{L}\p{N}_]/u.test(c);
 // 0 blank, 1 word, 2 punctuation; big words: 0 blank, 1 anything else.
@@ -189,10 +191,8 @@ function textObject(t, i, kind, around) {
 
 // A diff of a change: at p, `del` replaced by `ins`.
 function diff(a, b) {
-  let p = 0;
-  while (p < a.length && p < b.length && a[p] === b[p]) p++;
-  let s = 0;
-  while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+  const p = prefix(a, b);
+  const s = suffix(a, b, p);
   return { p, del: a.slice(p, a.length - s), ins: b.slice(p, b.length - s) };
 }
 

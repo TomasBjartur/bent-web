@@ -39,7 +39,7 @@ export class Doc {
     const batch = ops.length > 32;
     let changed = false;
     for (const op of ops) changed = this.apply(op, !batch) || changed;
-    if (batch) this.rebuild();
+    if (batch && changed) this.rebuild(); // (a reply is often only our own operations)
     return changed;
   }
 

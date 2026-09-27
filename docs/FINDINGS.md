@@ -4,6 +4,68 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-27: Large documents in the editor (and a paste that never saved)
+
+Question: is Markdown rendering what makes Vim slow on long posts? No: in
+Markdown mode (the only one with Vim) nothing renders Markdown. Measured
+per key in headless Chrome, until the next frame (16.7 ms = one frame):
+
+| document | before: typing | before: Vim `x` | after: typing | after: Vim `j` | after: Vim `x` |
+|---|---|---|---|---|---|
+| 10 KB | < 1 frame | < 1 frame | 16 ms | 16 ms | 16 ms |
+| 100 KB | 73 ms script alone (the page then hung) | – | 16 ms | 16 ms | 16 ms |
+| 1 MB | not measurable | – | 33 ms | 21–29 ms | 49 ms |
+
+What it was, all O(document) work per key, none of it Markdown:
+
+- **A real bug: a paste over ~20 KB never saved.** Every unsent operation
+  went in one request, and the server takes at most SYNC_OPS_MAX (20000)
+  operations: 400, forever. Each keystroke then re-encoded the whole
+  unsent backlog into localStorage (57 ms at 100 KB, 0.5 s at 1 MB).
+  Now: requests of at most 10000 operations, sent back to back; the local
+  copy is written at most once a second and when the page is hidden.
+  tests/editor_test.py pastes 30000 characters (mutation-tested: with one
+  request it fails with the old "Could not save (400)").
+- **A latent bug: editing before the document loaded.** The textarea shows
+  the server-rendered text while the CRDT is still empty; an edit then was
+  diffed against the empty document and inserted everything again. Rare
+  for short posts (milliseconds), certain for long ones (a 1 MB post takes
+  ~7 s to load its operations). The textarea is now read-only until every
+  operation has arrived; cut replies (8 MiB) are followed at once, not
+  1.5 s later. Tested by delaying the first sync.
+- **The per-key diff** converted the whole text to code-point arrays twice
+  (31 ms at 1 MB). Now it compares 4 KB slices natively, then units
+  (src/web/common.js, 0.3 ms at 1 MB; fuzzed against the old diff).
+- **Vim's edits replaced the whole textarea value.** Chrome then rebuilt
+  it: ~270 ms a key at 1 MB, with `setRangeText` too (it is not
+  incremental in Chrome). Vim edits now go through execCommand, the
+  browser's own editing path, like typing (~35 ms). Remote edits still use
+  setRangeText, so another writer's change does not join this writer's
+  undo history; at 1 MB each costs ~270 ms.
+- The CRDT rebuilt its order after every reply, even one holding only our
+  own operations echoed back.
+
+What is left, and why it is the novel-length (blocks) work, not more
+tuning:
+
+- **Chrome's own textarea work is most of the remaining 1 MB cost**
+  (layout of 1M characters). The fix is not to hold a novel in one
+  textarea.
+- **Loading a 1 MB post takes ~7 s and uploading a 1 MB paste ~45 s.** One
+  CRDT operation per character is ~40 bytes on the wire, 40 MB for a novel.
+  On the server, ~60% of each sync request is Bend string work on the
+  request body (split, percent-decoding, `Crdt.decode`: perf), which the
+  design rule "bulk text never becomes a Bend String" forbids. Sync
+  bodies should stay in C (ops_parse already validates them there).
+  Server time per 10000 operations also grows with the post (140 ms at
+  10k stored, 275 ms at 400k); SQLite alone stays flat (45 ms), so the
+  growth is in the server. The per-sync `count(*)` of a post's operations
+  now comes from a counter kept by triggers (migration v15). That was
+  right to remove (it scanned every operation, per keystroke), but it was
+  not this growth. Cause not found yet.
+
+---
+
 ## 2026-09-27: Red team
 
 Two passes: attacks on the running server as every kind of user
