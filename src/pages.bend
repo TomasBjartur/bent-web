@@ -718,18 +718,19 @@ def like_js(liked: Bool) -> String:
 def like_state(liked: Bool) -> String:
   match liked:
     case True{}:
-      "0\"><button class=\"like on\" aria-pressed=\"true\" title=\"Unlike\" data-class:on=\"$_lk\" data-attr:aria-pressed=\"$_lk ? 'true' : 'false'\" data-attr:title=\"$_lk ? 'Unlike' : 'Like'\" data-attr:disabled=\"$_liking\">♥ "
+      "0\"><button class=\"like on\" aria-pressed=\"true\" title=\"Unlike\" data-class:on=\"$_lk\" data-attr:aria-pressed=\"$_lk ? 'true' : 'false'\" data-attr:title=\"$_lk ? 'Unlike' : 'Like'\">♥ "
     case False{}:
-      "1\"><button class=\"like\" aria-pressed=\"false\" title=\"Like\" data-class:on=\"$_lk\" data-attr:aria-pressed=\"$_lk ? 'true' : 'false'\" data-attr:title=\"$_lk ? 'Unlike' : 'Like'\" data-attr:disabled=\"$_liking\">♥ "
+      "1\"><button class=\"like\" aria-pressed=\"false\" title=\"Like\" data-class:on=\"$_lk\" data-attr:aria-pressed=\"$_lk ? 'true' : 'false'\" data-attr:title=\"$_lk ? 'Unlike' : 'Like'\">♥ "
 
 # A like shows at once (Datastar signals: _lk liked, _ln the count), and the
 # server's answer (the bar, patched) then says what is true. The form's
-# "on" (the state wanted) is set before it is sent. Expressions hold only
-# numbers the server wrote.
+# "on" (the state wanted) is set before it is sent. A tap while one is
+# being sent is ignored (not shown as a disabled, faded button: that
+# flashed on every tap). Expressions hold only numbers the server wrote.
 def like_button(signed: Bool, +pid: String, +likes: String, +liked: Bool) -> String:
   match signed:
     case True{}:
-      "<form method=\"post\" action=\"/like/" ++ (Html.esc(pid, "\" data-signals=\"{_lk: " ++ (like_js(liked) ++ (", _ln: " ++ (Html.esc(likes, "}\" data-on:submit=\"$_lk = !$_lk; $_ln = $_ln + ($_lk ? 1 : -1); el.elements.on.value = $_lk ? '1' : '0'; @post('/like/" ++ (Html.esc(pid, "?frag=1', {contentType: 'form'})\" data-indicator:_liking><input type=\"hidden\" name=\"on\" value=\"" ++ (like_state(liked) ++ ("<span data-text=\"$_ln\">" ++ (Html.esc(likes, "</span></button></form>"))))))))))))
+      "<form method=\"post\" action=\"/like/" ++ (Html.esc(pid, "\" data-signals=\"{_lk: " ++ (like_js(liked) ++ (", _ln: " ++ (Html.esc(likes, "}\" data-on:submit=\"$_liking || ($_lk = !$_lk, $_ln = $_ln + ($_lk ? 1 : -1), el.elements.on.value = $_lk ? '1' : '0', @post('/like/" ++ (Html.esc(pid, "?frag=1', {contentType: 'form'}))\" data-indicator:_liking><input type=\"hidden\" name=\"on\" value=\"" ++ (like_state(liked) ++ ("<span data-text=\"$_ln\">" ++ (Html.esc(likes, "</span></button></form>"))))))))))))
     case False{}:
       "<a class=\"btn like\" href=\"/login\" title=\"Log in to like\">♥ " ++ (Html.esc(likes, "</a>"))
 

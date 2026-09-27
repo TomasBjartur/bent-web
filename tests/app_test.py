@@ -741,7 +741,7 @@ def run(dbpath):
         re.escape("@get('/handle?h=' + encodeURIComponent($_h).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16)))"),
         r"\$_(liking|sending|adding|loading|morec)",
         r"\{_lk: (true|false), _ln: \d+\}",
-        r"\$_lk = !\$_lk; \$_ln = \$_ln \+ \(\$_lk \? 1 : -1\); el\.elements\.on\.value = \$_lk \? '1' : '0'; @post\('/like/\d+\?frag=1', \{contentType: 'form'\}\)",
+        r"\$_liking \|\| \(\$_lk = !\$_lk, \$_ln = \$_ln \+ \(\$_lk \? 1 : -1\), el\.elements\.on\.value = \$_lk \? '1' : '0', @post\('/like/\d+\?frag=1', \{contentType: 'form'\}\)\)",
         r"\$_lk|\$_ln|\$_lk \? 'true' : 'false'|\$_lk \? 'Unlike' : 'Like'",
         r"@get\('/comments/\d+\?after=\d+&upto=\d*&frag=1'\)",
         r"",

@@ -164,6 +164,10 @@ def main():
         time.sleep(0.15)
         now = br.js("[document.querySelector('#social button').classList.contains('on'), document.querySelector('#social button').textContent.trim()]")
         check("a like shows at once", now == [True, "♥ 1"], now)
+        check("the button does not dim while the like is sent", br.js("document.querySelector('#social button').disabled") is False)
+        br.js("document.querySelector('#social button').click()")  # a tap while it is sent
+        time.sleep(0.1)
+        check("a second tap while it is sent is ignored", br.js("document.querySelector('#social button').textContent.trim()") == "♥ 1")
         time.sleep(2.5)
         br.ws.call("Network.emulateNetworkConditions", {"offline": False, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1})
         after = br.js("[document.querySelector('#social button').classList.contains('on'), document.querySelector('#social button').textContent.trim()]")

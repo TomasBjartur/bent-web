@@ -173,6 +173,8 @@ export class Visual {
     this.prefix = "";
     this.dirty = new Set();
     this.observer = new MutationObserver((recs) => this.collect(recs));
+    // Before the browser types into an emptied view, there is a paragraph.
+    root.addEventListener("beforeinput", () => this.ensure());
     root.addEventListener("input", (ev) => {
       if (!this.shortcut(ev)) this.commit();
     });
@@ -269,19 +271,7 @@ export class Visual {
   // An edit: the touched blocks become Markdown again.
   commit() {
     this.collect(this.observer.takeRecords());
-    // Content typed straight into the root (all blocks deleted) gets a block.
-    for (const n of [...this.root.childNodes]) {
-      if (n.nodeType === 1 && n.classList.contains("wblock")) continue;
-      if (n.nodeType === 3 && !n.nodeValue.trim()) {
-        n.remove();
-        continue;
-      }
-      const el = document.createElement("div");
-      el.className = "wblock";
-      this.root.insertBefore(el, n);
-      el.appendChild(n);
-      this.dirty.add(el);
-    }
+    this.gather();
     this.observer.takeRecords();
     for (const el of this.dirty) {
       if (el.parentNode !== this.root || el.classList.contains("wraw")) continue;
@@ -289,6 +279,48 @@ export class Visual {
     }
     this.dirty.clear();
     this.onChange(this.text());
+  }
+
+  // Content typed straight into the root (Safari does, once everything was
+  // deleted): each run of it gathered into one paragraph block, and the
+  // caret put back where it was (moving a node takes a selection out of
+  // it: typing then went on in the root, a letter per block).
+  gather() {
+    const sel = document.getSelection();
+    const at = sel && sel.rangeCount ? { node: sel.anchorNode, off: sel.anchorOffset } : null;
+    let moved = false;
+    let run = null;
+    for (const n of [...this.root.childNodes]) {
+      if (n.nodeType === 1 && n.classList.contains("wblock")) {
+        run = null;
+        continue;
+      }
+      if (!run) {
+        run = document.createElement("div");
+        run.className = "wblock";
+        run.appendChild(document.createElement("p"));
+        this.root.insertBefore(run, n);
+        this.dirty.add(run);
+      }
+      run.firstChild.appendChild(n);
+      moved = moved || (at && (at.node === n || n.contains(at.node)));
+    }
+    if (moved) sel.collapse(at.node, at.off);
+    this.ensure();
+  }
+
+  // Never empty: an empty paragraph to type in (and the caret in it, if the
+  // caret was left in the root).
+  ensure() {
+    if (this.root.querySelector(".wblock")) return;
+    const el = document.createElement("div");
+    el.className = "wblock";
+    el.innerHTML = "<p><br></p>";
+    el.md = "";
+    el.sep = "";
+    this.root.appendChild(el);
+    const sel = document.getSelection();
+    if (sel && this.root.contains(sel.anchorNode)) sel.collapse(el.firstChild, 0);
   }
 
   // The text as the blocks now say: empty blocks leave no text (the page

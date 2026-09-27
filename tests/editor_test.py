@@ -275,6 +275,28 @@ def main():
         time.sleep(0.3)
         check("back to Markdown", br.js("document.getElementById('editor').hidden") is False and br.js("document.querySelector('.wys').hidden") is True)
 
+        # Everything deleted (Safari leaves the view empty, the caret in it),
+        # then typing: one paragraph, not a letter per line.
+        br.js("document.querySelector('.edit-tools .seg:nth-child(2)').click()")
+        time.sleep(0.3)
+        br.js("(() => { const v = document.querySelector('.wys'); v.focus(); v.replaceChildren(); v.dispatchEvent(new Event('input'));"
+              " getSelection().collapse(v, 0); })()")
+        for c in "this":
+            br.key(c)
+        time.sleep(0.3)
+        check("typing into an emptied Visual view: one paragraph", br.text().strip() == "this"
+              and br.js("document.querySelectorAll('.wys p').length") == 1, (br.text(), br.js("document.querySelector('.wys').innerHTML")))
+        # The Safari case itself: text typed straight into the root is kept
+        # together, and the caret stays in it.
+        br.js("(() => { const v = document.querySelector('.wys'); v.replaceChildren(document.createTextNode('ab'));"
+              " getSelection().collapse(v.firstChild, 2); v.dispatchEvent(new InputEvent('input', {inputType: 'insertText', data: 'b'})); })()")
+        for c in "cd":
+            br.js(f"document.execCommand('insertText', false, '{c}')")
+        time.sleep(0.3)
+        check("stray text in the root: kept together, the caret in it", br.text().strip() == "abcd" and br.js("document.querySelectorAll('.wys .wblock').length") == 1,
+              (br.text(), br.js("document.querySelector('.wys').innerHTML")))
+        br.js("document.querySelector('.edit-tools .seg:nth-child(1)').click()")
+
         # ROUND TRIP: render -> Markdown -> render gives the same HTML.
         bad = []
         for i in range(int(os.environ.get("ROUNDS", "40"))):
