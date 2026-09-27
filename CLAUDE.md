@@ -117,8 +117,13 @@ one save is capped at 1 MiB.
 
 
 Multi-user, local-first. Text CRDT: **Fugue**. The browser runs
-`src/web/fugue.js` (fast, incremental); the proved reference is
-`src/crdt.bend`; they must agree (`tests/fugue_diff.mjs`). Content is Markdown, not rich
+`src/web/fugue.js` (data-oriented: typed arrays, integer ids, block-indexed
+order; UTF-16 positions); the proved reference is `src/crdt.bend`; they
+must agree (`tests/fugue_diff.mjs`). The Markdown view (`src/web/view.js`)
+keeps only a window of the text in the textarea (the rest is static text
+laid out the same way); undo is `src/web/history.js` (own changes only).
+The server makes a post's text from its operations in C
+(`src/c/fugue_core.h`, `Db.post_text`, off the event loop). Content is Markdown, not rich
 text (rich-text CRDTs roughly double the proof work). The merge is written and
 proved in Bend. If Bend's JS output is too slow for typing, a hand-written JS
 replica is kept and checked against it with differential fuzzing.
@@ -206,6 +211,11 @@ result.
 - `python3 tests/redteam_test.py` (attacks by every kind of user; the
   write budget)
 - `node tests/vim_test.mjs` and `node tests/visual_split_test.mjs`
+- `node tests/history_test.mjs` (undo: own changes only, others' kept)
+- `python3 tests/large_test.py` (1 MB post: speed per key, the window,
+  clicks and drags in static text, Vim, Visual, two writers; also try
+  `3000000`) and `python3 tests/usability_test.py` (writing, undo, save,
+  offline, input methods, the window's edges, phone, resize)
 - `bend tests/crdt_test.bend` (also compiled natively: `-o build/crdt_test`)
 - `node tests/fugue_diff.mjs 300 <seed>` (browser CRDT vs the Bend
   reference `build/crdt_ref`, built with `bend tests/crdt_ref.bend -o build/crdt_ref`)

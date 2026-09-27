@@ -1,18 +1,21 @@
-// The collaborative editor: a textarea bound to the CRDT. Local edits
-// become operations immediately; a sync loop exchanges operations with the
-// server; unsent operations are kept in localStorage, so edits made offline
-// are sent when back online.
+// The collaborative editor (local-first: the browser holds the document
+// and merges; the server stores operations). Local edits become CRDT
+// operations at once; a sync loop exchanges operations with the server;
+// unsent operations are kept in localStorage, so edits made offline are
+// sent when back online.
 //
-// The CRDT here is src/web/fugue.js, differentially fuzzed against the
-// proved reference src/crdt.bend (tests/fugue_diff.mjs). Bend's own JS
-// output was too slow per keystroke on long documents (see docs/FINDINGS.md).
-//
-// Positions: the CRDT counts code points; textarea positions are UTF-16
-// units. Everything here works on code point arrays and converts at the
-// edges.
-import { Doc } from "./fugue.js";
+// The parts (each built for documents of any length, a novel included):
+// - src/web/fugue.js: the CRDT (typed arrays; differentially fuzzed
+//   against the proved reference src/crdt.bend, tests/fugue_diff.mjs).
+// - src/web/view.js: the Markdown view (a textarea window over the text).
+// - src/web/history.js: undo and redo of this writer's own changes.
+// - src/web/modes.js: Visual mode and Vim keybindings.
+// Positions are UTF-16 units everywhere.
+import { Doc, Ops } from "./fugue.js";
+import { View, diff } from "./view.js";
+import { History } from "./history.js";
 import { setupModes, altOf } from "./modes.js";
-import { prefix, suffix } from "./common.js";
+
 const SYNC_MS = 1500;
 const DEBOUNCE_MS = 250;
 // Operations per sync request: under the server's SYNC_OPS_MAX (20000,
@@ -46,23 +49,25 @@ function start(ta) {
   const savedText = () => (live && edited ? "Saved · press Update to publish changes" : saveLabel);
   const initial = ta.value;
 
-  let doc = new Doc();    // every operation known here
-  let text = "";          // doc.text(), as shown
+  const doc = new Doc();  // every operation known here
   let since = 0;          // server sequence number seen
-  let batches = [];       // local operations not yet acknowledged
+  let batches = [];       // local operations not yet acknowledged (Ops, oldest first)
   let inflight = 0;       // how many batches the current request carries
   let busy = false;
   let timer = 0;
   let seeded = false;
-  // Until the server's operations have all arrived, the textarea shows the
+  const history = new History();
+  // Until the server's operations have all arrived, the view shows the
   // server-rendered text but the CRDT does not hold it yet: an edit then
-  // would be diffed against a partial document (and insert it all again),
-  // so the text is read-only until loaded.
+  // would be made against a partial document, so the text is read-only.
   let loaded = false;
-  ta.readOnly = true;
 
   // The textarea's value is now the CRDT's: the form saves the title only.
   ta.removeAttribute("name");
+  const view = new View(ta, { edit: typed });
+  view.readOnly = true;
+  // For tests and debugging (the whole text is not in the textarea).
+  ta.bent = { view, doc, history, loaded: () => loaded, pending: () => batches.length };
 
   restore();
 
@@ -122,7 +127,6 @@ function start(ta) {
         form.elements.namedItem("at").value = String(Math.floor(t / 60000));
       }
       for (const b of form.elements) if (b.tagName === "BUTTON") b.disabled = true;
-      local();
       show("Saving…", "busy");
       // Until everything is sent, or a request fails (a large paste takes
       // several requests).
@@ -159,13 +163,14 @@ function start(ta) {
       title.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter") {
           ev.preventDefault();
-          ta.focus();
-          ta.setSelectionRange(0, 0);
+          if (modes.visual()) return modes.focus();
+          view.focus();
+          view.select(0, 0);
         }
       });
       title.addEventListener("input", () => {
         if (/[\r\n]/.test(title.value)) title.value = title.value.replace(/[\r\n]+/g, " ");
-        grow(title);
+        growTitle();
       });
     }
   }
@@ -247,12 +252,10 @@ function start(ta) {
   // Into the Markdown text, at the caret.
   async function upload(file) {
     const path = await uploadImage(file);
-    if (!path) return;
+    if (!path || view.readOnly) return;
     const md = "\n![" + altOf(file.name) + "](" + path + ")\n";
-    const at = ta.selectionStart;
-    ta.setRangeText(md, at, ta.selectionEnd);
-    ta.setSelectionRange(at + md.length, at + md.length);
-    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    const s = view.sel();
+    change(s.a, s.b - s.a, md, s.a + md.length);
   }
 
   // A scheduled time, shown in the reader's own time zone.
@@ -267,58 +270,119 @@ function start(ta) {
     if (batches.length || (title && title.value !== title0)) ev.preventDefault();
   });
 
-  // Grow the textarea with its text, so the page scrolls, not a box.
-  // Browsers with CSS field-sizing do it themselves.
-  const grows = window.CSS && CSS.supports && CSS.supports("field-sizing", "content");
-  const growing = new Map();
-  function grow(el = ta) {
-    if (grows || growing.has(el)) return;
-    growing.set(el, requestAnimationFrame(() => {
-      growing.delete(el);
-      const y = window.scrollY;
-      el.style.height = "auto";
-      el.style.height = el.scrollHeight + "px";
-      window.scrollTo(0, y);
-    }));
+  // The title grows with its text (browsers without CSS field-sizing).
+  function growTitle() {
+    if (!title || (window.CSS && CSS.supports && CSS.supports("field-sizing", "content"))) return;
+    title.style.height = "auto";
+    title.style.height = title.scrollHeight + "px";
   }
-  grow();
-  if (title) grow(title);
+  growTitle();
 
-  ta.addEventListener("input", () => {
-    local();
-    grow();
-    edited = true;
-    saveLabel = "Saved";
-    show("Unsaved changes", "busy");
-    schedule(DEBOUNCE_MS);
-  });
   window.addEventListener("online", () => schedule(0));
   setInterval(() => schedule(0), SYNC_MS);
   schedule(0);
 
-  // Markdown or Visual mode, and Vim keybindings (modes.js). An edit made
-  // there replaces the text, as typing does.
-  const modes = setupModes(ta, {
-    set(next) {
-      if (next === ta.value || ta.readOnly) return;
-      const d = diff(ta.value, next);
-      // Focused (Vim): as typing does, through the browser's own editing,
-      // which changes the range in place (and keeps the browser's undo).
-      // Chrome's setRangeText rebuilds the whole value: ~270 ms a key on
-      // a 1 MB document, against ~35 ms this way. It sends "input" itself.
-      if (document.activeElement === ta) {
-        ta.setSelectionRange(d.p, d.p + d.del);
-        if (document.execCommand(d.ins ? "insertText" : "delete", false, d.ins) && ta.value === next) return;
-        if (ta.value === next) return;
-        ta.value = next; // no execCommand here: the whole value
-      } else {
-        replace(d);
-      }
-      ta.dispatchEvent(new Event("input", { bubbles: true }));
+  // CHANGES
+  // The selection before an edit the browser makes (for undo), and the
+  // input method's composition it is part of (one undo step each).
+  let selBefore = null;
+  let composition = 0, compositions = 0;
+  ta.addEventListener("compositionstart", () => (composition = ++compositions));
+  ta.addEventListener("compositionend", () => setTimeout(() => (composition = 0), 0));
+  ta.addEventListener("beforeinput", (ev) => {
+    if (ev.inputType === "historyUndo" || ev.inputType === "historyRedo") {
+      // The Edit menu's (or a shake's) undo: ours, not the textarea's.
+      ev.preventDefault();
+      if (ev.inputType === "historyUndo") undo();
+      else redo();
+      return;
+    }
+    const s = view.sel();
+    selBefore = { a: s.a, b: s.b };
+  });
+  ta.addEventListener("keydown", (ev) => {
+    const mod = (ev.ctrlKey || ev.metaKey) && !ev.altKey;
+    if (!mod || ev.defaultPrevented) return;
+    const k = ev.key.toLowerCase();
+    if (k === "z" && !ev.shiftKey) {
+      ev.preventDefault();
+      undo();
+    } else if ((k === "z" && ev.shiftKey) || (k === "y" && ev.ctrlKey)) {
+      ev.preventDefault();
+      redo();
+    }
+  });
+
+  // The textarea changed the text (typing, paste, drop, IME).
+  function typed(p, del, ins, delText) {
+    const s = view.sel();
+    local(p, del, ins);
+    history.record(p, delText, ins, selBefore || { a: p, b: p + del }, { a: s.a, b: s.b }, Date.now(), composition);
+    selBefore = null;
+  }
+
+  // A change made here other than by the textarea (Vim, an image, Visual
+  // mode, undo): into the view, the CRDT and the history; then the
+  // selection [a, b] (null: where the view keeps it).
+  function change(p, del, ins, a = null, b = a) {
+    if (view.readOnly || (del === 0 && ins === "")) return;
+    const s = view.sel();
+    const delText = view.text.slice(p, p + del);
+    view.apply(p, del, ins, false);
+    local(p, del, ins);
+    if (a !== null) view.select(a, b, true);
+    const s2 = view.sel();
+    // (Never merged with typing: each such change is a step of its own.)
+    history.record(p, delText, ins, { a: s.a, b: s.b }, { a: s2.a, b: s2.b }, null);
+  }
+
+  // The operations for a local change.
+  function local(p, del, ins) {
+    queue(doc.edit(rep, p, del, ins));
+    edited = true;
+    saveLabel = "Saved";
+    show("Unsaved changes", "busy");
+    save();
+    schedule(DEBOUNCE_MS);
+  }
+
+  function undo() {
+    if (view.readOnly) return;
+    const ch = history.undo((p, n) => view.text.slice(p, p + n));
+    if (!ch) return show("Nothing to undo", batches.length ? "busy" : "");
+    applyHistory(ch);
+  }
+
+  function redo() {
+    if (view.readOnly) return;
+    const ch = history.redo((p, n) => view.text.slice(p, p + n));
+    if (!ch) return show("Nothing to redo", batches.length ? "busy" : "");
+    applyHistory(ch);
+  }
+
+  function applyHistory(ch) {
+    view.apply(ch.p, ch.del, ch.ins, false);
+    local(ch.p, ch.del, ch.ins);
+    const s = ch.sel || { a: ch.p + ch.ins.length, b: ch.p + ch.ins.length };
+    modes.remote(view.text);
+    if (modes.visual()) return;
+    view.focus();
+    view.select(s.a, s.b, true);
+  }
+
+  // Markdown or Visual mode, and Vim keybindings (modes.js). set(text): an
+  // edit made there, as the whole text it should become.
+  const modes = setupModes(view, {
+    set(next, a = null, b = a) {
+      if (next === view.text || view.readOnly) return;
+      const d = diff(view.text, next);
+      change(d.p, d.del, d.ins, a, b);
     },
     save() {
       if (form) form.requestSubmit();
     },
+    undo,
+    redo,
     upload: uploadImage,
     show,
   });
@@ -330,81 +394,36 @@ function start(ta) {
     status.className = "status" + (cls ? " " + cls : "");
   }
 
-  // The edit that turns a into b (common.js), never splitting a surrogate
-  // pair.
-  function diff(a, b) {
-    let p = prefix(a, b);
-    if (p > 0 && high(a.charCodeAt(p - 1))) p--;
-    let s = suffix(a, b, p);
-    if (s > 0 && low(a.charCodeAt(a.length - s))) s--;
-    return { p, del: a.length - p - s, ins: b.slice(p, b.length - s) };
-  }
-
-  function high(c) {
-    return c >= 0xd800 && c <= 0xdbff;
-  }
-
-  function low(c) {
-    return c >= 0xdc00 && c <= 0xdfff;
-  }
-
-  // Code points in s[from, to) (the CRDT counts code points, as
-  // Array.from does: a lone surrogate is one).
-  function points(s, from, to) {
-    let n = 0;
-    for (let i = from; i < to; i++) if (!(low(s.charCodeAt(i)) && i > from && high(s.charCodeAt(i - 1)))) n++;
-    return n;
-  }
-
-  function local() {
-    const d = diff(text, ta.value);
-    if (d.del === 0 && d.ins === "") return;
-    queue(doc.edit(rep, points(text, 0, d.p), points(text, d.p, d.p + d.del), d.ins));
-    text = ta.value;
-    save();
-  }
-
-  // Merge remote operations and show the new text, keeping the caret in
-  // place relative to the text around it.
+  // REMOTE CHANGES: merged, and each visible change passed to the view (and
+  // the undo history) as it happens. A large batch is merged in one pass;
+  // then the text is compared instead.
   function remote(ops) {
-    if (!doc.applyAll(ops)) return;
-    showDoc();
+    const got = doc.apply(ops, (p, del, ins) => {
+      view.apply(p, del, ins, true);
+      history.remote(p, del, ins.length);
+    });
+    if (got === 2) showDoc();
+    if (got) modes.remote(view.text);
   }
 
+  // The view to the CRDT's text (loading, or after a large batch).
   function showDoc() {
     const next = doc.text();
-    if (next === ta.value) {
-      text = next;
-      return;
-    }
-    const d = diff(ta.value, next);
-    const map = (i) => (i <= d.p ? i : i >= d.p + d.del ? i - d.del + d.ins.length : d.p + d.ins.length);
-    const selA = map(ta.selectionStart);
-    const selB = map(ta.selectionEnd);
-    const focused = document.activeElement === ta;
-    replace(d);
-    text = next;
-    grow();
+    if (next === view.text) return;
+    const d = diff(view.text, next);
+    history.remote(d.p, d.del, d.ins.length);
+    view.reset(next);
     modes.remote(next);
-    if (focused) ta.setSelectionRange(selA, selB);
   }
 
-  // Changes only the part of the textarea that differs. (Chrome still
-  // rebuilds the whole value, ~270 ms on a 1 MB document; the fast way,
-  // execCommand as in set(), would put another writer's edit into this
-  // writer's undo history, so remote edits stay on this path.)
-  function replace(d) {
-    if (d.del === 0 && d.ins === "") return;
-    ta.setRangeText(d.ins, d.p, d.p + d.del, "preserve");
+  // SYNC
+  // New local operations, cut to request size.
+  function queue(ops) {
+    for (let i = 0; i < ops.n; i += SEND_OPS) batches.push(i === 0 && ops.n <= SEND_OPS ? ops : ops.slice(i, Math.min(ops.n, i + SEND_OPS)));
   }
 
   function pending() {
-    return batches.flat();
-  }
-
-  // New local operations, cut to request size.
-  function queue(ops) {
-    for (let i = 0; i < ops.length; i += SEND_OPS) batches.push(i === 0 && ops.length <= SEND_OPS ? ops : ops.slice(i, i + SEND_OPS));
+    return Ops.concat(batches);
   }
 
   function schedule(ms) {
@@ -419,8 +438,8 @@ function start(ta) {
     let count = 0;
     let more = false; // the reply was cut: ask again at once
     inflight = 0;
-    while (inflight < batches.length && (inflight === 0 || count + batches[inflight].length <= SEND_OPS)) count += batches[inflight++].length;
-    const body = new URLSearchParams({ since: String(since), ops: Doc.encode(batches.slice(0, inflight).flat()) });
+    while (inflight < batches.length && (inflight === 0 || count + batches[inflight].n <= SEND_OPS)) count += batches[inflight++].n;
+    const body = new URLSearchParams({ since: String(since), ops: Ops.concat(batches.slice(0, inflight)).encode() });
     if (batches.length) show("Saving…", "busy");
     try {
       const res = await fetch(url, {
@@ -430,26 +449,33 @@ function start(ta) {
         credentials: "same-origin",
       });
       if (!res.ok) {
-        show(res.status === 403 ? "Not saved: are you logged out?" : "Could not save (" + res.status + ")", "off");
+        // 409: the post is at the server's limit of operations
+        // (POST_OPS_MAX, 4 million: every character typed or deleted is one).
+        show(res.status === 403 ? "Not saved: are you logged out?"
+          : res.status === 409 ? "Not saved: this post has reached the limit of 4 million edits (deleted text counts). Your text is kept here; copy it into a new post."
+          : "Could not save (" + res.status + ")", "off");
         return false;
       }
       const reply = await res.text();
       const nl = reply.lastIndexOf("\n");
-      const got = Doc.decode(reply.slice(0, nl));
+      const got = Ops.decode(reply.slice(0, nl));
       since = Math.max(since, Number(reply.slice(nl + 1)) || 0);
       batches = batches.slice(inflight);
       more = nl > REPLY_FULL;
       if (got) {
-        const ops = inflight ? got : got.concat(pending());
+        // (Before loading, unsent edits restored from last time go in with
+        // the document.)
+        const ops = inflight || loaded ? got : Ops.concat([got, pending()]);
         if (loaded) remote(ops);
-        else doc.applyAll(ops);
+        else doc.apply(ops);
       }
       if (!more) {
         seed(); // (needs the whole document)
         if (!loaded) {
           loaded = true;
           showDoc();
-          ta.readOnly = false;
+          view.readOnly = false;
+          modes.loaded();
         }
       }
       save(); // throttled: after each request of a long upload, it would be quadratic
@@ -472,21 +498,17 @@ function start(ta) {
   function seed() {
     if (seeded) return;
     seeded = true;
-    if (doc.order.length === 0 && initial !== "") {
+    if (doc.size === 0 && initial !== "") {
       queue(doc.edit(1, 0, 0, initial));
-      text = doc.text();
-      ta.value = text;
-      grow();
-      modes.remote(text);
       schedule(0);
     }
   }
 
   // Only unsent operations are stored: the server has everything else, and
-  // a long document would not fit in localStorage anyway.
-  // Encoding every unsent operation costs time in proportion to them (a
-  // large paste not yet sent is megabytes), so not on every keystroke:
-  // at most every STORE_MS, and at once when the page is hidden.
+  // a long document would not fit in localStorage anyway. Encoding every
+  // unsent operation costs time in proportion to them (a large paste not
+  // yet sent is megabytes), so not on every keystroke: at most every
+  // STORE_MS, and at once when the page is hidden.
   let storeTimer = 0;
   function save(now = false) {
     if (!now) {
@@ -496,7 +518,7 @@ function start(ta) {
     clearTimeout(storeTimer);
     storeTimer = 0;
     try {
-      if (batches.length) localStorage.setItem(key, JSON.stringify({ pending: Doc.encode(pending()) }));
+      if (batches.length) localStorage.setItem(key, JSON.stringify({ pending: pending().encode() }));
       else localStorage.removeItem(key);
     } catch (e) {
       // Storage full or disabled: the server still has everything sent.
@@ -517,10 +539,10 @@ function start(ta) {
       saved = null;
     }
     if (!saved) return;
-    const pe = Doc.decode(saved.pending || "");
+    const pe = Ops.decode(saved.pending || "");
     // Unsent edits from last time: sent with the first sync; the document
     // they belong to arrives with it (since = 0), so the text is shown then.
-    if (pe && pe.length) {
+    if (pe && pe.n) {
       queue(pe);
       seeded = true;
     }

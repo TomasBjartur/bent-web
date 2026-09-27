@@ -25,7 +25,7 @@
 
 #include "assert.h"
 
-#define FUGUE_OPS_MAX 2000000u
+#define FUGUE_OPS_MAX 4000000u  // POST_OPS_MAX: any post (src/effects/db.c post_text)
 
 typedef struct {
   uint32_t c, r, kind, pc, pr, side, ch;

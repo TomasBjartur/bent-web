@@ -4,6 +4,114 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-27: The editor rebuilt for long documents (data-oriented)
+
+The earlier fixes (below) left 1 MB at 33 ms a key and the page's own work
+dominating. Measured in Chrome with no script at all, a textarea costs ~28
+ms per keystroke per MB of text in it, and ~130 ms per MB to change from
+script; a page-scrolling one (resized on each input) 142 ms/key at 1 MB,
+640 at 5 MB; one contenteditable text node is worse. So no amount of
+faster JS fixes it: the text must not all be in the editing element. And
+the old CRDT held one JS object per character: 615 MB of heap and 4 s to
+load at 1 MB.
+
+What was built (all vanilla JS, no dependency):
+
+- **CRDT (src/web/fugue.js), data-oriented.** Nodes are integer indexes
+  into typed-array columns (id, character, flags, tree links); ids map to
+  nodes by an open-addressing hash of node indexes (no strings, no Map);
+  the order is kept in blocks of 512 node indexes in one Int32Array pool
+  with a Fenwick tree over their live lengths (position lookup O(log n +
+  512)); operations travel as one flat Uint32Array (7 per operation:
+  monomorphic reads and writes; an array of mixed typed arrays made the
+  decoder megamorphic). Positions are UTF-16 units, as the textarea's.
+  Applying a remote operation reports the exact change (position,
+  deletion, insertion) to the view, so nothing re-reads or re-diffs the
+  whole text. No recursion (typed text is a million-deep chain of right
+  children; the rebuild replaces the last child's frame).
+- **The view (src/web/view.js).** The textarea holds a window (~64 KB) of
+  lines around the selection; the rest is static text in blocks laid out
+  exactly like the textarea (same font, width, pre-wrap), so moving the
+  window moves nothing on screen; far blocks use content-visibility (the
+  browser skips them but finds text in them). The window follows the
+  selection (before it gets near an edge; at once for keys at the very
+  edge; a click or drag in static text becomes the editing selection).
+  Every move keeps the caret's line where it is on screen (measured before
+  and after; heights of skipped blocks that become real are compensated).
+- **Undo (src/web/history.js)**: the browser's undo cannot be used (the
+  textarea's value is replaced when the window moves, and it knows nothing
+  of other writers). Steps are last-in-first-out in this writer's own
+  coordinates; another writer's change is carried down the list (each step
+  moved, or marked stale if the change touched its text), so undo never
+  deletes their words; a word (with the space before it) is a step, a
+  typed-over selection and an input method's composition are one step.
+- **Visual mode** renders blocks lazily (the Bend renderer takes ~3 ms a
+  KB): it now opens on any post (1 MB: 110 ms), where it refused anything
+  over 300 KB.
+
+Results (headless Chrome, per key until the next frame; 16.7 ms = one
+frame; tests/large_test.py):
+
+| | 1 MB before | 1 MB now | 3 MB now |
+|---|---|---|---|
+| typing (start, middle, end) | 33 ms | 14–16 ms | 15–18 ms |
+| Vim j / x | 21–29 / 49 ms | 15 / 27–30 ms | 16 / 32 ms |
+| another writer's edit (CRDT) | 40 ms + 270 ms DOM | 0.02 ms + window only | same |
+| load to editable | 7 s | 3 s | 8 s |
+| JS heap | 410 MB | 92 MB | 225 MB |
+| Visual mode | refused (> 300 KB) | opens in 110 ms, 21 ms a key | |
+
+CRDT alone at 1M characters (node): merge 4.1 s → 0.3 s, memory 615 → 66
+MB, a local edit 6 ms → 0.02 ms, a remote one 40 ms → 0.02 ms.
+
+Checked by: tests/fugue_diff.mjs (now also: the changes reported while
+applying reproduce the text; local edits equal the string splice; order
+blocks of 2–8 nodes so they split constantly; mutation-tested: 5 of 7
+mutants caught, the 2 survivors equivalent or near-equivalent, replaced by
+sharper ones that are caught); tests/history_test.mjs (undo all restores
+the start; another writer's text is never touched; precision with their
+text before or after ours; mutation-tested: 4 of 4 caught);
+tests/large_test.py (1 MB and 3 MB: 45 checks) and tests/usability_test.py
+(writing, undo, saving, two writers, offline, input methods, the
+window's edges, Vim at the edges, Visual editing, layout shift, a phone,
+resizing, a browser shut down with unsent edits).
+
+Bugs the usability tests found in the rewrite, fixed: a far window move
+re-cut every block in between (guessed heights: the page jumped ~1700 px);
+the scroll anchor ignored skipped blocks that were on screen; undo of a
+typed-over selection took two steps; an input method's composition was
+several undo steps (undo brought back the half-composed text); Visual
+mode added a blank line at the end when the last paragraph was joined to
+the one before. Found on the way, in the server: saving a post read all
+its operations as one Bend String and merged them in Bend: 2.5 s on the
+event loop at 100k characters and, past ~200k, over the query's time limit
+(the save failed with 400). Saving now makes the text in C
+(src/c/fugue_core.h, fuzzed three ways but never wired in) on a helper
+thread (Db.post_text): 0.1 s at 100k, 1.2 s at 1M. The C materializer took
+2M operations and the database 4M: now both 4M. Search's 503 was sent as
+500 (the page effect did not know the status).
+
+Limits, not fixed:
+- **A paragraph without line breaks is laid out whole** by the browser,
+  and the window is cut only at line breaks (the pieces' model): a 300 KB
+  paragraph types at ~140–180 ms a key. Prose paragraphs are a few KB.
+- **4 million operations per post** (every character typed or deleted is
+  one; nothing is compacted): deleting all of a 3 MB post and typing again
+  passes it. The editor now says so (it said "Could not save (409)").
+  Compaction (or blocks) is the fix; a 6 MB novel does not fit today.
+- **Loading is the wire format**: ~40 bytes per character; a 3 MB post is
+  ~120 MB of operations (8 s). A run-length format needs the C parser
+  (CBMC-checked), the Bend decoder and the materializer to change together.
+- **Saving a novel still renders it whole in Bend on the event loop** (the
+  materializing is off it now): during a 1 MB save another request on the
+  same worker waited up to 540 ms (51 ms at 100k; production has 2
+  workers). Per-block rendering is the next step.
+- Safari was not tested (no WebKit here). The view relies on
+  content-visibility (Safari 18+) and falls back to measuring the textarea
+  where field-sizing is missing.
+
+---
+
 ## 2026-09-27: Large documents in the editor (and a paste that never saved)
 
 Question: is Markdown rendering what makes Vim slow on long posts? No: in

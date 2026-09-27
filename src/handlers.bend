@@ -1069,13 +1069,6 @@ def h_save2(+mode: U32, +minutes: U32, s: Socket, +token: String, +who: U32, +pi
     case _ _:
       fail(s, token, who, 400)
 
-def ops_text(m: Maybe<&2, List<&2, Crdt.Op>>) -> String:
-  match m:
-    case None{}:
-      ""
-    case Some{+xs}:
-      Crdt.text(xs)
-
 # The editor's button: 1 publish, 2 schedule, 3 unschedule, 0 save.
 def save_mode.go(+a: String) -> U32:
   (Bool.to_u32(String.eq(a, "publish")) + ((2 * Bool.to_u32(String.eq(a, "schedule"))) + (3 * Bool.to_u32(String.eq(a, "unschedule")))) : U32)
@@ -1098,17 +1091,32 @@ def schedule_minutes.go(+at: U32, +xs: List<&2, Text.Field>) -> U32:
 def schedule_minutes(+xs: List<&2, Text.Field>) -> U32:
   schedule_minutes.go(form_num(xs, "at"), xs)
 
-def h_save.pick(none: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>, +wire: String) -> IO(Unit):
+def h_save.pick(none: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>, +text: String) -> IO(Unit):
   match none:
     case True{}:
       h_save2(save_mode(xs), schedule_minutes(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.form_body(xs, "body"), Text.decode_of(Text.form_get(xs, "tags")))
     case False{}:
-      h_save2(save_mode(xs), schedule_minutes(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.body_of(Some{ops_text(Crdt.decode(wire))}), Text.decode_of(Text.form_get(xs, "tags")))
+      h_save2(save_mode(xs), schedule_minutes(xs), s, token, who, pid, Text.form_title(xs, "title"), Text.body_of(Some{text}), Text.decode_of(Text.form_get(xs, "tags")))
+
+# The text from the operations (Db.post_text: 0 done, 3 none, else could
+# not be made now: 503, and the editor says so).
+def h_save.made(ok: Bool, none: Bool, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>, +text: String) -> IO(Unit):
+  match ok none:
+    case True{} _:
+      h_save.pick(False{}, s, token, who, pid, xs, text)
+    case False{} True{}:
+      h_save.pick(True{}, s, token, who, pid, xs, "")
+    case False{} False{}:
+      fail(s, token, who, 503)
+
+def h_save.got(r: U32 & String, s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>) -> IO(Unit):
+  (+code, text) = r
+  h_save.made(U32.is_eq(code, 0), U32.is_eq(code, 3), s, token, who, pid, xs, text)
 
 def h_save.go(s: Socket, +token: String, +who: U32, +pid: U32, +xs: List<&2, Text.Field>) -> IO(Unit):
   do IO<Unit>:
-    +rows : List<&2, List<&2, String>> <- Db.query(Db.q_ops(), pid, 0, "", token)
-    h_save.pick(String.is_empty(first_col(rows, 0n)), s, token, who, pid, xs, first_col(rows, 0n))
+    r : U32 & String <- Db.post_text(token, pid)
+    h_save.got(r, s, token, who, pid, xs)
 
 # Saving renders the post. If the post has collaborative operations, its
 # text comes from them (never from what the client posts); otherwise from

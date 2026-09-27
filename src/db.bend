@@ -59,6 +59,12 @@ def query(q: U32, a: U32, b: U32, text: String, token: String) -> IO(List<&2, Li
 def query_off(q: U32, a: U32, b: U32, text: String, token: String) -> IO(U32 & List<&2, List<&2, String>>):
   import "./effects/db.c"
 
+# A post's text made from its operations, in C on a helper thread
+# (src/effects/db.c post_text; a member's session only): (0 done, 1 failed
+# or timed out, 2 busy, 3 the post has no operations; the text).
+def post_text(token: String, post: U32) -> IO(U32 & String):
+  import "./effects/db.c"
+
 # Sends texts[0] body[0] texts[1] ... texts[n]. Each body is a post id whose
 # stored HTML C splices in only if published or the session is a member.
 def page(sock: Socket, status: U32, ctype: U32, texts: List<&2, String>, bodies: List<&2, U32>, token: String, cookie: String, location: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
@@ -309,6 +315,10 @@ def q_last_comment() -> U32:
 
 def q_handle_taken() -> U32:
   24
+
+# (Read as integers by the post_text effect, not by query.)
+def q_op_rows() -> U32:
+  25
 
 def principal.go(anon: Bool, +who: U32) -> Spec.Principal:
   match anon:

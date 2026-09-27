@@ -1,5 +1,5 @@
 // EFFECTS: db_open, session_user, session_new, session_end, load_facts,
-//          apply_raw, query, page.
+//          apply_raw, query, query_off, post_text, page.
 // WHY C:  SQLite (src/c/db_core.c), crypto (BearSSL), and sending pages
 //         whose stored post bodies never become Bend Strings.
 // PRE:    called only by the Bend event loop thread.
@@ -80,6 +80,9 @@ static void __attribute__((constructor)) tick_use(void) {
 #ifdef CID(query_off)
 static int32_t off_open(const char *path);
 #endif
+#ifdef CID(post_text)
+static int32_t text_open(const char *path);
+#endif
 
 Term db_open_run(Env e, Term *f, IoWork *w) {
   (void)w;
@@ -88,6 +91,9 @@ Term db_open_run(Env e, Term *f, IoWork *w) {
   int32_t r = app_db_ready ? -1 : db_open(&app_db, path);
 #ifdef CID(query_off)
   if (r == 0) r = off_open(path);
+#endif
+#ifdef CID(post_text)
+  if (r == 0) r = text_open(path);
 #endif
   free(path);
   if (r != 0) return io_fail(e, EIO, "cannot open the database");
@@ -433,6 +439,101 @@ static void __attribute__((constructor)) query_off_use(void) {
 }
 #endif
 
+#ifdef CID(post_text)
+// OFF THE EVENT LOOP: post_text(token, post) is the post's text, made from
+// its operations by the server's materializer (src/c/fugue_core.h,
+// differentially fuzzed against the proved reference src/crdt.bend), on a
+// helper thread with a read-only connection of its own. Saving a post used
+// to decode every operation as a Bend String and merge them in Bend: 2.5 s
+// on the event loop at 100k characters, and past the query's time limit
+// (so not saved at all) from ~200k. Here: C integers only, and Bend gets
+// the text, which it refines (Text.Body) before rendering.
+// Answers (status, text): 0 done, 1 failed or timed out, 2 busy (one text
+// at a time), 3 no operations (a post edited without JavaScript).
+// Memory: the work arrays are sized for the largest post (POST_OPS_MAX
+// operations), mapped once at startup and given back after each use, so
+// they cost what the largest post being saved needs, while it is saved.
+#include <sys/mman.h>
+#include "../src/c/fugue_core.h"
+#define TEXT_BUDGET_MS 10000u
+#define TEXT_OUT_MAX (4ull * POST_OPS_MAX + 16ull)
+_Static_assert(POST_OPS_MAX <= FUGUE_OPS_MAX, "the materializer must take any post");
+_Static_assert(sizeof(FOp) == 7u * sizeof(uint32_t), "FOp is ops_parse's row");
+
+static struct {
+  DbReader reader;
+  uint32_t busy;
+  uint32_t post;
+  uint8_t hash[32];
+  uint64_t now_ms;
+  FOp *ops;
+  FugueArena arena;
+  uint8_t *out;
+  int32_t n;
+  int64_t len;
+} text_slot;
+
+static void *text_map(uint64_t bytes) {
+  void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  return p == MAP_FAILED ? NULL : p;
+}
+
+static int32_t text_open(const char *path) {
+  if (db_reader_open(&text_slot.reader, path) != 0) return -1;
+  text_slot.ops = text_map(sizeof(FOp) * (uint64_t)POST_OPS_MAX);
+  text_slot.arena.ins = text_map(sizeof(FOp) * (uint64_t)POST_OPS_MAX);
+  text_slot.arena.dead = text_map(sizeof(uint64_t) * (uint64_t)POST_OPS_MAX);
+  text_slot.arena.stack = text_map(sizeof(uint32_t) * ((uint64_t)POST_OPS_MAX + 2u));
+  text_slot.out = text_map(TEXT_OUT_MAX);
+  if (!text_slot.ops || !text_slot.arena.ins || !text_slot.arena.dead || !text_slot.arena.stack || !text_slot.out) return -1;
+  return 0;
+}
+
+// Gives the pages a text used back to the kernel (they are mapped again,
+// zeroed, when next touched).
+static void text_release(void) {
+  madvise(text_slot.ops, sizeof(FOp) * (uint64_t)POST_OPS_MAX, MADV_DONTNEED);
+  madvise(text_slot.arena.ins, sizeof(FOp) * (uint64_t)POST_OPS_MAX, MADV_DONTNEED);
+  madvise(text_slot.arena.dead, sizeof(uint64_t) * (uint64_t)POST_OPS_MAX, MADV_DONTNEED);
+  madvise(text_slot.arena.stack, sizeof(uint32_t) * ((uint64_t)POST_OPS_MAX + 2u), MADV_DONTNEED);
+  madvise(text_slot.out, TEXT_OUT_MAX, MADV_DONTNEED);
+}
+
+static void text_call(IoWork *w) {
+  (void)w;
+  ASSERT(text_slot.busy == 1u);
+  text_slot.len = -1;
+  text_slot.n = db_reader_ops(&text_slot.reader, text_slot.post, text_slot.hash, text_slot.now_ms, TEXT_BUDGET_MS,
+                              (uint32_t (*)[7])(void *)text_slot.ops, POST_OPS_MAX);
+  if (text_slot.n > 0) text_slot.len = fugue_text(&text_slot.arena, text_slot.ops, (uint32_t)text_slot.n, text_slot.out, TEXT_OUT_MAX);
+  ASSERT(text_slot.len <= (int64_t)TEXT_OUT_MAX);
+}
+
+static Term text_pack(Env e, IoWork *w) {
+  (void)w;
+  ASSERT(text_slot.busy == 1u);
+  uint32_t status = text_slot.n < 0 ? 1u : text_slot.n == 0 ? 3u : text_slot.len < 0 ? 1u : 0u;
+  Term t = status == 0u ? io_str(e, (const char *)text_slot.out, (u64)text_slot.len) : io_str(e, "", 0);
+  if (text_slot.n > 0) text_release();
+  text_slot.busy = 0;
+  return io_tup(e, (Term)status, t);
+}
+
+Term post_text_run(Env e, Term *f, IoWork *w) {
+  ASSERT(app_db_ready);
+  if (text_slot.busy) return io_tup(e, (Term)2u, io_str(e, "", 0));
+  app_token_hash(e, f[0], text_slot.hash);
+  text_slot.post = (uint32_t)f[1];
+  text_slot.now_ms = app_now_ms();
+  text_slot.busy = 1;
+  return io_work(w, text_call, text_pack);
+}
+
+static void __attribute__((constructor)) post_text_use(void) {
+  io_eff(CID(post_text), post_text_run, 0);
+}
+#endif
+
 #endif
 
 // PAGES
@@ -457,6 +558,7 @@ static const char *page_reason(uint32_t s) {
     case 413: return "Content Too Large";
     case 429: return "Too Many Requests";
     case 500: return "Internal Server Error";
+    case 503: return "Service Unavailable";
     default: return NULL;
   }
 }

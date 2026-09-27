@@ -19,7 +19,14 @@
 import Md from "./md.bend";
 
 const BLOCK_MAX = 6000;       // longer blocks are shown read-only (the renderer's JS recursion)
-export const VISUAL_MAX = 300000; // longer documents stay in Markdown mode
+export const VISUAL_MAX = 8000000; // (every post the server takes)
+// Blocks are rendered when they come this near the screen (the renderer
+// takes ~3 ms a KB: a novel at once would take seconds); until then each
+// shows its Markdown as plain text, not editable, and far-off ones are
+// skipped by the browser (content-visibility). The first and last EAGER
+// blocks are rendered at once (Ctrl+Home and Ctrl+End land in them).
+const AHEAD = "2000px";
+const EAGER = 8;
 
 // The text as prefix + blocks, each {md, sep}: text = prefix + md0 + sep0
 // + md1 + sep1 ... A block is a run of non-blank lines, or a fenced code
@@ -173,6 +180,9 @@ export class Visual {
     this.prefix = "";
     this.dirty = new Set();
     this.observer = new MutationObserver((recs) => this.collect(recs));
+    this.seen = new IntersectionObserver((es) => {
+      for (const e of es) if (e.isIntersecting) this.draw(e.target);
+    }, { rootMargin: AHEAD + " 0px" });
     // Before the browser types into an emptied view, there is a paragraph.
     root.addEventListener("beforeinput", () => this.ensure());
     root.addEventListener("input", (ev) => {
@@ -204,27 +214,44 @@ export class Visual {
 
   close() {
     this.observer.disconnect();
+    this.seen.disconnect();
     this.root.replaceChildren();
   }
 
+  // A block, not rendered yet (see AHEAD).
   block(b) {
     const el = document.createElement("div");
-    el.className = "wblock";
-    const html = render(b.md);
-    if (html === null) {
-      // Too long for this mode: shown as text, edited in Markdown mode.
-      el.contentEditable = "false";
-      el.className = "wblock wraw";
-      el.textContent = b.md;
-      el.title = "A long block: edit it in Markdown mode";
-    } else el.innerHTML = html; // allowed markup only (spec/markup.bend)
+    el.className = "wblock wlazy";
+    el.contentEditable = "false";
+    el.textContent = b.md;
     el.md = b.md;
     el.sep = b.sep;
+    this.seen.observe(el);
     return el;
+  }
+
+  // Renders a block (its Markdown is kept: rendering is not an edit).
+  draw(el) {
+    if (!el.classList.contains("wlazy")) return;
+    this.seen.unobserve(el);
+    const others = this.observer.takeRecords();
+    const html = render(el.md);
+    el.classList.remove("wlazy");
+    if (html === null) {
+      // Too long for this mode: shown as text, edited in Markdown mode.
+      el.classList.add("wraw");
+      el.title = "A long block: edit it in Markdown mode";
+    } else {
+      el.innerHTML = html; // allowed markup only (spec/markup.bend)
+      el.removeAttribute("contenteditable");
+    }
+    this.observer.takeRecords();
+    this.collect(others);
   }
 
   show({ prefix, blocks }) {
     this.prefix = prefix;
+    this.tail = blocks.length ? blocks[blocks.length - 1].sep : "";
     const els = blocks.map((b) => this.block(b));
     // An empty document: one empty paragraph to type in.
     if (!els.length || (els.length === 1 && !blocks[0].md)) {
@@ -236,6 +263,8 @@ export class Visual {
       els.splice(0, els.length, el);
     }
     this.root.replaceChildren(...els);
+    for (let i = 0; i < els.length; i++) if (i < EAGER || i >= els.length - EAGER) this.draw(els[i]);
+    this.observer.takeRecords();
     this.dirty.clear();
   }
 
@@ -274,7 +303,7 @@ export class Visual {
     this.gather();
     this.observer.takeRecords();
     for (const el of this.dirty) {
-      if (el.parentNode !== this.root || el.classList.contains("wraw")) continue;
+      if (el.parentNode !== this.root || el.classList.contains("wraw") || el.classList.contains("wlazy")) continue;
       el.md = serialize(el);
     }
     this.dirty.clear();
@@ -324,13 +353,15 @@ export class Visual {
   }
 
   // The text as the blocks now say: empty blocks leave no text (the page
-  // keeps them: the caret may be there), and a block followed by another
-  // is separated by a blank line whatever it was before.
+  // keeps them: the caret may be there), a block followed by another is
+  // separated by a blank line whatever it was before, and the last one is
+  // followed by what ended the text (whichever block is last now: one
+  // joined into the one before takes its place).
   text() {
     const kids = [...this.root.children].filter((el) => el.md);
     let t = this.prefix;
     kids.forEach((el, i) => {
-      let sep = el.sep ?? "";
+      let sep = i === kids.length - 1 ? this.tail : el.sep ?? "";
       if (i < kids.length - 1 && !/\n[ \t]*\n/.test(sep)) sep = "\n\n";
       t += el.md + sep;
     });
@@ -352,9 +383,15 @@ export class Visual {
     const focusIndex = focusBlock ? olds.indexOf(focusBlock) : -1;
     const fresh = next.blocks.slice(a, next.blocks.length - z).map((b) => this.block(b));
     const after = olds[olds.length - z] || null;
-    for (const el of olds.slice(a, olds.length - z)) el.remove();
+    for (const el of olds.slice(a, olds.length - z)) {
+      this.seen.unobserve(el);
+      el.remove();
+    }
     for (const el of fresh) this.root.insertBefore(el, after);
+    // Changed blocks on screen are drawn now, not a frame later.
+    for (const el of fresh) if (el.getBoundingClientRect().top < window.innerHeight + 2000) this.draw(el);
     this.prefix = next.prefix;
+    this.tail = next.blocks.length ? next.blocks[next.blocks.length - 1].sep : "";
     [...this.root.children].forEach((el, i) => (el.sep = next.blocks[i].sep));
     if (focusIndex >= a && focusIndex < olds.length - z && fresh.length) {
       const el = fresh[Math.min(focusIndex - a, fresh.length - 1)];

@@ -311,6 +311,15 @@ details.more .center { text-align: left; }
   border: 0; background: transparent; padding: 0; margin-top: 20px; min-height: 60vh; resize: none;
   font: 1.2rem/1.72 var(--serif); box-shadow: none; overflow: hidden; field-sizing: content;
 }
+/* The Markdown view of a long text (src/web/view.js): a textarea window and
+   static pieces laid out exactly like it (same font, width, wrapping). */
+.write .doc { margin-top: 20px; font: 1.2rem/1.72 var(--serif); color: var(--fg); }
+.write .doc > textarea.text { margin: 0; min-height: 0; display: block; overflow-anchor: none; }
+/* At the end of the text, the textarea fills the space below (a click there types). */
+.write .doc > textarea.text:last-child { min-height: 60vh; }
+.doc .seg { white-space: pre-wrap; overflow-wrap: break-word; tab-size: 8; margin: 0; padding: 0; cursor: text; }
+.doc .seg::after { content: "\200b"; }
+.doc .seg.far { content-visibility: auto; }
 .write textarea.title:focus, .write textarea.text:focus { box-shadow: none; }
 .write .help { color: var(--faint); font-size: 0.85rem; margin-top: 14px; }
 /* Editing modes (src/web/modes.js): Markdown or Visual, Vim keybindings. */
@@ -337,6 +346,8 @@ details.more .center { text-align: left; }
 .wys:focus-visible { outline: none; }
 .wys .wblock > :last-child { margin-bottom: 1.35em; }
 .wys blockquote > :last-child { margin-bottom: 0; }
+/* Not rendered yet (src/web/visual.js): its Markdown as text; skipped off screen. */
+.wys .wlazy { white-space: pre-wrap; color: var(--muted); content-visibility: auto; contain-intrinsic-size: auto 6em; margin-bottom: 1.35em; }
 .wys .wraw { white-space: pre-wrap; font: 0.9rem/1.5 var(--mono); color: var(--muted); border-left: 3px solid var(--line); padding-left: 12px; margin-bottom: 1.35em; }
 .wys pre { white-space: pre-wrap; font: 0.9rem/1.5 var(--mono); background: var(--code-bg); padding: 12px 14px; border-radius: 6px; }
 dialog.modal { border: 1px solid var(--line); border-radius: 14px; padding: 26px 28px; max-width: 460px; width: calc(100vw - 32px); background: var(--surface); color: var(--fg); box-shadow: 0 20px 60px rgb(0 0 0 / 0.25); }

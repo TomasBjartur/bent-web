@@ -41,9 +41,12 @@ function el(tag, attrs = {}, ...kids) {
   return e;
 }
 
-// ta: the textarea; set(text): replace the text as an edit (CRDT and
-// status follow); save(): save now; upload(file) -> "/img/..." or null.
-export function setupModes(ta, { set, save, upload, show }) {
+// view: the Markdown view (src/web/view.js); set(text, a, b): replace the
+// text as an edit (CRDT, history and status follow), then select [a, b];
+// save(): save now; undo(), redo(): the editor's; upload(file) ->
+// "/img/..." or null.
+export function setupModes(view, { set, save, undo, redo, upload, show }) {
+  const ta = view.ta;
   const md = el("button", { type: "button", class: "seg", "aria-pressed": "true", text: "Markdown" });
   const vis = el("button", { type: "button", class: "seg", "aria-pressed": "false", text: "Visual" });
   const B = (label, title, cmd) => el("button", { type: "button", class: "fmt", title, "aria-label": title, "data-cmd": cmd, text: label });
@@ -57,21 +60,21 @@ export function setupModes(ta, { set, save, upload, show }) {
   let bar = document.getElementById("edit-tools");
   if (!bar) {
     bar = el("div", { class: "edit-tools" });
-    ta.parentNode.insertBefore(bar, ta);
+    view.box.parentNode.insertBefore(bar, view.box);
   }
   bar.append(el("div", { class: "segs", role: "group", "aria-label": "Editing mode" }, md, vis), fmt,
     el("div", { class: "tools-end" }, modeLine, vimBtn));
-  const view = el("div", { class: "body wys", contenteditable: "true", role: "textbox", "aria-multiline": "true", "aria-label": "Text", hidden: "", spellcheck: "true" });
-  ta.parentNode.insertBefore(view, ta.nextSibling);
+  const wys = el("div", { class: "body wys", contenteditable: "true", role: "textbox", "aria-multiline": "true", "aria-label": "Text", hidden: "", spellcheck: "true" });
+  view.box.parentNode.insertBefore(wys, view.box.nextSibling);
   const dialog = vimDialog();
   document.body.appendChild(dialog);
 
-  const visual = new Visual(view, (text) => set(text));
+  const visual = new Visual(wys, (text) => set(text));
   let mode = "markdown";
 
   // MODES
   function toMode(m, focus = true) {
-    if (m === "visual" && ta.value.length > VISUAL_MAX) {
+    if (m === "visual" && view.length > VISUAL_MAX) {
       show("This post is too long for Visual mode: edit it as Markdown", "off");
       m = "markdown";
     }
@@ -84,16 +87,16 @@ export function setupModes(ta, { set, save, upload, show }) {
     vimBtn.hidden = m === "visual"; // Vim is for the Markdown text
     if (m === "visual") {
       if (vimOn) vimShow(false);
-      visual.open(ta.value);
-      ta.hidden = true;
-      view.hidden = false;
-      if (focus) view.focus();
+      visual.open(view.text);
+      view.box.hidden = true;
+      wys.hidden = false;
+      if (focus) wys.focus();
     } else {
       visual.close();
-      view.hidden = true;
-      ta.hidden = false;
+      wys.hidden = true;
+      view.box.hidden = false;
       if (vimOn) vimShow(true);
-      if (focus) ta.focus();
+      if (focus) view.focus();
     }
   }
   md.addEventListener("click", () => toMode("markdown"));
@@ -101,7 +104,7 @@ export function setupModes(ta, { set, save, upload, show }) {
 
   // FORMATTING (Visual mode)
   function format(cmd) {
-    view.focus();
+    wys.focus();
     if (cmd === "bold" || cmd === "italic") document.execCommand(cmd);
     else if (cmd === "h2" || cmd === "h3" || cmd === "p") document.execCommand("formatBlock", false, cmd);
     else if (cmd === "quote") document.execCommand("formatBlock", false, "blockquote");
@@ -121,10 +124,15 @@ export function setupModes(ta, { set, save, upload, show }) {
     if (b) format(b.dataset.cmd);
   });
   fmt.addEventListener("mousedown", (ev) => ev.preventDefault()); // keep the selection in the text
-  view.addEventListener("keydown", (ev) => {
+  wys.addEventListener("keydown", (ev) => {
     if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
     const k = ev.key.toLowerCase();
-    if (k === "b" || k === "i") {
+    if (k === "z" || (k === "y" && ev.ctrlKey)) {
+      // The editor's undo (of the text), not the page's (of the markup).
+      ev.preventDefault();
+      if (k === "z" && !ev.shiftKey) undo();
+      else redo();
+    } else if (k === "b" || k === "i") {
       ev.preventDefault();
       format(k === "b" ? "bold" : "italic");
     } else if (k === "k") {
@@ -139,13 +147,20 @@ export function setupModes(ta, { set, save, upload, show }) {
     for (const f of files) {
       const path = await upload(f);
       if (path) {
-        view.focus();
+        wys.focus();
         document.execCommand("insertHTML", false, '<img src="' + path + '" alt="' + escHtml(altOf(f.name)) + '">');
       }
     }
   }
-  view.addEventListener("paste", (ev) => addImages([...(ev.clipboardData ? ev.clipboardData.files : [])].filter((f) => f.type.startsWith("image/")), ev));
-  view.addEventListener("drop", (ev) => addImages([...(ev.dataTransfer ? ev.dataTransfer.files : [])].filter((f) => f.type.startsWith("image/")), ev));
+  wys.addEventListener("beforeinput", (ev) => {
+    if (ev.inputType === "historyUndo" || ev.inputType === "historyRedo") {
+      ev.preventDefault();
+      if (ev.inputType === "historyUndo") undo();
+      else redo();
+    }
+  });
+  wys.addEventListener("paste", (ev) => addImages([...(ev.clipboardData ? ev.clipboardData.files : [])].filter((f) => f.type.startsWith("image/")), ev));
+  wys.addEventListener("drop", (ev) => addImages([...(ev.dataTransfer ? ev.dataTransfer.files : [])].filter((f) => f.type.startsWith("image/")), ev));
 
   // VIM
   const vim = new Vim();
@@ -154,9 +169,9 @@ export function setupModes(ta, { set, save, upload, show }) {
     modeLine.hidden = !on;
     ta.classList.toggle("vim", on);
     if (on) {
-      if (vim.mode === "insert") vim.escape(ta.value, ta.selectionStart);
+      if (vim.mode === "insert") vim.escape(view.text, view.sel().a);
       vim.mode = "normal";
-      block(ta.selectionStart);
+      block(view.sel().a);
       line();
     }
   }
@@ -165,7 +180,7 @@ export function setupModes(ta, { set, save, upload, show }) {
     setPref(PREF_VIM, on ? "1" : null);
     vimBtn.setAttribute("aria-pressed", String(on));
     vimShow(on && mode === "markdown");
-    if (mode === "markdown") ta.focus();
+    if (mode === "markdown") view.focus();
   }
   vimBtn.addEventListener("click", () => {
     if (vimOn) return vimSet(false);
@@ -177,15 +192,15 @@ export function setupModes(ta, { set, save, upload, show }) {
     if (dialog.returnValue === "yes") {
       setPref(PREF_VIM_OK, "1");
       vimSet(true);
-    } else ta.focus();
+    } else view.focus();
   });
 
   // Normal mode stands on a character: shown as a one-character selection.
   function block(c) {
-    const t = ta.value;
+    const t = view.text;
     c = Vim.normalize(t, c);
     const e = c < t.length && t[c] !== "\n" ? c + (t.codePointAt(c) > 0xffff ? 2 : 1) : c;
-    ta.setSelectionRange(c, e);
+    view.select(c, e, true);
   }
   function line(extra = "") {
     const names = { normal: "NORMAL", insert: "INSERT", visual: "VISUAL", vline: "VISUAL LINE" };
@@ -202,19 +217,21 @@ export function setupModes(ta, { set, save, upload, show }) {
     if (vim.mode === "insert" && vim.cmd === null) {
       if (k !== "Escape") return; // typing: the browser's
       ev.preventDefault();
-      const r = vim.escape(ta.value, ta.selectionStart);
+      const r = vim.escape(view.text, view.sel().a);
       block(r.cur);
       line();
       return;
     }
     if ([...k].length !== 1 && !NAMED.has(k) && k !== "C-r") return; // Shift, Tab...
     ev.preventDefault();
-    const r = vim.key(k, { text: ta.value, a: ta.selectionStart, b: ta.selectionEnd });
+    if (view.readOnly) return;
+    const s = view.sel();
+    const r = vim.key(k, { text: view.text, a: s.a, b: s.b });
     if (!r) return;
-    if (r.text !== ta.value) set(r.text, true);
-    if (r.keepCursor) block(ta.selectionStart);
-    else if (vim.mode === "insert") ta.setSelectionRange(r.a, r.a);
-    else if (vim.mode === "visual" || vim.mode === "vline") ta.setSelectionRange(r.a, r.b);
+    if (r.text !== view.text) set(r.text);
+    if (r.keepCursor) block(view.sel().a);
+    else if (vim.mode === "insert") view.select(r.a, r.a, true);
+    else if (vim.mode === "visual" || vim.mode === "vline") view.select(r.a, r.b, true);
     else block(r.a);
     line(r.msg || r.pending || "");
     if (r.save) save();
@@ -222,14 +239,15 @@ export function setupModes(ta, { set, save, upload, show }) {
   // A click in normal mode moves the block cursor there.
   ta.addEventListener("mouseup", () => {
     if (!vimOn || mode !== "markdown" || vim.mode === "insert") return;
-    if (ta.selectionEnd - ta.selectionStart > 2) {
+    const s = view.sel();
+    if (s.b - s.a > 2) {
       vim.mode = "visual";
-      vim.anchor = ta.selectionStart;
-      vim.head = ta.selectionEnd - 1;
+      vim.anchor = s.a;
+      vim.head = s.b - 1;
       line();
     } else {
       vim.mode = "normal";
-      block(ta.selectionStart);
+      block(s.a);
       line();
     }
   });
@@ -239,11 +257,19 @@ export function setupModes(ta, { set, save, upload, show }) {
   if (pref(PREF_MODE) === "visual") toMode("visual", false);
 
   return {
-    // The text changed elsewhere (another writer, or a sync).
+    // The text changed elsewhere (another writer, a sync, undo).
     remote(text) {
       if (mode === "visual") visual.refresh(text);
     },
+    // The document arrived: Visual mode shows it.
+    loaded() {
+      if (mode === "visual") visual.refresh(view.text);
+    },
     visual: () => mode === "visual",
+    focus() {
+      if (mode === "visual") wys.focus();
+      else view.focus();
+    },
   };
 }
 

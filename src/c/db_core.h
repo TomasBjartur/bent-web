@@ -118,6 +118,8 @@ enum {
   Q_COMMENTS_AFTER,     // a=post, b=comment id -> as Q_COMMENTS (depth 0), newer than b, by id, at most 50
   Q_LAST_COMMENT,       // a=post -> the newest comment's id, or 0
   Q_HANDLE_TAKEN,       // text=handle -> 1 if an account has it
+  Q_OP_ROWS,            // a=post -> ctr, rep, kind, pctr, prep, side, ch of each op, by seq  (member only;
+                        //    read as integers by db_reader_ops)
   Q_COUNT
 };
 
@@ -297,6 +299,13 @@ typedef struct {
 
 int32_t db_reader_open(DbReader *r, const char *path);
 void db_reader_close(DbReader *r);
+
+// A post's operations (Q_OP_ROWS: for a member's session only) into
+// rows[0..cap), as ops_parse gives them, on a reader, within budget_ms.
+// Answers how many, or -1 (more than cap, a value out of range, an error,
+// or out of time).
+int32_t db_reader_ops(DbReader *r, uint32_t post, const uint8_t token_hash[32], uint64_t now_ms, uint64_t budget_ms,
+                      uint32_t (*rows)[7], uint32_t cap);
 
 // As db_query, on r, stopping after budget_ms: then (or on any error) -1.
 int32_t db_reader_query(DbReader *r, uint32_t q, uint32_t a, uint32_t b, DbText text, const uint8_t token_hash[32],

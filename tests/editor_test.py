@@ -37,7 +37,7 @@ def http(method, path, sid=None, form=None):
         h += f"Cookie: sid={sid}\r\n"
     if method == "POST":
         h += f"Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {len(body)}\r\n"
-    s = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+    s = socket.create_connection(("127.0.0.1", PORT), timeout=float(os.environ.get("HTTP_TIMEOUT", "10")))
     s.sendall(h.encode() + b"\r\n" + body)
     out = b""
     while True:
@@ -353,4 +353,5 @@ def main():
     sys.exit(1 if fails else 0)
 
 
-main()
+if __name__ == "__main__":
+    main()

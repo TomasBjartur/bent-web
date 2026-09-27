@@ -31,6 +31,10 @@ $CC $STRICT -Wno-sign-conversion -Wno-conversion -fsanitize=address,undefined -f
   -o "$OUT/auth_core_test"
 "$OUT/auth_core_test"
 
+# The server's materializer, as a command for tests/fugue_diff.mjs and
+# tests/large_test.py (strict flags, sanitizers).
+$CC $STRICT -O2 -fsanitize=address,undefined -fno-sanitize-recover=all fugue_cli.c -o "$OUT/fugue_cli"
+
 echo "== fuzz (${FUZZ_SECONDS}s)"
 $CC $STRICT -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all net_core_fuzz.c -o "$OUT/net_core_fuzz"
 mkdir -p "$OUT/corpus_net_core"

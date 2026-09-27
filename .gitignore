@@ -21,3 +21,4 @@ spike/**/*.html
 build/
 baseline/next/node_modules/
 baseline/next/.next/
+__pycache__/

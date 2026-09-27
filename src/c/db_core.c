@@ -180,6 +180,8 @@ static const char *const DB_Q[Q_COUNT] = {
   [Q_OPS] = ("SELECT coalesce(group_concat(ctr || '.' || rep || '.' || kind || '.' || pctr || '.' || prep || '.' || side || '.' || ch || ';', ''), '') "
              "FROM (SELECT * FROM op o WHERE o.post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)") " ORDER BY o.seq)"),
   [Q_OP_COUNT] = ("SELECT count(*) FROM op WHERE post_id = ?1 AND " MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)")),
+  [Q_OP_ROWS] = ("SELECT ctr, rep, kind, pctr, prep, side, ch FROM op o WHERE o.post_id = ?1 AND "
+                 MEMBER_OF("(SELECT blog_id FROM post WHERE id = ?1)") " ORDER BY o.seq"),
   // Names are shown only for people who have published something: user
   // ids are sequential, so otherwise anyone could list every account.
   [Q_AUTHOR_PUBLIC] = ("SELECT u.name, coalesce(u.handle, '') FROM user u WHERE u.id = ?1 AND EXISTS "
@@ -1154,6 +1156,40 @@ int32_t db_reader_query(DbReader *r, uint32_t q, uint32_t a, uint32_t b, DbText 
   int end = 0;
   int32_t n = db_query_st(r->q[q], a, b, text, token_hash, now_ms, fn, ctx, &end);
   return end == SQLITE_DONE || end == SQLITE_ROW ? n : -1;
+}
+
+int32_t db_reader_ops(DbReader *r, uint32_t post, const uint8_t token_hash[32], uint64_t now_ms, uint64_t budget_ms,
+                      uint32_t (*rows)[7], uint32_t cap) {
+  ASSERT(r != NULL && r->conn != NULL && rows != NULL && token_hash != NULL && budget_ms > 0u);
+  static const int64_t field_max[7] = {4294967295ll, 4294967295ll, 1, 4294967295ll, 4294967295ll, 1, 1114111};
+  sqlite3_stmt *st = r->q[Q_OP_ROWS];
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  r->deadline_ns = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec + budget_ms * 1000000ull;
+  sqlite3_bind_int64(st, sqlite3_bind_parameter_index(st, "?1"), post);
+  sqlite3_bind_blob(st, sqlite3_bind_parameter_index(st, "?8"), token_hash, 32, SQLITE_STATIC);
+  sqlite3_bind_int64(st, sqlite3_bind_parameter_index(st, "?9"), (sqlite3_int64)now_ms);
+  uint32_t n = 0;
+  int ok = 1;
+  int rc = SQLITE_DONE;
+  while (ok && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+    if (n >= cap) {
+      ok = 0;
+      break;
+    }
+    ASSERT(sqlite3_column_count(st) == 7);
+    for (int j = 0; j < 7; j++) {
+      int64_t v = sqlite3_column_int64(st, j);
+      if (v < 0 || v > field_max[j]) ok = 0;
+      rows[n][j] = ok ? (uint32_t)v : 0u;
+    }
+    n++;
+  }
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+  ASSERT(n <= cap);
+  if (!ok || rc != SQLITE_DONE) return -1;
+  return (int32_t)n;
 }
 
 const char *db_image_type(const uint8_t *p, uint32_t n) {
