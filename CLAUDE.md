@@ -201,6 +201,8 @@ result.
   authenticator; set up once with `tools/setup_chrome.sh`)
 - `python3 tests/collab_test.py` (two browsers, two users, one document)
 - `python3 tests/editor_test.py` (Chrome: Visual mode, Vim, round trip)
+- `python3 tests/ux_test.py` (Chrome: no errors or CSP violations, no
+  layout shift, prefetch, dialogs, instant likes)
 - `node tests/vim_test.mjs` and `node tests/visual_split_test.mjs`
 - `bend tests/crdt_test.bend` (also compiled natively: `-o build/crdt_test`)
 - `node tests/fugue_diff.mjs 300 <seed>` (browser CRDT vs the Bend

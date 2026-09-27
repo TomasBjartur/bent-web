@@ -4,6 +4,41 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-27: Making it feel like an app
+
+What a single-page app gives, done with the platform (tests/ux_test.py, in
+Chrome, checks each):
+- **No white flash between pages**: CSS cross-document view transitions,
+  the header held in place.
+- **The next page is already here**: speculation rules prefetch a link on
+  hover; the click is served from the prefetch. Negative: Chrome ignored
+  the `'inline-speculation-rules'` CSP keyword next to a nonce, so the
+  rules carry the page's nonce (the C side now fills every occurrence of
+  the nonce mark, at most 4: byte 1 bounds it, and no user text can hold
+  it, by html_esc_safe).
+- **Back restores the page** (loaded posts, scroll): signed-out pages are
+  `private, no-cache` instead of `no-store`, so the back/forward cache may
+  keep them; anything seen signed in stays `no-store` (Back after logging
+  out on a shared computer). Chrome's reasons against caching are now only
+  the headless test browser's own (its embedder turns the cache off), so a
+  real restore is not shown here.
+- **Instant likes**: the heart and count change at once (Datastar
+  signals), and the server's answer then patches in the truth; with 600 ms
+  of latency the like shows within 150 ms.
+- **The editor never reloads to save**: Save draft, Ctrl+S, :w and Update
+  send the form with fetch and stay (caret and scroll kept). A bug found
+  on the way: `form.action` was the button named "action" (DOM
+  clobbering), not the URL.
+- **Confirmations look like the site** (a dialog, not the browser's
+  confirm box), including before removing a co-author, which had none;
+  ordinary forms cannot be sent twice.
+- **No layout shift** on any page (CLS < 0.01, desktop and phone): the
+  editor's toolbar had shifted the text by 0.02 as it appeared; the page
+  now keeps its place.
+- New comments (live, or yours) glow for a moment.
+
+---
+
 ## 2026-09-27: The editor's modes, and two more laws
 
 **Visual (WYSIWYG) mode renders with the proved renderer.** The Markdown

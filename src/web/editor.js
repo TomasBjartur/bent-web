@@ -18,11 +18,7 @@ const DEBOUNCE_MS = 250;
 const ta = document.getElementById("editor");
 if (ta) start(ta);
 
-// Forms that need a second thought (delete, unpublish).
-document.addEventListener("submit", (ev) => {
-  const q = ev.target.dataset && ev.target.dataset.confirm;
-  if (q && !confirm(q)) ev.preventDefault();
-});
+// Forms that need a second thought (delete, unpublish): src/web/app.js.
 
 function start(ta) {
   const post = ta.dataset.post;
@@ -34,7 +30,9 @@ function start(ta) {
   // Update: the status says so, rather than a "Saved" that reads as live.
   const live = ta.dataset.published === "1";
   let edited = false;
-  const savedText = () => (live && edited ? "Saved · press Update to publish changes" : "Saved");
+  // After a save here ("Draft saved", "Updated · live now"), until the next edit.
+  let saveLabel = "Saved";
+  const savedText = () => (live && edited ? "Saved · press Update to publish changes" : saveLabel);
   const initial = ta.value;
 
   let doc = new Doc();    // every operation known here
@@ -61,7 +59,33 @@ function start(ta) {
     title.value = "";
     title.required = false;
   }
-  const title0 = title ? title.value : "";
+  let title0 = title ? title.value : "";
+  // This form sends itself (src/web/app.js leaves it alone).
+  if (form) form.setAttribute("data-js", "");
+
+  // The form sent with fetch: the server saves and answers with a redirect
+  // (to this page, or the post's), which is not followed.
+  async function saveHere(action, by) {
+    const data = new URLSearchParams(new FormData(form));
+    data.set("action", by ? by.value : "save");
+    try {
+      const res = await fetch(form.getAttribute("action"), { method: "POST", body: data, credentials: "same-origin", redirect: "manual" });
+      if (res.type === "opaqueredirect" || res.ok) {
+        edited = false;
+        // A draft's "Untitled" is shown as the empty title again.
+        if (title && title.value === "Untitled" && !live) title.value = "";
+        title0 = title ? title.value : "";
+        saveLabel = action === "publish" ? "Updated · live now" : "Draft saved";
+        show(saveLabel, "");
+      } else if (res.status === 400) {
+        show("Not saved: check the title and tags", "off");
+      } else {
+        show(res.status === 403 ? "Not saved: are you logged out?" : "Not saved (" + res.status + ")", "off");
+      }
+    } catch (e) {
+      show("Offline: your text is kept on this device; save again when back online", "off");
+    }
+  }
   let leaving = false;
   if (form) {
     form.addEventListener("submit", async (ev) => {
@@ -86,6 +110,15 @@ function start(ta) {
       for (let i = 0; i < 20 && (busy || batches.length); i++) {
         if (!busy) await sync();
         else await new Promise((r) => setTimeout(r, 100));
+      }
+      // Saving a draft, or updating a post that is already published,
+      // happens here, without leaving the page (the caret and the scroll
+      // stay). Publishing and scheduling go on to their pages.
+      const action = by ? by.value : "save";
+      if (action === "save" || (action === "publish" && live)) {
+        await saveHere(action, by);
+        for (const b of form.elements) if (b.tagName === "BUTTON") b.disabled = false;
+        return;
       }
       for (const b of form.elements) if (b.tagName === "BUTTON") b.disabled = false;
       form.dataset.flushed = "1";
@@ -236,6 +269,7 @@ function start(ta) {
     local();
     grow();
     edited = true;
+    saveLabel = "Saved";
     show("Unsaved changes", "busy");
     schedule(DEBOUNCE_MS);
   });

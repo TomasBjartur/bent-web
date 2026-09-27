@@ -291,8 +291,15 @@ def run(dbpath):
     check("pages link a versioned stylesheet", m is not None)
     st, _, css, head = req("GET", m.group(1) if m else "/s/app.css")
     check("stylesheet served, cached immutably", st == 200 and "text/css" in head and "immutable" in head and ".article" in css, head)
-    _, _, _, head = req("GET", "/")
-    check("pages are not cached", "no-store" in head, head)
+    # Signed out: revalidated, never in shared caches, allowed in the
+    # back/forward cache. Signed in (or setting a cookie): never stored.
+    for path in ("/", "/b/bob-s-great-blog"):
+        _, _, _, head = req("GET", path)
+        check(f"signed out: {path} revalidated, not stored by shared caches", "Cache-Control: private, no-cache" in head and "no-store" not in head, head)
+        _, _, _, head = req("GET", path, b)
+        check(f"signed in: {path} never stored", "Cache-Control: no-store" in head, head)
+    _, _, _, head = req("GET", "/dash", b)
+    check("signed in: dashboard never stored", "Cache-Control: no-store" in head, head)
     st, _, _, _ = req("GET", "/s/nope.js")
     check("unknown asset 404", st == 404, st)
 
@@ -447,7 +454,7 @@ def run(dbpath):
     check("like: back to the post", st == 303 and loc == turl + "#social", (st, loc))
     req("POST", f"/like/{tpid}", c, {"on": "1"})
     _, _, body, _ = req("GET", turl, c)
-    check("liked once, shown as liked", "♥ 1" in body and 'class="like on"' in body, body[body.find('class="social"'):][:300])
+    check("liked once, shown as liked", re.search(r'♥ (<span[^>]*>)?1<', body) is not None and 'class="like on"' in body, body[body.find('class="social"'):][:300])
     _, _, body, _ = req("GET", turl)
     check("others see the count", "♥ 1" in body and 'class="like on"' not in body)
     req("POST", f"/like/{tpid}", c, {"on": "0"})
@@ -715,7 +722,11 @@ def run(dbpath):
         re.escape("encodeURIComponent($_q).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16))"),
         re.escape("history.replaceState(null, '', '/search?q=' + $_qe); @get('/search?frag=1&q=' + $_qe)"),
         re.escape("@get('/handle?h=' + encodeURIComponent($_h).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16)))"),
-        r"\$_(liking|sending|adding|loading)",
+        r"\$_(liking|sending|adding|loading|morec)",
+        r"\{_lk: (true|false), _ln: \d+\}",
+        r"\$_lk = !\$_lk; \$_ln = \$_ln \+ \(\$_lk \? 1 : -1\); el\.elements\.on\.value = \$_lk \? '1' : '0'; @post\('/like/\d+\?frag=1', \{contentType: 'form'\}\)",
+        r"\$_lk|\$_ln|\$_lk \? 'true' : 'false'|\$_lk \? 'Unlike' : 'Like'",
+        r"@get\('/comments/\d+\?after=\d+&upto=\d*&frag=1'\)",
         r"",
     ]]
     class Attrs(HTMLParser):
@@ -725,7 +736,7 @@ def run(dbpath):
             self.n = 0
         def handle_starttag(self, tag, attrs):
             for k, v in attrs:
-                if k.startswith("data-") and k not in ("data-nonce", "data-parent", "data-post", "data-rep", "data-published", "data-confirm"):
+                if k.startswith("data-") and k not in ("data-nonce", "data-parent", "data-post", "data-rep", "data-published", "data-confirm", "data-ok"):
                     self.n += 1
                     if not any(x.fullmatch(v or "") for x in EXPR):
                         self.bad.append((k, v))

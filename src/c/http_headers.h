@@ -30,6 +30,12 @@ static const char NET_SECURITY_HEADERS[] =
 // Pages are never cached (they depend on the session); assets are served
 // under versioned URLs and cached forever.
 static const char NET_NO_STORE[] = "Cache-Control: no-store\r\n";
+// A signed-out visitor's page is public: revalidated every time and never
+// kept by shared caches, but the browser may keep it for Back (its
+// back/forward cache restores the page as it was: loaded posts, scroll).
+// Anything seen signed in stays no-store (Back after logging out on a
+// shared computer must not show it).
+static const char NET_REVALIDATE[] = "Cache-Control: private, no-cache\r\n";
 static const char NET_IMMUTABLE[] = "Cache-Control: public, max-age=31536000, immutable\r\n";
 
 #endif

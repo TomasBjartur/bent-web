@@ -312,7 +312,7 @@ details.more .center { text-align: left; }
 .write textarea.title:focus, .write textarea.text:focus { box-shadow: none; }
 .write .help { color: var(--faint); font-size: 0.85rem; margin-top: 14px; }
 /* Editing modes (src/web/modes.js): Markdown or Visual, Vim keybindings. */
-.edit-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 18px 0 10px; position: sticky; top: 60px; z-index: 2; background: var(--bg); padding: 6px 0; border-bottom: 1px solid var(--line); }
+.edit-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 18px 0 10px; min-height: 45px; box-sizing: border-box; position: sticky; top: 60px; z-index: 2; background: var(--bg); padding: 6px 0; border-bottom: 1px solid var(--line); }
 .edit-tools .segs { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .edit-tools .seg { border: 0; border-radius: 0; padding: 6px 12px; font-size: 0.85rem; background: transparent; color: var(--muted); }
 .edit-tools .seg[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
@@ -361,3 +361,20 @@ dialog.modal .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: 
   .table td:nth-child(2) { display: none; }
   .masthead h1 { font-size: 1.9rem; }
 }
+
+/* Page loads cross-fade (same-origin navigations; Chrome, Safari), the
+   header staying in place: the site moves like an app, with no white flash
+   between pages. */
+@view-transition { navigation: auto; }
+.top { view-transition-name: top; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 140ms; }
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+}
+/* A button whose form is being sent (src/web/app.js; Datastar's indicators). */
+button[aria-busy="true"], .btn[aria-busy="true"] { opacity: 0.7; cursor: progress; }
+dialog.modal .danger-btn { background: var(--danger); border-color: var(--danger); color: var(--accent-fg); }
+/* A comment that just arrived (live, or yours) glows for a moment. */
+@keyframes fresh { from { background: var(--accent-soft); } to { background: transparent; } }
+.comment.fresh { animation: fresh 2.4s ease-out; border-radius: 6px; }
+@media (prefers-reduced-motion: reduce) { .comment.fresh { animation: none; } }

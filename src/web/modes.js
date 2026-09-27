@@ -53,10 +53,14 @@ export function setupModes(ta, { set, save, upload, show }) {
     B("• List", "Bulleted list", "ul"), B("1. List", "Numbered list", "ol"));
   const vimBtn = el("button", { type: "button", class: "seg vim-toggle", "aria-pressed": "false", title: "Vim keybindings", text: "Vim" });
   const modeLine = el("span", { class: "vim-line", role: "status", "aria-live": "polite", hidden: "" });
-  const bar = el("div", { class: "edit-tools" },
-    el("div", { class: "segs", role: "group", "aria-label": "Editing mode" }, md, vis), fmt,
+  // Into the page's empty toolbar (its height is kept for it: no shift).
+  let bar = document.getElementById("edit-tools");
+  if (!bar) {
+    bar = el("div", { class: "edit-tools" });
+    ta.parentNode.insertBefore(bar, ta);
+  }
+  bar.append(el("div", { class: "segs", role: "group", "aria-label": "Editing mode" }, md, vis), fmt,
     el("div", { class: "tools-end" }, modeLine, vimBtn));
-  ta.parentNode.insertBefore(bar, ta);
   const view = el("div", { class: "body wys", contenteditable: "true", role: "textbox", "aria-multiline": "true", "aria-label": "Text", hidden: "", spellcheck: "true" });
   ta.parentNode.insertBefore(view, ta.nextSibling);
   const dialog = vimDialog();

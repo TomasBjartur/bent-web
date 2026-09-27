@@ -65,7 +65,7 @@ def patch(+selector: String, +mode: String, +html: String) -> String:
   selector ++ (SCon{Char.from_u32(31), SNil{}} ++ (mode ++ (SCon{Char.from_u32(31), SNil{}} ++ (html ++ SCon{Char.from_u32(30), SNil{}}))))
 
 def head(+title: String) -> String:
-  "<!doctype html><html lang=\"en\" data-nonce=\"" ++ (nonce_mark() ++ "\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>" ++ (Html.esc(title, " · slopstack</title><link rel=\"stylesheet\" href=\"" ++ (asset("app.css") ++ ("\"><link rel=\"alternate\" type=\"application/rss+xml\" title=\"slopstack\" href=\"/feed.xml\"><script type=\"module\" src=\"" ++ (asset("datastar.js") ++ "\"></script></head><body><a class=\"skip\" href=\"#main\">Skip to content</a>"))))))
+  "<!doctype html><html lang=\"en\" data-nonce=\"" ++ (nonce_mark() ++ "\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>" ++ (Html.esc(title, " · slopstack</title><link rel=\"stylesheet\" href=\"" ++ (asset("app.css") ++ ("\"><link rel=\"alternate\" type=\"application/rss+xml\" title=\"slopstack\" href=\"/feed.xml\"><script type=\"module\" src=\"" ++ (asset("datastar.js") ++ ("\"></script><script type=\"module\" src=\"" ++ (asset("app.js") ++ "\"></script><script type=\"speculationrules\" nonce=\"" ++ (nonce_mark() ++ "\">{\"prefetch\":[{\"where\":{\"and\":[{\"href_matches\":\"/*\"},{\"not\":{\"href_matches\":\"/verify*\"}},{\"not\":{\"href_matches\":\"/edit/*\"}}]},\"eagerness\":\"moderate\"}]}</script></head><body><a class=\"skip\" href=\"#main\">Skip to content</a>")))))))))
 
 def top(signed_in: Bool) -> String:
   "<header class=\"top\"><div class=\"wrap wide\"><a class=\"brand\" href=\"/\">slop<span>stack</span></a><nav>" ++ (nav(signed_in) ++ "</nav></div></header>")
@@ -408,10 +408,11 @@ def member_posts(+bslug: String, rows: List<&2, List<&2, String>>) -> String:
     case Con{r, t}:
       "<table class=\"table\">" ++ (member_post_rows(bslug, Con{r, t}) ++ "</table>")
 
-def remove_button(b: Bool, +blog: String, +uid: String) -> String:
+# Removing someone asks first (src/web/app.js).
+def remove_button(b: Bool, +blog: String, +uid: String, +name: String) -> String:
   match b:
     case True{}:
-      "<form method=\"post\" action=\"/dash/" ++ (Html.esc(blog, "/authors/" ++ (Html.esc(uid, "/remove\" data-on:submit=\"@post('/dash/" ++ (Html.esc(blog, "/authors/" ++ (Html.esc(uid, "/remove?frag=1', {contentType: 'form'})\"><button class=\"danger\">Remove</button></form>"))))))))
+      "<form method=\"post\" action=\"/dash/" ++ (Html.esc(blog, "/authors/" ++ (Html.esc(uid, "/remove\" data-confirm=\"Remove " ++ (Html.esc(name, " from this blog? They will no longer be able to write or edit here.\" data-ok=\"Remove\" data-on:submit=\"@post('/dash/" ++ (Html.esc(blog, "/authors/" ++ (Html.esc(uid, "/remove?frag=1', {contentType: 'form'})\"><button class=\"danger\">Remove</button></form>"))))))))))
     case False{}:
       ""
 
@@ -421,7 +422,7 @@ def author_items(+blog: String, +is_owner: Bool, rows: List<&2, List<&2, String>
     case Nil{}:
       ""
     case Con{+r, t}:
-      "<li><span><strong>" ++ (Html.esc(col(r, 1n), "</strong><br><span class=\"meta\">" ++ (role_name(col(r, 3n)) ++ ("<span class=\"dot\"></span>" ++ (Html.esc(col(r, 2n), "</span></span>" ++ (remove_button(Bool.and(is_owner, Bool.not(String.eq(col(r, 3n), "1"))), blog, col(r, 0n)) ++ ("</li>" ++ author_items(blog, is_owner, t)))))))))
+      "<li><span><strong>" ++ (Html.esc(col(r, 1n), "</strong><br><span class=\"meta\">" ++ (role_name(col(r, 3n)) ++ ("<span class=\"dot\"></span>" ++ (Html.esc(col(r, 2n), "</span></span>" ++ (remove_button(Bool.and(is_owner, Bool.not(String.eq(col(r, 3n), "1"))), blog, col(r, 0n), col(r, 1n)) ++ ("</li>" ++ author_items(blog, is_owner, t)))))))))
 
 def people_list(+blog: String, +is_owner: Bool, rows: List<&2, List<&2, String>>) -> String:
   "<ul class=\"people\" id=\"people\">" ++ (author_items(blog, is_owner, rows) ++ "</ul>")
@@ -525,7 +526,7 @@ def tag_page(+tag: String, +page: U32, +rows: List<&2, List<&2, String>>, rest: 
 # parser drops one newline right after <textarea>, so one is put there for
 # it to drop: a text that starts with a newline keeps it.
 def edit_page(+id: String, +rep: String, +md: List<&2, String>, +tags: String) -> String:
-  head("Editing: " ++ col(md, 1n)) ++ ("<header class=\"editor-bar\"><div class=\"wrap wide\"><a class=\"btn quiet\" href=\"/dash/" ++ (Html.esc(col(md, 3n), "\" aria-label=\"Back to the blog\">←</a><span id=\"sync-status\" class=\"status\" role=\"status\">Saved</span>" ++ (preview_link(String.eq(col(md, 2n), "1"), col(md, 3n), col(md, 4n)) ++ (unpublish(String.eq(col(md, 2n), "1"), id) ++ (publish_buttons(String.eq(col(md, 2n), "1"), col(md, 5n)) ++ ("</div></header><main id=\"main\"><form id=\"post-form\" method=\"post\" action=\"/edit/" ++ (Html.esc(id, "\" class=\"wrap write editor\"><textarea class=\"title\" name=\"title\" rows=\"1\" required maxlength=\"200\" placeholder=\"Title\" aria-label=\"Title\">&#10;" ++ (Html.esc(col(md, 1n), "</textarea><input class=\"tags\" name=\"tags\" maxlength=\"300\" placeholder=\"Tags, separated by commas\" aria-label=\"Tags\" value=\"" ++ (Html.esc(tags, "\"><textarea id=\"editor\" class=\"text\" name=\"body\" placeholder=\"Tell your story…\" aria-label=\"Text\" data-published=\"" ++ (Html.esc(col(md, 2n), "\" data-post=\"" ++ (Html.esc(id, "\" data-rep=\"" ++ (Html.esc(rep, "\">&#10;" ++ (Html.esc(col(md, 0n), "</textarea><p class=\"help\"><button type=\"button\" id=\"image-add\" class=\"link\">Add an image</button> (or paste or drop one). <input type=\"file\" id=\"image-pick\" accept=\"image/*\" hidden> Markdown: <code>## Heading</code> <code>**bold**</code> <code>*italic*</code> <code>[link](https://…)</code> <code>- list</code> <code>&gt; quote</code>. Your text syncs as you type; Ctrl+S or ⌘S renders it.</p></form><div class=\"wrap danger-zone\"><form method=\"post\" action=\"/edit/" ++ (Html.esc(id, "/delete\" data-confirm=\"Delete this post? This cannot be undone.\"><button class=\"danger\">Delete post</button></form></div></main><script type=\"module\" src=\"" ++ (asset("editor.js") ++ "\"></script></body></html>\n"))))))))))))))))))))))))
+  head("Editing: " ++ col(md, 1n)) ++ ("<header class=\"editor-bar\"><div class=\"wrap wide\"><a class=\"btn quiet\" href=\"/dash/" ++ (Html.esc(col(md, 3n), "\" aria-label=\"Back to the blog\">←</a><span id=\"sync-status\" class=\"status\" role=\"status\">Saved</span>" ++ (preview_link(String.eq(col(md, 2n), "1"), col(md, 3n), col(md, 4n)) ++ (unpublish(String.eq(col(md, 2n), "1"), id) ++ (publish_buttons(String.eq(col(md, 2n), "1"), col(md, 5n)) ++ ("</div></header><main id=\"main\"><form id=\"post-form\" method=\"post\" action=\"/edit/" ++ (Html.esc(id, "\" class=\"wrap write editor\"><textarea class=\"title\" name=\"title\" rows=\"1\" required maxlength=\"200\" placeholder=\"Title\" aria-label=\"Title\">&#10;" ++ (Html.esc(col(md, 1n), "</textarea><input class=\"tags\" name=\"tags\" maxlength=\"300\" placeholder=\"Tags, separated by commas\" aria-label=\"Tags\" value=\"" ++ (Html.esc(tags, "\"><div class=\"edit-tools\" id=\"edit-tools\"></div><textarea id=\"editor\" class=\"text\" name=\"body\" placeholder=\"Tell your story…\" aria-label=\"Text\" data-published=\"" ++ (Html.esc(col(md, 2n), "\" data-post=\"" ++ (Html.esc(id, "\" data-rep=\"" ++ (Html.esc(rep, "\">&#10;" ++ (Html.esc(col(md, 0n), "</textarea><p class=\"help\"><button type=\"button\" id=\"image-add\" class=\"link\">Add an image</button> (or paste or drop one). <input type=\"file\" id=\"image-pick\" accept=\"image/*\" hidden> Markdown: <code>## Heading</code> <code>**bold**</code> <code>*italic*</code> <code>[link](https://…)</code> <code>- list</code> <code>&gt; quote</code>. Your text syncs as you type; Ctrl+S or ⌘S renders it.</p></form><div class=\"wrap danger-zone\"><form method=\"post\" action=\"/edit/" ++ (Html.esc(id, "/delete\" data-confirm=\"Delete this post? This cannot be undone.\"><button class=\"danger\">Delete post</button></form></div></main><script type=\"module\" src=\"" ++ (asset("editor.js") ++ "\"></script></body></html>\n"))))))))))))))))))))))))
 
 # AUTHOR PAGE
 # -----------
@@ -707,17 +708,28 @@ def reply_after(+info: List<&2, String>, +cid: String, +back: String) -> String:
 # or page load); with Datastar the same URL with ?frag=1 answers a stream
 # of patches instead. Expressions only ever contain numbers the server
 # wrote (ids), never user text.
+def like_js(liked: Bool) -> String:
+  match liked:
+    case True{}:
+      "true"
+    case False{}:
+      "false"
+
 def like_state(liked: Bool) -> String:
   match liked:
     case True{}:
-      "0\"><button class=\"like on\" aria-pressed=\"true\" title=\"Unlike\" data-attr:disabled=\"$_liking\">♥ "
+      "0\"><button class=\"like on\" aria-pressed=\"true\" title=\"Unlike\" data-class:on=\"$_lk\" data-attr:aria-pressed=\"$_lk ? 'true' : 'false'\" data-attr:title=\"$_lk ? 'Unlike' : 'Like'\" data-attr:disabled=\"$_liking\">♥ "
     case False{}:
-      "1\"><button class=\"like\" aria-pressed=\"false\" title=\"Like\" data-attr:disabled=\"$_liking\">♥ "
+      "1\"><button class=\"like\" aria-pressed=\"false\" title=\"Like\" data-class:on=\"$_lk\" data-attr:aria-pressed=\"$_lk ? 'true' : 'false'\" data-attr:title=\"$_lk ? 'Unlike' : 'Like'\" data-attr:disabled=\"$_liking\">♥ "
 
-def like_button(signed: Bool, +pid: String, +likes: String, liked: Bool) -> String:
+# A like shows at once (Datastar signals: _lk liked, _ln the count), and the
+# server's answer (the bar, patched) then says what is true. The form's
+# "on" (the state wanted) is set before it is sent. Expressions hold only
+# numbers the server wrote.
+def like_button(signed: Bool, +pid: String, +likes: String, +liked: Bool) -> String:
   match signed:
     case True{}:
-      "<form method=\"post\" action=\"/like/" ++ (Html.esc(pid, "\" data-on:submit=\"@post('/like/" ++ (Html.esc(pid, "?frag=1', {contentType: 'form'})\" data-indicator:_liking><input type=\"hidden\" name=\"on\" value=\"" ++ (like_state(liked) ++ (Html.esc(likes, "</button></form>")))))))
+      "<form method=\"post\" action=\"/like/" ++ (Html.esc(pid, "\" data-signals=\"{_lk: " ++ (like_js(liked) ++ (", _ln: " ++ (Html.esc(likes, "}\" data-on:submit=\"$_lk = !$_lk; $_ln = $_ln + ($_lk ? 1 : -1); el.elements.on.value = $_lk ? '1' : '0'; @post('/like/" ++ (Html.esc(pid, "?frag=1', {contentType: 'form'})\" data-indicator:_liking><input type=\"hidden\" name=\"on\" value=\"" ++ (like_state(liked) ++ ("<span data-text=\"$_ln\">" ++ (Html.esc(likes, "</span></button></form>"))))))))))))
     case False{}:
       "<a class=\"btn like\" href=\"/login\" title=\"Log in to like\">♥ " ++ (Html.esc(likes, "</a>"))
 
@@ -776,8 +788,12 @@ def replies_open(collapse: Bool, +id: String, +n: String) -> String:
 
 # A comment row (see Q_COMMENTS): [id, depth, author id, author, date,
 # deleted, mine, parent, handle, replies]. Before its body:
+# extra: more classes (" fresh": just arrived, highlighted for a moment).
+def comment_open_as(+extra: String, +r: List<&2, String>) -> String:
+  "<div class=\"comment" ++ (extra ++ ("\" id=\"c" ++ (Html.esc(col(r, 0n), "\" data-parent=\"" ++ (Html.esc(col(r, 7n), "\"><div class=\"meta\">" ++ (author_link(col(r, 2n), col(r, 3n)) ++ (handle_tag(col(r, 8n)) ++ ("<span class=\"dot\"></span><a href=\"#c" ++ (Html.esc(col(r, 0n), "\">" ++ (date(col(r, 4n)) ++ ("</a></div><div class=\"cbody\" id=\"cb" ++ (Html.esc(col(r, 0n), "\">")))))))))))))))
+
 def comment_open(+r: List<&2, String>) -> String:
-  "<div class=\"comment\" id=\"c" ++ (Html.esc(col(r, 0n), "\" data-parent=\"" ++ (Html.esc(col(r, 7n), "\"><div class=\"meta\">" ++ (author_link(col(r, 2n), col(r, 3n)) ++ (handle_tag(col(r, 8n)) ++ ("<span class=\"dot\"></span><a href=\"#c" ++ (Html.esc(col(r, 0n), "\">" ++ (date(col(r, 4n)) ++ ("</a></div><div class=\"cbody\" id=\"cb" ++ (Html.esc(col(r, 0n), "\">")))))))))))))
+  comment_open_as("", r)
 
 # After its body: actions, the inline reply slot, and its replies opened.
 def comment_after(+r: List<&2, String>, +signed: Bool, +can_mod: Bool, +collapse: Bool) -> String:
@@ -823,7 +839,7 @@ def live_segs(rows: List<&2, List<&2, String>>, +signed: Bool, +can_mod: Bool) -
     case Nil{}:
       Nil{}
     case Con{+r, t}:
-      Con{T{live_target(col(r, 7n)) ++ (SCon{Char.from_u32(31), SNil{}} ++ ("append" ++ (SCon{Char.from_u32(31), SNil{}} ++ comment_open(r))))}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{comment_after(r, signed, can_mod, False{}) ++ ("</details></div>" ++ SCon{Char.from_u32(30), SNil{}})}, live_segs(t, signed, can_mod)}}}
+      Con{T{live_target(col(r, 7n)) ++ (SCon{Char.from_u32(31), SNil{}} ++ ("append" ++ (SCon{Char.from_u32(31), SNil{}} ++ comment_open_as(" fresh", r))))}, Con{comment_body_seg(String.eq(col(r, 5n), "1"), col(r, 0n)), Con{T{comment_after(r, signed, can_mod, False{}) ++ ("</details></div>" ++ SCon{Char.from_u32(30), SNil{}})}, live_segs(t, signed, can_mod)}}}
 
 # COMMENT PAGES: a post page shows 20 threads (src/handlers.bend
 # threads_take); "More comments" brings the next 20 (Datastar puts them in

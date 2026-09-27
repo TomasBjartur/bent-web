@@ -157,7 +157,8 @@ def image(sock: Socket, key: String) -> IO(Socket & Result<&1, &1, U32 & String,
 # head; send sends one chunk (raw 1: text as it is; 0: patches, with
 # bodies spliced as for page) and keeps the connection open. Fail: the
 # reader has gone.
-def stream_open(sock: Socket) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
+# anon 1: a signed-out reader's stream (NET_REVALIDATE, not no-store).
+def stream_open(sock: Socket, anon: U32) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
   import "./effects/db.c"
 
 def stream_send(sock: Socket, raw: U32, texts: List<&2, String>, bodies: List<&2, U32>, token: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):

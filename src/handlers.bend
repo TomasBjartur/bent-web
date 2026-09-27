@@ -397,7 +397,7 @@ def h_live3(s: Socket, +token: String, +who: U32, +pid: U32, +can_mod: Bool, +af
       send_text(s, token, 404, "not found\n")
     case Some{p}:
       do IO<Unit>:
-        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.stream_open(s)
+        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.stream_open(s, Bool.to_u32(Bool.not(signed(who))))
         live_loop(24n, r, token, who, pid, can_mod, after, n, False{})
 
 def h_live(s: Socket, +token: String, +who: U32, +pid: U32, +query: String) -> IO(Unit):
@@ -1198,7 +1198,8 @@ def h_logout(s: Socket, +token: String) -> IO(Unit):
     redirect(s, token, "/", "-")
 
 # Static assets are compiled into the server (src/effects/db.c): 0 the
-# editor, 1 the stylesheet, 2 the passkey script.
+# editor, 1 the stylesheet, 2 the passkey script, 3 Datastar, 4 the site
+# script.
 def h_static(k: Nat, s: Socket, +token: String, +who: U32) -> IO(Unit):
   match k:
     case 0n:
@@ -1471,7 +1472,7 @@ def read(s: Socket, r: Route.Route, +token: String, +who: U32, +query: String, +
     case Route.REdit{+id}:
       h_edit(s, token, who, id)
     case Route.RStatic{+name}:
-      h_static(U32.to_nat((Bool.to_u32(String.eq(name, "editor.js")) + ((2 * Bool.to_u32(String.eq(name, "app.css"))) + ((3 * Bool.to_u32(String.eq(name, "passkey.js"))) + (4 * Bool.to_u32(String.eq(name, "datastar.js"))))) : U32)), s, token, who)
+      h_static(U32.to_nat((Bool.to_u32(String.eq(name, "editor.js")) + ((2 * Bool.to_u32(String.eq(name, "app.css"))) + ((3 * Bool.to_u32(String.eq(name, "passkey.js"))) + ((4 * Bool.to_u32(String.eq(name, "datastar.js"))) + (5 * Bool.to_u32(String.eq(name, "app.js")))))) : U32)), s, token, who)
     case Route.RSignupPage{}:
       Auth.h_signup_page(s, token, who)
     case Route.RLoginPage{}:

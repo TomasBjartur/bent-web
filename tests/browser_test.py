@@ -143,7 +143,16 @@ def run(dbpath):
         dims = js(f"(async () => {{ const r = await fetch('{m.group(1)}'); const b = await r.blob(); const i = await createImageBitmap(b); return [r.headers.get('content-type'), i.width, i.height, b.size]; }})()")
         check("resized in the browser to at most 1600 px, as JPEG", dims and dims[0] == "image/jpeg" and max(dims[1], dims[2]) == 1600 and dims[3] <= 1000000, dims)
         time.sleep(2)
+        # Update (the post is published): saved in place, live at once.
+        js("window.__marker = 9")
         js("document.querySelector('button[value=publish]').click()")
+        for _ in range(40):
+            time.sleep(0.2)
+            if js("document.getElementById('sync-status').textContent") == "Updated · live now":
+                break
+        check("Update saves in place", js("window.__marker") == 9 and js("document.getElementById('sync-status').textContent") == "Updated · live now",
+              js("document.getElementById('sync-status').textContent"))
+        js("location.href = '/b/eve-writes/hello-world'")
         wait_path("/b/eve-writes/hello-world")
         time.sleep(0.5)
         check("published post shows the image", js(f"!!document.querySelector('.body img[src=\"{m.group(1)}\"]') && document.querySelector('.body img').complete && document.querySelector('.body img').naturalWidth > 0") is True)

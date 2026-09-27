@@ -215,8 +215,11 @@ def main():
         br.keys("<C-r>")
         check("redo", br.text() == "ello world!\nsecond line", repr(br.text()))
         check("vim edits sync like typing", br.wait_saved(), br.js("document.getElementById('sync-status').textContent"))
+        br.js("window.__marker = 5")
         br.keys(":w<CR>")
         time.sleep(1.5)
+        check(":w saves without leaving the page", br.js("window.__marker") == 5 and br.js("document.getElementById('sync-status').textContent") == "Draft saved",
+              br.js("document.getElementById('sync-status').textContent"))
         check(":w saves (the post is rendered)", "second line" in db.execute("SELECT body_html FROM post_body WHERE post_id = ?", (pid,)).fetchone()[0])
         br.open(edit)
         check("vim stays on after a reload, no dialog", br.js("document.querySelector('.vim-toggle').getAttribute('aria-pressed')") == "true"

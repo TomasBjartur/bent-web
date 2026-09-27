@@ -201,7 +201,7 @@ def main():
         check("comment appears live, without a reload", seen and eb.js("window.__marker") == 42)
         eb.js("document.querySelector('#social button').click()")
         time.sleep(1.0)
-        check("like without a reload", eb.js("window.__marker") == 42 and "♥ 1" in (eb.js("document.getElementById('social').innerText") or ""),
+        check("like without a reload", eb.js("window.__marker") == 42 and "♥ 1" in (eb.js("document.getElementById('social').textContent") or ""),
               eb.js("document.getElementById('social').outerHTML"))
         eb.js("const t = document.querySelector('#comments textarea'); t.value = 'Typed by B'; document.querySelector('#comments form.cform button').click()")
         seen = False

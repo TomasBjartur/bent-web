@@ -518,6 +518,8 @@ static const char PAGE_NONCE_MARK[] = "\x01" "NONCE-MARK-0000000000000000000" "\
 #define PAGE_NONCE_LEN 32u
 
 // Fills nonce (32 hex + NUL) and writes it over the mark in body, if any.
+#define PAGE_NONCE_USES 4u
+
 static void page_nonce(PageOut *body, char nonce[PAGE_NONCE_LEN + 1u]) {
   _Static_assert(sizeof PAGE_NONCE_MARK - 1u == PAGE_NONCE_LEN, "nonce mark length");
   uint8_t raw[PAGE_NONCE_LEN / 2u];
@@ -528,8 +530,18 @@ static void page_nonce(PageOut *body, char nonce[PAGE_NONCE_LEN + 1u]) {
     nonce[2u * i + 1u] = hx[raw[i] & 15u];
   }
   nonce[PAGE_NONCE_LEN] = 0;
-  char *m = body->len >= PAGE_NONCE_LEN ? memmem(body->buf, body->len, PAGE_NONCE_MARK, PAGE_NONCE_LEN) : NULL;
-  if (m != NULL) memcpy(m, nonce, PAGE_NONCE_LEN);
+  // The mark is in the page's head (at most PAGE_NONCE_USES times: the
+  // html element, the speculation rules). It starts and ends with byte 1,
+  // which escaped text and stored HTML never contain (html_esc_safe), so
+  // no text a user wrote can be given the nonce.
+  char *at = body->buf;
+  for (uint32_t k = 0; k < PAGE_NONCE_USES; k++) {
+    u64 left = body->len - (u64)(at - body->buf);
+    char *m = left >= PAGE_NONCE_LEN ? memmem(at, left, PAGE_NONCE_MARK, PAGE_NONCE_LEN) : NULL;
+    if (m == NULL) break;
+    memcpy(m, nonce, PAGE_NONCE_LEN);
+    at = m + PAGE_NONCE_LEN;
+  }
 }
 
 // Content type 2 (text/event-stream): the body the templates made is a
@@ -627,6 +639,8 @@ static Term page_run(Env e, Term *f, IoWork *w) {
   w->hand = (intptr_t)io_hand_v(f[0]);
   uint32_t status = (uint32_t)f[1], ctype = (uint32_t)f[2];
   uint8_t h[32];
+  // Signed out: no session token came with the request at all.
+  int anon = term_aux(f[5]) != CID_SCON;
   app_token_hash(e, f[5], h);
   u64 cn = 0, ln = 0;
   char *cookie = io_cstr(e, f[6], &cn);
@@ -658,7 +672,8 @@ static Term page_run(Env e, Term *f, IoWork *w) {
   ASSERT(cn2 > 0 && (size_t)cn2 < sizeof csp);
   char head[2048];
   int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s%s",
-                    status, reason, page_ctypes[ctype], (unsigned long long)body.len, csp, NET_OTHER_HEADERS, NET_NO_STORE);
+                    status, reason, page_ctypes[ctype], (unsigned long long)body.len, csp, NET_OTHER_HEADERS,
+                    anon && cn == 0u ? NET_REVALIDATE : NET_NO_STORE);
   ASSERT(hn > 0 && (size_t)hn < sizeof head);
   if (cn == TOKEN_HEX) {
     hn += snprintf(head + hn, sizeof head - (size_t)hn,
@@ -732,7 +747,7 @@ Term stream_open_run(Env e, Term *f, IoWork *w) {
   w->hand = (intptr_t)io_hand_v(f[0]);
   char head[1024];
   int hn = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n%s%s\r\n",
-                    NET_SECURITY_HEADERS, NET_NO_STORE);
+                    NET_SECURITY_HEADERS, (uint32_t)f[1] == 1u ? NET_REVALIDATE : NET_NO_STORE);
   ASSERT(hn > 0 && (size_t)hn < sizeof head);
   char *out = io_mem(malloc((size_t)hn));
   memcpy(out, head, (size_t)hn);
@@ -1188,7 +1203,14 @@ static void page_cache_store(const char *k, u64 n, PageStamp stamp, uint32_t cty
 
 // Sends body (200, no cookie, content type ctype) on w's socket; takes
 // ownership of it.
-static Term page_emit(Env e, IoWork *w, uint32_t ctype, PageOut *body) {
+// A cache key is kind, signed in (0 or 1), ":", ... (src/handlers.bend
+// cache_key; post pages "p0:<id>" are signed out).
+static int page_key_anon(const char *k, u64 n) {
+  return n >= 3u && k[1] == '0' && k[2] == ':';
+}
+
+// anon: the request came without a session (see NET_REVALIDATE).
+static Term page_emit(Env e, IoWork *w, uint32_t ctype, PageOut *body, int anon) {
   ASSERT(ctype < sizeof page_ctypes / sizeof page_ctypes[0]);
   char nonce[PAGE_NONCE_LEN + 1u], csp[512];
   page_nonce(body, nonce);
@@ -1196,7 +1218,7 @@ static Term page_emit(Env e, IoWork *w, uint32_t ctype, PageOut *body) {
   ASSERT(cn > 0 && (size_t)cn < sizeof csp);
   char head[1024];
   int hn = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s%s\r\n",
-                    page_ctypes[ctype], (unsigned long long)body->len, csp, NET_OTHER_HEADERS, NET_NO_STORE);
+                    page_ctypes[ctype], (unsigned long long)body->len, csp, NET_OTHER_HEADERS, anon ? NET_REVALIDATE : NET_NO_STORE);
   ASSERT(hn > 0 && (size_t)hn < sizeof head);
   u64 total = (u64)hn + body->len;
   char *out = io_mem(malloc(total));
@@ -1229,7 +1251,7 @@ Term cached_run(Env e, Term *f, IoWork *w) {
     ASSERT(bytes != NULL);
     PageOut body = {io_mem(malloc(c->len > 0u ? c->len : 1u)), 0, c->len > 0u ? c->len : 1u, 0};
     page_put(&body, bytes, c->len);
-    r = page_emit(e, w, c->ctype, &body);
+    r = page_emit(e, w, c->ctype, &body, page_key_anon(key, kn));
     hit = 1;
   }
   free(key);
@@ -1289,8 +1311,9 @@ Term page_cache_put_run(Env e, Term *f, IoWork *w) {
     page_stamps[w->hand] = (PageStamp){0, 0};
   }
   page_cache_store(key, kn, stamp, ctype, body.buf, body.len);
+  int signed_out = page_key_anon(key, kn);
   free(key);
-  return page_emit(e, w, ctype, &body);
+  return page_emit(e, w, ctype, &body, signed_out);
 }
 
 static void __attribute__((constructor)) page_cache_put_use(void) {
@@ -1355,7 +1378,8 @@ static void __attribute__((constructor)) sync_page_use(void) {
 // ------
 // asset(sock, id): static files embedded at compile time, served as bytes
 // with immutable caching (pages link them with a ?v=<hash> query).
-// 0 the editor bundle, 1 the stylesheet, 2 the passkey script, 3 Datastar.
+// 0 the editor bundle, 1 the stylesheet, 2 the passkey script, 3 Datastar,
+// 4 the site script (src/web/app.js).
 
 #ifdef CID(asset)
 
@@ -1371,6 +1395,9 @@ static const char ASSET_PASSKEY[] = {
 static const char ASSET_DATASTAR[] = {
 #embed "../vendor/datastar/datastar.js"
 };
+static const char ASSET_APP[] = {
+#embed "../src/web/app.js"
+};
 
 Term asset_run(Env e, Term *f, IoWork *w) {
   w->hand = (intptr_t)io_hand_v(f[0]);
@@ -1382,6 +1409,7 @@ Term asset_run(Env e, Term *f, IoWork *w) {
   else if (id == 1u) { data = ASSET_CSS; len = sizeof ASSET_CSS; type = "text/css; charset=utf-8"; }
   else if (id == 2u) { data = ASSET_PASSKEY; len = sizeof ASSET_PASSKEY; }
   else if (id == 3u) { data = ASSET_DATASTAR; len = sizeof ASSET_DATASTAR; }
+  else if (id == 4u) { data = ASSET_APP; len = sizeof ASSET_APP; }
   uint32_t status = len > 0u ? 200u : 404u;
   char head[1024];
   int hn = snprintf(head, sizeof head, "HTTP/1.1 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n%s%s\r\n",
