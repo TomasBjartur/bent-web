@@ -192,7 +192,9 @@ a.tag:hover { color: var(--fg); }
 
 .social { display: flex; gap: 8px; align-items: center; margin: 40px 0 0; }
 .social form { display: inline; }
-button.like, .btn.like { font-size: 1rem; }
+/* Equal-width digits and room for three of them: a like (1 to 2, 9 to 10)
+   never moves what is next to it. */
+button.like, .btn.like { font-size: 1rem; font-variant-numeric: tabular-nums; min-width: 5.6em; justify-content: center; text-align: center; box-sizing: border-box; }
 button.like.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .comments { margin-top: 48px; padding-top: 8px; border-top: 1px solid var(--line); }
 .comments > h2 { margin-top: 24px; }
