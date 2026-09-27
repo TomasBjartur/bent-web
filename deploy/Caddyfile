@@ -2,6 +2,15 @@
 # listens on 127.0.0.1:8080 only.
 {
 	admin off
+	# Slow clients are held here, not by the app: a request's head and body
+	# must arrive in time.
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 30s
+			idle 2m
+		}
+	}
 	# Blogs' custom domains get certificates on demand, but only after the
 	# app says the domain is a blog's verified domain (GET /_domain).
 	on_demand_tls {
@@ -16,7 +25,12 @@
 	request_body {
 		max_size 2MB
 	}
-	reverse_proxy 127.0.0.1:8080
+	# The whole body first (up to the 2 MB limit), then to the app: a
+	# client trickling a body in holds Caddy's connection, not one of the
+	# app's few body buffers (src/c/limits.h BODY_SLOTS).
+	reverse_proxy 127.0.0.1:8080 {
+		request_buffers 2MB
+	}
 }
 
 # Any other name: a blog's custom domain. No HSTS here: that is the domain
@@ -30,5 +44,10 @@ https:// {
 	request_body {
 		max_size 2MB
 	}
-	reverse_proxy 127.0.0.1:8080
+	# The whole body first (up to the 2 MB limit), then to the app: a
+	# client trickling a body in holds Caddy's connection, not one of the
+	# app's few body buffers (src/c/limits.h BODY_SLOTS).
+	reverse_proxy 127.0.0.1:8080 {
+		request_buffers 2MB
+	}
 }

@@ -58,10 +58,13 @@ def apply_status.go(k: Nat) -> U32:
       403
     case 3n:
       409
+    case 5n:
+      429
     case _:
       500
 
-# An apply failure code: 1 stale facts / 3 conflict -> 409, 2 denied -> 403.
+# An apply failure code: 1 stale facts / 3 conflict -> 409, 2 denied -> 403,
+# 5 over the write budget -> 429.
 def apply_status(+code: U32) -> U32:
   apply_status.go(U32.to_nat(code))
 
@@ -289,6 +292,8 @@ def upload_status.go(k: Nat) -> U32:
       403
     case 3n:
       400
+    case 5n:
+      429
     case _:
       500
 
@@ -1167,14 +1172,24 @@ def h_add_author3(frag: Bool, s: Socket, +token: String, +who: U32, +blog: U32, 
   +uid = num(first_col(users, 0n))
   h_add_author4(U32.is_eq(uid, 0), frag, s, token, who, blog, bslug, uid)
 
+# The owner first: whether an email has an account is theirs to learn only.
+def h_add_author2b(m: Maybe<&2, Authz.Permit>, frag: Bool, s: Socket, +token: String, +who: U32, +bslug: String, +blog: U32, em: Text.Title) -> IO(Unit):
+  match m:
+    case None{}:
+      author_note(frag, s, token, who, 403, "Only the blog's owner can add authors.")
+    case Some{p}:
+      do IO<Unit>:
+        users : List<&2, List<&2, String>> <- Db.user_by_email(p, Text.Title.text(em), token)
+        h_add_author3(frag, s, token, who, blog, bslug, users)
+
 def h_add_author2(frag: Bool, s: Socket, +token: String, +who: U32, +bslug: String, +blog: U32, email: Maybe<&2, Text.Title>) -> IO(Unit):
   match email:
     case None{}:
       author_note(frag, s, token, who, 400, "Enter their email address.")
     case Some{em}:
       do IO<Unit>:
-        users : List<&2, List<&2, String>> <- Db.query(Db.q_user_by_email(), 0, 0, Text.Title.text(em), token)
-        h_add_author3(frag, s, token, who, blog, bslug, users)
+        f : Spec.Facts <- Db.facts(who, blog, 0)
+        h_add_author2b(Authz.authorize(f, Spec.EditBlog{blog}), frag, s, token, who, bslug, blog, em)
 
 def h_add_author.go(frag: Bool, s: Socket, +token: String, +who: U32, +bslug: String, +xs: List<&2, Text.Field>) -> IO(Unit):
   do IO<Unit>:
@@ -1337,9 +1352,11 @@ def h_author(s: Socket, +token: String, +who: U32, +uid: U32, +query: String) ->
     r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("u", who, U32.show(uid) ++ (page_key(page_num(query)) ++ frag_key(wants_frag(form(query))))))
     cached_or(r, s2 => h_author2(s2, token, who, uid, page_num(query), wants_frag(form(query))))
 
-# SEARCH: /search?q=... Results are cached like feeds (the key is the
-# sanitized query; a long one is simply not cached). With frag (as you
-# type): just #results.
+# SEARCH: /search?q=... Results are cached like feeds. The key is the
+# query as typed, which the page shows (keyed on the normalized query, one
+# visitor's words could be shown to everyone whose search normalized the
+# same); a long one is simply not cached. With frag (as you type): just
+# #results.
 def search_send(frag: Bool, s: Socket, +key: String, +who: U32, +q: String, +rows: List<&2, List<&2, String>>) -> IO(Unit):
   match frag:
     case True{}:
@@ -1360,7 +1377,7 @@ def search_busy(frag: Bool, s: Socket, +token: String, +who: U32) -> IO(Unit):
 def h_search4(ok: Bool, s: Socket, +token: String, +who: U32, +q: String, +fq: String, +frag: Bool, +rows: List<&2, List<&2, String>>) -> IO(Unit):
   match ok:
     case True{}:
-      search_send(frag, s, cache_key("s", who, fq ++ frag_key(frag)), who, q, rows)
+      search_send(frag, s, cache_key("s", who, q ++ frag_key(frag)), who, q, rows)
     case False{}:
       search_busy(frag, s, token, who)
 
@@ -1386,7 +1403,7 @@ def h_search2(empty: Bool, s: Socket, +token: String, +who: U32, +q: String, +fq
       h_search_empty(frag, s, token, who, q)
     case False{}:
       do IO<Unit>:
-        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("s", who, fq ++ frag_key(frag)))
+        r : Socket & Result<&1, &1, U32 & String, Unit> <- Db.cached(s, cache_key("s", who, q ++ frag_key(frag)))
         cached_or(r, s2 => h_search3(s2, token, who, q, fq, frag))
 
 def h_search.go(s: Socket, +token: String, +who: U32, +q: String, +frag: Bool) -> IO(Unit):

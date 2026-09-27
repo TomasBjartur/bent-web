@@ -45,6 +45,7 @@ typedef enum {
   DB_DENIED = 2,    // the floor check failed (should be unreachable)
   DB_CONFLICT = 3,  // a constraint failed (e.g. duplicate slug)
   DB_ERROR = 4,     // SQLite error
+  DB_BUDGET = 5,    // the user's writes this minute are used up (WRITE_BUDGET_MAX)
 } DbResult;
 
 // The facts a decision was made on (spec/authz.bend: Facts, flattened).
@@ -122,6 +123,15 @@ enum {
 
 #define DB_ROWS_MAX 300u
 
+// WRITES: every write through db_apply or db_upload counts against its
+// user's budget, WRITE_BUDGET_MAX per WRITE_BUDGET_WINDOW_MS (else
+// DB_BUDGET), checked and counted inside the write's transaction. It must
+// equal spec/authz.bend writes_per_minute (the policy's side, proved:
+// LAWS.bend authz_writes_budgeted). Typing (db_sync) is not counted: it has
+// its own limits per request and per post.
+#define WRITE_BUDGET_MAX 30u
+#define WRITE_BUDGET_WINDOW_MS 60000ull
+
 // COMMENTS: at most COMMENT_RATE_MAX per user per window (else DB_CONFLICT),
 // and POST_COMMENTS_MAX per post.
 #define COMMENT_RATE_MAX 5u
@@ -135,6 +145,7 @@ enum {
 #define IMG_PER_POST_MAX 300u
 #define IMG_RATE_MAX 60u
 #define IMG_RATE_WINDOW_MS 600000ull
+#define IMG_PER_USER_MAX 2000u  // 2 GB at most per account (else DB_CONFLICT)
 #define IMG_KEY_BYTES 16u
 
 // TAGS: at most TAGS_MAX per post, each 1..TAG_BYTES_MAX of a-z 0-9 '-'.
@@ -155,7 +166,8 @@ enum {
   ST_TOKEN_RECENT, ST_TOKEN_NEW, ST_TOKEN_GET, ST_TOKEN_USE, ST_OUTBOX_NEW, ST_USER_ID_BY_EMAIL,
   ST_CHAL_NEW, ST_CHAL_USE, ST_CRED_GET, ST_CRED_NEW, ST_CRED_COUNT,
   ST_OP_NEW, ST_OP_SINCE, ST_OP_COUNT, ST_SLUG_TAKEN, ST_POST_RENAME,
-  ST_DOMAIN_SET, ST_DOMAIN_TAKE, ST_DOMAIN_OK, ST_DOMAIN_CLEAR, ST_IMG_POST_COUNT, ST_IMG_RECENT, ST_IMG_NEW, ST_IMG_GET, ST_TAGS_CLEAR, ST_TAG_ADD, ST_HANDLE_TAKEN, ST_USER_HANDLE, ST_SCHEDULE, ST_UNSCHEDULE, ST_DUE, ST_PUBLISH_DUE, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY,
+  ST_DOMAIN_SET, ST_DOMAIN_TAKE, ST_DOMAIN_OK, ST_DOMAIN_CLEAR, ST_IMG_POST_COUNT, ST_IMG_RECENT, ST_IMG_NEW, ST_IMG_GET, ST_TAGS_CLEAR, ST_TAG_ADD, ST_HANDLE_TAKEN, ST_USER_HANDLE, ST_SCHEDULE, ST_UNSCHEDULE, ST_DUE, ST_PUBLISH_DUE, ST_LIKE_ADD, ST_LIKE_DEL, ST_COMMENT_RECENT, ST_COMMENT_COUNT, ST_COMMENT_NEW, ST_COMMENT_DEL, ST_COMMENT_BODY, ST_BUDGET_GET, ST_BUDGET_PUT,
+  ST_SWEEP_CHAL, ST_SWEEP_TOKEN, ST_SWEEP_SESSION, ST_SWEEP_OUTBOX, ST_IMG_USER_COUNT,
   ST_COUNT
 };
 
@@ -261,6 +273,17 @@ int32_t db_comment_body(Db *db, uint32_t comment, const uint8_t token_hash[32], 
 // statement. Returns 0 on success.
 int32_t db_open(Db *db, const char *path);
 void db_close(Db *db);
+
+// Removes what has expired (challenges, email tokens, sessions) and mail
+// older than a week, at most SWEEP_BATCH rows of each per call (the tick
+// calls it): tables an attacker can grow without signing in stay bounded
+// by what they add in a challenge's lifetime.
+#define SWEEP_BATCH 2000u
+#define OUTBOX_KEEP_MS (7ull * 24ull * 3600ull * 1000ull)
+void db_sweep(Db *db, uint64_t now_ms);
+
+// The writes user made in the current budget window (see WRITE_BUDGET_MAX).
+uint32_t db_budget_spent(Db *db, uint32_t user, uint64_t now_ms);
 
 // A read-only connection for queries run off the event loop (on a helper
 // thread: one reader per thread at a time). SQLite refuses writes on it.
@@ -378,9 +401,12 @@ AuthResult auth_register(Db *db, const uint8_t token_hash[32], const uint8_t cha
                          const uint8_t *id, uint32_t id_len, const uint8_t x[32], const uint8_t y[32],
                          uint32_t count, uint64_t now_ms, uint32_t *user, uint8_t session[32]);
 
-// Completes a login in one transaction: consumes the login challenge,
-// re-verifies the signature over msg (authenticator data followed by the
-// SHA-256 of clientDataJSON) with the public key stored for this
+// Completes a login in one transaction: consumes the login challenge
+// (by the hash Bend gives: C never sees clientDataJSON, so that this is the
+// challenge inside the signed clientDataJSON, and the rpIdHash and UP flag,
+// rest on Bend's check, proved: LAWS.bend webauthn_login_ok), re-verifies
+// the signature over msg (authenticator data followed by the SHA-256 of
+// clientDataJSON) with the public key stored for this
 // credential, advances the credential's counter to the one inside the
 // signed authenticator data (it must increase, or stay 0 for authenticators
 // without counters), and creates a session.

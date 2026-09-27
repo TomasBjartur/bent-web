@@ -9,9 +9,15 @@ rule() { echo "LINT: $1"; fail=1; }
 hits=$(grep -rn "apply_raw(\|sync_page(\|upload_raw(" src --include=*.bend | grep -v "^src/db.bend:" || true)
 [ -z "$hits" ] || rule "apply_raw called outside src/db.bend (writes must go through apply, which takes a Permit): $hits"
 
-# 2. Permits are only constructed by authorize.
-hits=$(grep -rn "Permit{" src --include=*.bend | grep -v "^src/authz.bend:" | grep -v "case Authz.Permit{" || true)
-[ -z "$hits" ] || rule "a Permit is built outside src/authz.bend: $hits"
+# 2. Permits (and WritePermits: the write budget) are only constructed by
+#    authorize and authorize_write.
+hits=$(grep -rn "Permit{" src --include=*.bend | grep -v "^src/authz.bend:" | grep -v "case Authz.Permit{\|case Authz.WritePermit{" || true)
+[ -z "$hits" ] || rule "a Permit or WritePermit is built outside src/authz.bend: $hits"
+
+# 2b. Whether an email has an account is private: looked up only through
+#     Db.user_by_email, which takes a Permit to manage a blog.
+hits=$(grep -rn "q_user_by_email" src --include=*.bend | grep -v "^src/db.bend:" || true)
+[ -z "$hits" ] || rule "q_user_by_email used outside src/db.bend (use Db.user_by_email): $hits"
 
 # 3. Refined values are only built by their smart constructors (a literal
 #    proof {==} next to a constructor outside its module would forge one).

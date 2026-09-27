@@ -112,6 +112,15 @@ static const char *const DB_SQL[ST_COUNT] = {
   // author is checked here. Replies stay; the text goes.
   [ST_COMMENT_DEL] = ("UPDATE comment SET deleted = 1, body_md = '', body_html = '' "
                       "WHERE id = ?1 AND post_id = ?2 AND author_id = ?3 AND deleted = 0"),
+  // (challenge, email_token and session are WITHOUT ROWID: by their keys.)
+  [ST_SWEEP_CHAL] = "DELETE FROM challenge WHERE hash IN (SELECT hash FROM challenge WHERE expires_ms < ?1 LIMIT 2000)",
+  [ST_SWEEP_TOKEN] = "DELETE FROM email_token WHERE hash IN (SELECT hash FROM email_token WHERE expires_ms < ?1 LIMIT 2000)",
+  [ST_SWEEP_SESSION] = "DELETE FROM session WHERE token_hash IN (SELECT token_hash FROM session WHERE expires_ms < ?1 LIMIT 2000)",
+  [ST_SWEEP_OUTBOX] = "DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE created_ms < ?1 LIMIT 2000)",
+  [ST_IMG_USER_COUNT] = "SELECT count(*) FROM image WHERE author_id = ?1",
+  [ST_BUDGET_GET] = "SELECT window_ms, n FROM write_budget WHERE user_id = ?1",
+  [ST_BUDGET_PUT] = ("INSERT INTO write_budget(user_id, window_ms, n) VALUES (?1, ?2, ?3) "
+                     "ON CONFLICT(user_id) DO UPDATE SET window_ms = excluded.window_ms, n = excluded.n"),
   [ST_COMMENT_BODY] = ("SELECT c.body_html FROM comment c JOIN post p ON p.id = c.post_id WHERE c.id = ?1 AND c.deleted = 0 "
                        "AND (p.published = 1 OR EXISTS (SELECT 1 FROM member m JOIN session s ON s.user_id = m.user_id "
                        "WHERE m.blog_id = p.blog_id AND s.token_hash = ?2 AND s.expires_ms > ?3))"),
@@ -358,6 +367,12 @@ static const char *const DB_MIGRATIONS[] = {
   "CREATE VIRTUAL TABLE post_fts USING fts5(title, body_md, content='', contentless_delete=1,"
   " tokenize='unicode61 remove_diacritics 2', prefix='3');"
   "INSERT INTO post_fts(rowid, title, body_md) SELECT p.id, p.title, b.body_md FROM post p JOIN post_body b ON b.post_id = p.id;",
+  // v14: each user's write budget (WRITE_BUDGET_MAX a minute): the
+  // current window's start and its writes.
+  "CREATE TABLE write_budget (user_id INTEGER PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE,"
+  " window_ms INTEGER NOT NULL, n INTEGER NOT NULL CHECK (n >= 0));"
+  // (And images by uploader: the per-account count and rate.)
+  "CREATE INDEX image_author ON image(author_id, created_ms);",
 };
 #define DB_MIGRATION_COUNT (sizeof DB_MIGRATIONS / sizeof DB_MIGRATIONS[0])
 
@@ -584,6 +599,16 @@ static int db_exec(sqlite3_stmt *st) {
   sqlite3_reset(st);
   sqlite3_clear_bindings(st);
   return rc;
+}
+
+// Ends a failed write transaction. After some errors (a full disk, I/O)
+// SQLite has already rolled it back itself: then there is nothing to do
+// (asserting on ROLLBACK's result would stop the process for a disk error).
+static void db_rollback(Db *db) {
+  ASSERT(db != NULL && db->conn != NULL);
+  if (sqlite3_get_autocommit(db->conn)) return;
+  int rb = db_exec(db->st[ST_ROLLBACK]);
+  ASSERT(rb == SQLITE_DONE);
 }
 
 uint32_t db_session_user(Db *db, const uint8_t token_hash[32], uint64_t now_ms) {
@@ -935,6 +960,49 @@ static DbResult db_do(Db *db, uint64_t now_ms, const DbFacts *f, const DbWrite *
   }
 }
 
+// The user's budget window: its start and its writes (0, 0 if none yet).
+static void db_budget_get(Db *db, uint32_t user, uint64_t *window_ms, uint32_t *n) {
+  ASSERT(db != NULL && window_ms != NULL && n != NULL);
+  sqlite3_stmt *st = db->st[ST_BUDGET_GET];
+  sqlite3_bind_int64(st, 1, user);
+  *window_ms = 0;
+  *n = 0;
+  if (sqlite3_step(st) == SQLITE_ROW) {
+    *window_ms = (uint64_t)sqlite3_column_int64(st, 0);
+    int64_t c = sqlite3_column_int64(st, 1);
+    *n = c < 0 ? 0u : c > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)c;
+  }
+  sqlite3_reset(st);
+  sqlite3_clear_bindings(st);
+}
+
+uint32_t db_budget_spent(Db *db, uint32_t user, uint64_t now_ms) {
+  uint64_t start = 0;
+  uint32_t n = 0;
+  db_budget_get(db, user, &start, &n);
+  // A window that has ended (or is in the future: a clock change) is spent 0.
+  return start <= now_ms && now_ms - start < WRITE_BUDGET_WINDOW_MS ? n : 0u;
+}
+
+// Inside a write's transaction: one more write for user, or DB_BUDGET.
+static DbResult db_budget_take(Db *db, uint32_t user, uint64_t now_ms) {
+  ASSERT(db != NULL && user != 0u);
+  uint64_t start = 0;
+  uint32_t n = 0;
+  db_budget_get(db, user, &start, &n);
+  if (!(start <= now_ms && now_ms - start < WRITE_BUDGET_WINDOW_MS)) {
+    start = now_ms;
+    n = 0;
+  }
+  if (n >= WRITE_BUDGET_MAX) return DB_BUDGET;
+  sqlite3_stmt *st = db->st[ST_BUDGET_PUT];
+  sqlite3_bind_int64(st, 1, user);
+  sqlite3_bind_int64(st, 2, (sqlite3_int64)start);
+  sqlite3_bind_int64(st, 3, n + 1u);
+  ASSERT(n + 1u <= WRITE_BUDGET_MAX);
+  return db_rc(db_exec(st));
+}
+
 DbResult db_apply(Db *db, const uint8_t token_hash[32], uint64_t now_ms,
                   const DbFacts *f, const DbWrite *w, uint32_t *new_id) {
   ASSERT(db != NULL && f != NULL && w != NULL && new_id != NULL);
@@ -946,11 +1014,12 @@ DbResult db_apply(Db *db, const uint8_t token_hash[32], uint64_t now_ms,
     return DB_ERROR;
   }
   DbResult r = db_facts_hold(db, token_hash, now_ms, f);
+  // Every write here is a signed-in user's (db_floor): it spends budget.
+  if (r == DB_OK) r = f->who != 0u ? db_budget_take(db, f->who, now_ms) : DB_DENIED;
   if (r == DB_OK) r = db_do(db, now_ms, f, w, new_id);
   if (r == DB_OK && db_exec(db->st[ST_COMMIT]) == SQLITE_DONE) return DB_OK;
   if (r == DB_OK || r == DB_ERROR) fprintf(stderr, "db_apply: action %u: %s\n", w->kind, sqlite3_errmsg(db->conn));
-  int rb = db_exec(db->st[ST_ROLLBACK]);
-  ASSERT(rb == SQLITE_DONE);
+  db_rollback(db);
   return r == DB_OK ? DB_ERROR : r;
 }
 
@@ -1101,12 +1170,19 @@ DbResult db_upload(Db *db, const uint8_t token_hash[32], uint64_t now_ms, const 
   key_hex[2u * IMG_KEY_BYTES] = 0;
   if (db_exec(db->st[ST_BEGIN]) != SQLITE_DONE) return DB_ERROR;
   DbResult r = db_facts_hold(db, token_hash, now_ms, f);
+  if (r == DB_OK) r = f->who != 0u ? db_budget_take(db, f->who, now_ms) : DB_DENIED;
   uint32_t count = 0;
   if (r == DB_OK) {
     sqlite3_stmt *st = db->st[ST_IMG_POST_COUNT];
     sqlite3_bind_int64(st, 1, post);
     if (db_one_u32(st, &count) != 1) r = DB_ERROR;
     else if (count >= IMG_PER_POST_MAX) r = DB_CONFLICT;
+  }
+  if (r == DB_OK) {
+    sqlite3_stmt *st = db->st[ST_IMG_USER_COUNT];
+    sqlite3_bind_int64(st, 1, f->who);
+    if (db_one_u32(st, &count) != 1) r = DB_ERROR;
+    else if (count >= IMG_PER_USER_MAX) r = DB_CONFLICT;
   }
   if (r == DB_OK) {
     sqlite3_stmt *st = db->st[ST_IMG_RECENT];
@@ -1127,8 +1203,7 @@ DbResult db_upload(Db *db, const uint8_t token_hash[32], uint64_t now_ms, const 
   }
   if (r == DB_OK && db_exec(db->st[ST_COMMIT]) == SQLITE_DONE) return DB_OK;
   if (r == DB_ERROR) fprintf(stderr, "db_upload: %s\n", sqlite3_errmsg(db->conn));
-  int rb = db_exec(db->st[ST_ROLLBACK]);
-  ASSERT(rb == SQLITE_DONE);
+  db_rollback(db);
   key_hex[0] = 0;
   return r == DB_OK ? DB_ERROR : r;
 }
@@ -1154,6 +1229,18 @@ int32_t db_image(Db *db, const char *key_hex, uint32_t key_len, DbImageFn out, v
   sqlite3_reset(st);
   sqlite3_clear_bindings(st);
   return r;
+}
+
+void db_sweep(Db *db, uint64_t now_ms) {
+  ASSERT(db != NULL && now_ms > OUTBOX_KEEP_MS);
+  _Static_assert(SWEEP_BATCH == 2000u, "the sweep statements say LIMIT 2000");
+  const uint32_t which[] = {ST_SWEEP_CHAL, ST_SWEEP_TOKEN, ST_SWEEP_SESSION, ST_SWEEP_OUTBOX};
+  for (uint32_t i = 0; i < sizeof which / sizeof which[0]; i++) {
+    sqlite3_stmt *st = db->st[which[i]];
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)(which[i] == ST_SWEEP_OUTBOX ? now_ms - OUTBOX_KEEP_MS : now_ms));
+    int rc = db_exec(st);
+    if (rc != SQLITE_DONE) fprintf(stderr, "db_sweep: %s\n", sqlite3_errmsg(db->conn));
+  }
 }
 
 int32_t db_publish_due(Db *db, uint64_t now_ms) {
@@ -1186,8 +1273,7 @@ int32_t db_publish_due(Db *db, uint64_t now_ms) {
     }
     if (r == DB_OK && db_exec(db->st[ST_COMMIT]) == SQLITE_DONE) continue;
     fprintf(stderr, "db_publish_due: post %u: %s\n", ids[i], sqlite3_errmsg(db->conn));
-    int rb = db_exec(db->st[ST_ROLLBACK]);
-    ASSERT(rb == SQLITE_DONE);
+    db_rollback(db);
   }
   return done;
 }
@@ -1264,8 +1350,7 @@ static int32_t db_changes(Db *db, sqlite3_stmt *st) {
 }
 
 static AuthResult auth_rollback(Db *db, AuthResult r) {
-  int rb = db_exec(db->st[ST_ROLLBACK]);
-  ASSERT(rb == SQLITE_DONE);
+  db_rollback(db);
   return r;
 }
 
@@ -1597,7 +1682,6 @@ DbResult db_sync(Db *db, const uint8_t token_hash[32], uint64_t now_ms, const Db
   int rc;
   while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
     uint64_t seq = (uint64_t)sqlite3_column_int64(st, 0);
-    if (seq > max) max = seq;
     int ln = snprintf(line, sizeof line, "%lld.%lld.%lld.%lld.%lld.%lld.%lld;",
                       (long long)sqlite3_column_int64(st, 1), (long long)sqlite3_column_int64(st, 2),
                       (long long)sqlite3_column_int64(st, 3), (long long)sqlite3_column_int64(st, 4),
@@ -1605,7 +1689,10 @@ DbResult db_sync(Db *db, const uint8_t token_hash[32], uint64_t now_ms, const Db
                       (long long)sqlite3_column_int64(st, 7));
     ASSERT(ln > 0 && (size_t)ln < sizeof line);
     bytes += (uint64_t)ln;
+    // Cut here: the client asks again from max, so max counts only the
+    // operations sent (counting this one lost it: replicas diverged).
     if (bytes > SYNC_OUT_MAX) break;
+    if (seq > max) max = seq;
     out(ctx, line, (uint32_t)ln);
   }
   sqlite3_reset(st);

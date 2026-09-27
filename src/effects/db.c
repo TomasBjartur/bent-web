@@ -58,6 +58,7 @@ Term tick_run(Env e, Term *f, IoWork *w) {
   uint64_t now = app_now_ms();
   if (now >= app_next_tick) {
     app_next_tick = now + app_tick_ms;
+    db_sweep(&app_db, now);
     if (db_publish_due(&app_db, now) > 0) {
       atomic_fetch_add(&app_shared->write_gen, 1u);
       atomic_fetch_add(&app_shared->post_gen, 1u);
@@ -193,6 +194,20 @@ static void __attribute__((constructor)) load_facts_use(void) {
   io_eff(CID(load_facts), load_facts_run, 0);
 }
 
+#endif
+
+#ifdef CID(spent)
+// spent(who): the writes who made in the current budget window.
+Term spent_run(Env e, Term *f, IoWork *w) {
+  (void)e;
+  (void)w;
+  ASSERT(app_db_ready);
+  return (Term)db_budget_spent(&app_db, (uint32_t)f[0], app_now_ms());
+}
+
+static void __attribute__((constructor)) spent_use(void) {
+  io_eff(CID(spent), spent_run, 0);
+}
 #endif
 
 #ifdef CID(apply_raw)
@@ -1008,6 +1023,9 @@ static void dns_call(IoWork *w) {
   st.retry = 2;
   static __thread unsigned char buf[8192];
   int n = res_nquery(&st, name, ns_c_in, ns_t_txt, buf, sizeof buf);
+  // The answer's length can exceed the buffer (a truncated TCP answer):
+  // parse only what is in it.
+  if (n > (int)sizeof buf) n = (int)sizeof buf;
   ns_msg m;
   if (n > 0 && ns_initparse(buf, n, &m) == 0) {
     for (int i = 0; i < ns_msg_count(m, ns_s_an) && i < 64; i++) {

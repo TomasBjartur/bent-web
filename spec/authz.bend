@@ -137,6 +137,21 @@ def facts_who(+f: Facts) -> Principal:
 def can_write_post(+f: Facts, +p: U32) -> Bool:
   Bool.and(member_of(f, facts_blog(f)), post_is(f, p))
 
+# THE WRITE BUDGET
+# ----------------
+# SECURITY DECISION (2026-09-27): a user writes at most writes_per_minute()
+# times a minute (likes, comments, saves, posts, blogs, authors, images;
+# not typing, which syncs with its own limits). Without it one account
+# could flood the database or keep a server busy re-rendering. spent: the
+# user's writes in the current minute, as loaded; the write effect
+# re-checks and counts it inside its transaction (src/c/db_core.h
+# WRITE_BUDGET_MAX, which must be this number).
+def writes_per_minute() -> U32:
+  30
+
+def within_budget(+spent: U32) -> Bool:
+  U32.is_lt(spent, writes_per_minute())
+
 # THE POLICY
 # ----------
 

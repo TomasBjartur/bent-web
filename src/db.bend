@@ -95,6 +95,15 @@ def role_code(r: Maybe<&2, Spec.Role>) -> U32:
         case Spec.Author{}:
           2
 
+# The writes a user made this minute (src/c/db_core.h WRITE_BUDGET_MAX).
+def spent(who: U32) -> IO(U32):
+  import "./effects/db.c"
+
+def permit_user(p: Authz.Permit) -> U32:
+  match p:
+    case Authz.Permit{f, a, pf}:
+      Spec.user_id(Spec.facts_who(f))
+
 def who_code(p: Spec.Principal) -> U32:
   match p:
     case Spec.Anon{}:
@@ -144,10 +153,21 @@ def act_of(a: Spec.Action, +flag: U32) -> Act:
 
 # Stores an image (the request body's bytes) under a Permit for UploadImage;
 # answers its key. The effect re-checks the facts, as every write does.
-def upload(+token: String, p: Authz.Permit, bytes: String) -> IO(Result<&1, &1, U32 & String, String>):
-  match p:
-    case Authz.Permit{f, a, pf}:
-      upload_go(token, f, act_of(a, 0), bytes)
+def upload_w(+token: String, m: Maybe<&2, Authz.WritePermit>, bytes: String) -> IO(Result<&1, &1, U32 & String, String>):
+  match m:
+    case None{}:
+      IO.pure(Result<&1, &1, U32 & String, String>, Fail{(5, "over the write budget")})
+    case Some{w}:
+      match w:
+        case Authz.WritePermit{p, sp, pw}:
+          match p:
+            case Authz.Permit{f, a, pf}:
+              upload_go(token, f, act_of(a, 0), bytes)
+
+def upload(+token: String, +p: Authz.Permit, bytes: String) -> IO(Result<&1, &1, U32 & String, String>):
+  do IO<Result<&1, &1, U32 & String, String>>:
+    +sp : U32 <- spent(permit_user(p))
+    upload_w(token, Authz.authorize_write(p, sp), bytes)
 
 # Sends the image stored under key (32 hex digits), or 404.
 def image(sock: Socket, key: String) -> IO(Socket & Result<&1, &1, U32 & String, Unit>):
@@ -217,6 +237,30 @@ def q_post_md() -> U32:
 
 def q_user_by_email() -> U32:
   8
+
+def user_by_email.go(ok: Bool, +email: String, +token: String) -> IO(List<&2, List<&2, String>>):
+  match ok:
+    case True{}:
+      query(q_user_by_email(), 0, 0, email, token)
+    case False{}:
+      IO.pure(List<&2, List<&2, String>>, Nil{})
+
+def manages(a: Spec.Action) -> Bool:
+  match a:
+    case Spec.EditBlog{b}:
+      True{}
+    case Spec.AddAuthor{b, u}:
+      True{}
+    case _:
+      False{}
+
+# Whether an email has an account is private: only someone allowed to
+# manage a blog (a Permit for EditBlog or AddAuthor) may look it up, to add
+# an author (tools/lint.sh: q_user_by_email is used only here).
+def user_by_email(p: Authz.Permit, +email: String, +token: String) -> IO(List<&2, List<&2, String>>):
+  match p:
+    case Authz.Permit{f, a, pf}:
+      user_by_email.go(manages(a), email, token)
 
 def q_authors() -> U32:
   9
@@ -391,10 +435,23 @@ def apply_go(+token: String, f: Spec.Facts, a: Act, d: WData) -> IO(Result<&1, &
 # Performs the write a Permit allows. flag: 1 to publish, 0 to unpublish
 # (only read for PublishPost). Answers the new id, or fails with a code:
 # 1 stale facts, 2 denied, 3 conflict, 4 error.
-def apply(+token: String, p: Authz.Permit, +flag: U32, d: WData) -> IO(Result<&1, &1, U32 & String, U32>):
-  match p:
-    case Authz.Permit{f, a, pf}:
-      apply_go(token, f, act_of(a, flag), d)
+def apply_w(+token: String, m: Maybe<&2, Authz.WritePermit>, +flag: U32, d: WData) -> IO(Result<&1, &1, U32 & String, U32>):
+  match m:
+    case None{}:
+      IO.pure(Result<&1, &1, U32 & String, U32>, Fail{(5, "over the write budget")})
+    case Some{w}:
+      match w:
+        case Authz.WritePermit{p, sp, pw}:
+          match p:
+            case Authz.Permit{f, a, pf}:
+              apply_go(token, f, act_of(a, flag), d)
+
+# Every write: a Permit, then the write budget (loaded here, so no caller
+# can say how much was spent), then the effect (which re-checks both).
+def apply(+token: String, +p: Authz.Permit, +flag: U32, d: WData) -> IO(Result<&1, &1, U32 & String, U32>):
+  do IO<Result<&1, &1, U32 & String, U32>>:
+    +sp : U32 <- spent(permit_user(p))
+    apply_w(token, Authz.authorize_write(p, sp), flag, d)
 
 # SYNC
 # ----

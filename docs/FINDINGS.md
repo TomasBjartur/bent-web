@@ -4,6 +4,57 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-27: Red team
+
+Two passes: attacks on the running server as every kind of user
+(tests/redteam_test.py: every write route by the wrong person, drafts
+through every read path, cross-site requests, malformed sessions and
+paths, volume), and a read-through of all the C (the unproved part) by a
+separate agent. Nothing reached: no authorization bypass, no draft leak,
+no memory-safety bug from a request. Found and fixed:
+
+- **No write budget** (the one the probes found): one account could like,
+  save, create posts and blogs without limit (a save renders up to 1 MB of
+  Markdown, ~400 ms). Mitigated for the whole class, with a law: the write
+  effects take a `WritePermit`, which only `authorize_write` makes, and
+  only under the budget (30 writes a minute; typing is exempt, it syncs
+  with its own limits). LAWS.bend `authz_writes_budgeted` (proved about the
+  code; mutation-tested: a spec limit of 1000 breaks it) makes a route
+  without the budget impossible to write, not just forgotten. The count
+  is loaded by the write effect itself (no handler can say how much was
+  spent) and re-checked and counted in C inside the write's transaction
+  (`write_budget`, shared by all worker processes). SECURITY DECISION in
+  spec/authz.bend.
+- **Sync lost an operation at the output cap** (8 MiB): the cut row's
+  sequence number was reported as sent, so the client never asked for it
+  and replicas diverged. Only for very large documents; the merge laws are
+  about the CRDT, not this transport, which is exactly where it hid.
+- **A DNS answer longer than the buffer** could be parsed past its end
+  (a user's own DNS server, via custom domain verification): clamped.
+- **A search could show its words to other searchers**: the page cache was
+  keyed by the normalized query but showed the raw one. Keyed by the raw
+  query now.
+- **Adding an author told anyone signed in whether an email has an
+  account** (looked up before authorizing). Now authorized first, and the
+  lookup (`Db.user_by_email`) takes a Permit to manage a blog, so the
+  order cannot be got wrong again (tools/lint.sh keeps the query there).
+- **Tables that grew without limit**: expired challenges, email tokens and
+  sessions, and old mail, are swept every tick (bounded batches); images
+  are capped per account (2,000).
+- **Slow request bodies** could hold the app's 16 body buffers: Caddy now
+  buffers bodies (and times out slow heads and bodies).
+- **A failed ROLLBACK** (after SQLite rolled back by itself on a disk
+  error) stopped the process, and with it every worker: tolerated now.
+
+Accepted, and why: live-comment waiters (512 per process) can be held by
+anonymous readers, which degrades to slower polling for others; per-IP
+limits belong in Caddy. Sign-up says when an email already has an account
+(the usual trade for a clear message). C does not see clientDataJSON at
+login: that the consumed challenge is the signed one rests on Bend's proved
+WebAuthn check (the header now says so, instead of claiming C re-verifies).
+
+---
+
 ## 2026-09-27: Making it feel like an app
 
 What a single-page app gives, done with the platform (tests/ux_test.py, in

@@ -226,6 +226,12 @@ def Laws.authz_permit_ok(p):
     case Authz.Permit{f, a, pf}:
       pf
 
+# The WritePermit carries within_budget(spent), which is spent < 30.
+def Laws.authz_writes_budgeted(w):
+  match w:
+    case Authz.WritePermit{p, s, pf}:
+      pf
+
 # Anonymous: every non-read action's policy reduces to False (is_user(Anon)
 # comes first in each check), so e is {False == True}, which is exactly the
 # goal is_read(a) == True for a non-read action.

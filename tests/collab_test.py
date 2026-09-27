@@ -22,7 +22,22 @@ def check(name, ok, detail=""):
     print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"   {detail}"))
 
 
+# This test writes far faster than a person: each POST starts with a fresh
+# write budget (30 a minute; its own test: tests/redteam_test.py).
+BUDGET_DB = None
+
+
+def fresh_budget():
+    if BUDGET_DB:
+        c = sqlite3.connect(BUDGET_DB, timeout=5)
+        c.execute("DELETE FROM write_budget")
+        c.commit()
+        c.close()
+
+
 def http(method, path, sid=None, form=None):
+    if method == "POST":
+        fresh_budget()
     body = urllib.parse.urlencode(form).encode() if form is not None else b""
     h = f"{method} {path} HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-origin\r\n"
     if sid:
@@ -111,6 +126,8 @@ def settle(eds, want=None, secs=12):
 def main():
     tmp = tempfile.mkdtemp()
     dbpath = os.path.join(tmp, "blog.db")
+    global BUDGET_DB
+    BUDGET_DB = dbpath
     env = dict(os.environ, PORT=str(PORT), BLOG_DB=dbpath, BLOG_ORIGIN=BASE, BLOG_RP_ID="localhost")
     srv = subprocess.Popen([os.path.join(ROOT, "build/server")], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     eds = []

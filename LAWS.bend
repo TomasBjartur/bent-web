@@ -176,6 +176,22 @@ law authz_permit_ok:
   for p: Authz.Permit
   {AuthzSpec.permitted(permit_facts(p), permit_action(p)) == True{} : Bool}
 
+# LAW: no write without budget. Every WritePermit (the only thing the write
+# effects take: src/db.bend apply, upload) was made while its user had
+# written fewer than 30 times this minute. So no route, present or future,
+# can let one account write without limit: the budget is not a check each
+# handler must remember, it is in the type the writes require. (The count
+# itself is loaded and re-checked by the write effect, in its transaction:
+# src/c/db_core.c db_budget_take.)
+def write_spent(w: Authz.WritePermit) -> U32:
+  match w:
+    case Authz.WritePermit{p, s, pf}:
+      s
+
+law authz_writes_budgeted:
+  for w: Authz.WritePermit
+  {U32.is_lt(write_spent(w), 30) == True{} : Bool}
+
 # POLICY SANITY
 # These laws are about spec/authz.bend itself, so a mistake in the policy is
 # likely to break one of them.
