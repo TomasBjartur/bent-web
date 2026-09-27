@@ -4,6 +4,53 @@ Results of the experiment, including negative ones. Newest first.
 
 ---
 
+## 2026-09-27: The editor's modes, and two more laws
+
+**Visual (WYSIWYG) mode renders with the proved renderer.** The Markdown
+renderer (src/markdown.bend) compiles to JS through Bend's JS backend and
+runs in the editor, block by block, so the editor shows exactly what the
+server publishes and the HTML it puts on the page is the markup law's
+(`markup_rendered`): *proved about the Bend code*; the JS the compiler
+makes from it is trusted like the C it makes. Edits go back to Markdown one
+block at a time (the untouched blocks keep their exact source), which keeps
+CRDT changes small and local. Checked, not proved: render -> Markdown ->
+render gives the same HTML for random documents (tests/editor_test.py, in
+Chrome). Negative: the compiled renderer recurses once per character, so a
+block over ~6,000 characters overflows JS's stack; such blocks are shown
+read-only, and documents over 300 KB stay in Markdown mode. The editor
+bundle grew from 9 KB to 100 KB (the renderer and the text module it
+imports; the editor page only).
+
+**Vim keybindings** are a client-side convenience with no security role, so
+they are tested, not proved (tests/vim_test.mjs: 91 commands against Vim,
+random key sequences: the cursor stays in the text and undo/redo are
+exact). Undo in a shared document finds its change by content near where
+it was (others' edits move it) and refuses if the text there changed. Two
+bugs the random sequences found: JavaScript's `lastIndexOf("\n", -1)` looks
+at index 0 (a text starting with a line break hung `{`), and visual mode
+lost its moving end.
+
+**Two new laws, proved about the code:**
+- `text_fts_ok`: whatever is typed into search, the FTS5 query is only
+  quoted terms separated by spaces (no operator can be injected), and the
+  prefix operator only ends it, only while typing, and only after a term of
+  3+ characters (the 300 ms one-letter prefix of the load test). Stated as
+  an automaton in LAWS.bend; the query maker was rewritten as a left-to-
+  right machine (same behaviour, same tests) so the proof can follow it
+  step by step. Mutation-tested twice (a star on any word; an undoubled
+  quote): each breaks the proof.
+- `comments_page_bounded`: a comment page keeps at most k threads, whatever
+  the rows (`threads_take` moved to src/threads.bend so the laws need not
+  import the handlers). Mutation-tested.
+
+A Bend note: a `match` with literal cases and then `case _` (`case 2n: ...
+case _:`) leaves the default branch as `2n+p` with p unknown, and a
+function matching the same way cannot reduce there, so proofs about it get
+stuck. Writing every such match as nested successor patterns (`case 1n+a:
+match a: ...`) fixed it.
+
+---
+
 ## 2026-09-26: Worker processes, and what Bend's parallelism is for
 
 **Bend's parallelism does not serve requests (measured).** Bend 2

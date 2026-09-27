@@ -13,6 +13,7 @@ import ./spec/webauthn.bend as WSpec
 import ./src/webauthn.bend as WA
 import ./src/markdown.bend as Md
 import ./src/crdt.bend as Crdt
+import ./src/threads.bend as Threads
 import ./proof/crdt_lemmas.bend as CL
 import ./LAWS.bend as Laws
 
@@ -377,6 +378,162 @@ def Laws.text_domain_ok(d):
   match d:
     case Text.Domain{s, p}:
       p
+
+# COMMENT PAGES: comments_page_bounded, by induction on the rows (and k).
+def zero_le(k: Nat) -> {Nat.is_le(0n, k) == True{} : Bool}:
+  match k:
+    case 0n:
+      {==}
+    case 1n+p:
+      {==}
+
+def Laws.comments_page_bounded(rows, flags, k):
+  match rows:
+    case Nil{}:
+      zero_le(k)
+    case Con{r, t}:
+      match flags:
+        case Nil{}:
+          zero_le(k)
+        case Con{f, fs}:
+          match f:
+            case True{}:
+              match k:
+                case 0n:
+                  {==}
+                case 1n+j:
+                  Laws.comments_page_bounded(t, fs, j)
+            case False{}:
+              Laws.comments_page_bounded(t, fs, k)
+
+# SEARCH QUERIES: text_fts_ok. The query maker (Text.fts.go) and the law's
+# automaton are followed together: each state of the maker corresponds to
+# a state of the automaton (fts_aq) and, in a word, the automaton's count
+# is the maker's len (fts_ak). Every emitted character is a literal, whose
+# automaton step computes, except a word's own characters, where the
+# maker's test for a quote (the same test as the law's) says which step.
+def fts_aq(st: Nat) -> Nat:
+  match st:
+    case 0n:
+      0n
+    case 1n+st1:
+      match st1:
+        case 0n:
+          1n
+        case 1n+st2:
+          match st2:
+            case 0n:
+              2n
+            case 1n+st3:
+              2n
+
+def fts_ak(st: Nat, +len: Nat, +k: Nat) -> Nat:
+  match st:
+    case 0n:
+      k
+    case 1n+st1:
+      match st1:
+        case 0n:
+          len
+        case 1n+st2:
+          k
+
+# The automaton's count after a step where it does not follow len: the
+# length of the word a separator just closed.
+def fts_kafter(st: Nat, sep: Bool, +len: Nat, +k: Nat) -> Nat:
+  match st:
+    case 0n:
+      k
+    case 1n+st1:
+      match st1:
+        case 0n:
+          Text.fts.pick(sep, len, k)
+        case 1n+st2:
+          k
+
+# A word's character takes the automaton from (1, k) to (1, k + 1).
+def fts_chr_ok(q: Bool, +h: Char, -x: String, +k: Nat, +pre: Bool, e: {Text.fts.quote(h) == q : Bool}, ih: {Laws.fts_run(x, 1n, 1n+k, pre) == True{} : Bool}) -> {Laws.fts_run(Text.fts.chr(q, h, x), 1n, k, pre) == True{} : Bool}:
+  match q:
+    case True{}:
+      ih
+    case False{}:
+      %Equal.sym(Bool, Laws.fts_q(h), False{}, e) : {Laws.fts_run(x, Laws.fts_pick(_, 2n, 1n), Laws.fts_pick(_, k, 1n+k), pre) == True{} : Bool}
+      ih
+
+# The star is emitted only when the law allows it.
+def fts_star_ok(b: Bool, +len: Nat, +pre: Bool, e: {Bool.and(pre, Nat.is_le(3n, len)) == b : Bool}) -> {Laws.fts_run(Text.fts.star(b), 2n, len, pre) == True{} : Bool}:
+  match b:
+    case True{}:
+      %Equal.sym(Bool, Bool.and(pre, Nat.is_le(3n, len)), True{}, e) : {Laws.fts_final(Laws.fts_pick(_, 4n, 5n)) == True{} : Bool}
+      {==}
+    case False{}:
+      {==}
+
+def fts_end_ok(st: Nat, +len: Nat, +pre: Bool, +k: Nat) -> {Laws.fts_run(Text.fts.end(st, len, pre), fts_aq(st), fts_ak(st, len, k), pre) == True{} : Bool}:
+  match st:
+    case 0n:
+      {==}
+    case 1n+st1:
+      match st1:
+        case 0n:
+          fts_star_ok(Bool.and(pre, Nat.is_le(3n, len)), len, pre, {==})
+        case 1n+st2:
+          match st2:
+            case 0n:
+              {==}
+            case 1n+st3:
+              {==}
+
+# One character: what it emits takes the automaton to the state (and
+# count) that the rest starts from.
+def fts_step_ok(st: Nat, sep: Bool, q: Bool, lok: Bool, nok: Bool, +h: Char, -x: String, +len: Nat, +k: Nat, +pre: Bool, e: {Text.fts.quote(h) == q : Bool}, ih: {Laws.fts_run(x, fts_aq(Text.fts.nst(st, sep, nok)), fts_ak(Text.fts.nst(st, sep, nok), Text.fts.nlen(st, sep, lok, len), fts_kafter(st, sep, len, k)), pre) == True{} : Bool}) -> {Laws.fts_run(Text.fts.emit(st, sep, q, lok, nok, h, x), fts_aq(st), fts_ak(st, len, k), pre) == True{} : Bool}:
+  match st:
+    case 0n:
+      match sep:
+        case True{}:
+          ih
+        case False{}:
+          fts_chr_ok(q, h, x, 0n, pre, e, ih)
+    case 1n+st1:
+      match st1:
+        case 0n:
+          match sep:
+            case True{}:
+              ih
+            case False{}:
+              match lok:
+                case True{}:
+                  fts_chr_ok(q, h, x, len, pre, e, ih)
+                case False{}:
+                  ih
+        case 1n+st2:
+          match st2:
+            case 0n:
+              match sep:
+                case True{}:
+                  ih
+                case False{}:
+                  ih
+            case 1n+st3:
+              match sep:
+                case True{}:
+                  ih
+                case False{}:
+                  match nok:
+                    case True{}:
+                      fts_chr_ok(q, h, x, 0n, pre, e, ih)
+                    case False{}:
+                      ih
+
+def fts_go_ok(s: String, +st: Nat, +len: Nat, +n: Nat, +pre: Bool, +k: Nat) -> {Laws.fts_run(Text.fts.go(s, st, len, n, pre), fts_aq(st), fts_ak(st, len, k), pre) == True{} : Bool}:
+  match s:
+    case SNil{}:
+      fts_end_ok(st, len, pre, k)
+    case SCon{+h, t}:
+      fts_step_ok(st, Text.fts.is_sep(h), Text.fts.quote(h), Nat.is_lt(len, 126n), Nat.is_lt(n, 8n), h, Text.fts.go(t, Text.fts.nst(st, Text.fts.is_sep(h), Nat.is_lt(n, 8n)), Text.fts.nlen(st, Text.fts.is_sep(h), Nat.is_lt(len, 126n), len), Text.fts.nn(st, Text.fts.is_sep(h), Nat.is_lt(n, 8n), n), pre), len, k, pre, {==}, fts_go_ok(t, Text.fts.nst(st, Text.fts.is_sep(h), Nat.is_lt(n, 8n)), Text.fts.nlen(st, Text.fts.is_sep(h), Nat.is_lt(len, 126n), len), Text.fts.nn(st, Text.fts.is_sep(h), Nat.is_lt(n, 8n), n), pre, fts_kafter(st, Text.fts.is_sep(h), len, k)))
+
+def Laws.text_fts_ok(s, pre):
+  fts_go_ok(s, 0n, 0n, 0n, pre, 0n)
 
 def Laws.text_slug_ok(t):
   match t:

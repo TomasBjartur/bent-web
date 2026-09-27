@@ -597,89 +597,173 @@ def form_slug_or(+xs: List<&2, Field>, +key: String, +title_key: String) -> Mayb
 # --------------
 # A search box's text as an FTS5 expression that can only mean "all these
 # words": each word is quoted ("..." with " doubled, so nothing inside is
-# syntax), at most 8 words of at most ~126 characters, the last one a prefix
-# ("word"*). Separators: space, tab, newline. "" if there are no words.
+# syntax), at most 8 words of at most 126 characters; while typing, the
+# last one may be a prefix ("word"*). Separators: space, tab, newline. ""
+# if there are no words. Proved (LAWS.bend text_fts_ok): the output is only
+# quoted terms, and a prefix only as the law allows.
 def fts.is_sep(+c: Char) -> Bool:
   +x = Char.to_u32(c)
   Bool.or(U32.is_eq(x, 32), Bool.or(U32.is_eq(x, 9), Bool.or(U32.is_eq(x, 10), U32.is_eq(x, 13))))
 
-# A word is kept reversed; a quote goes in twice.
-def fts.push(q: Bool, +h: Char, w: String) -> String:
+def fts.quote(+c: Char) -> Bool:
+  U32.is_eq(Char.to_u32(c), 34)
+
+# One character of the current word: a quote doubled (inside "...", "" is
+# a literal quote), anything else as it is.
+def fts.chr(q: Bool, +h: Char, rest: String) -> String:
   match q:
     case True{}:
-      SCon{h, SCon{h, w}}
+      SCon{'"', SCon{'"', rest}}
     case False{}:
-      SCon{h, w}
+      SCon{h, rest}
 
-# A full word (126 characters, a doubled quote counting 2) takes no more:
-# the cap applies before quoting, so a doubled quote is never split.
-def fts.full(full: Bool, +h: Char, w: String) -> String:
-  match full:
-    case True{}:
-      w
-    case False{}:
-      fts.push(U32.is_eq(Char.to_u32(h), 34), h, w)
-
-def fts.word(sep: Bool, +h: Char, +w: String) -> String:
+# The query is made left to right, each character's output put in front of
+# the rest's, by a small machine (so that LAWS.bend text_fts_ok can be
+# proved by following it). st: 0 before any word, 1 in a word, 2 skipping
+# a word (past the 8th), 3 between words. len: the characters of the
+# current word kept (at most 126). n: the words started.
+def fts.emit0(sep: Bool, q: Bool, +h: Char, rest: String) -> String:
   match sep:
     case True{}:
-      SNil{}
+      rest
     case False{}:
-      fts.full(Nat.is_le(126n, String.length(w)), h, w)
+      SCon{'"', fts.chr(q, h, rest)}
 
-def fts.term(+w: String) -> String:
-  "\"" ++ (String.reverse(w) ++ "\"")
-
-def fts.join(+out: String, +t: String) -> String:
-  or_else.go(String.is_empty(out), out ++ (" " ++ t), t)
-
-def fts.add(ok: Bool, +w: String, +out: String) -> String:
-  match ok:
+def fts.emit1c(lok: Bool, q: Bool, +h: Char, rest: String) -> String:
+  match lok:
     case True{}:
-      fts.join(out, fts.term(w))
+      fts.chr(q, h, rest)
     case False{}:
-      out
+      rest
 
-def fts.count(ok: Bool, +n: U32) -> U32:
-  match ok:
+def fts.emit1(sep: Bool, q: Bool, lok: Bool, +h: Char, rest: String) -> String:
+  match sep:
     case True{}:
-      (n + 1 : U32)
+      SCon{'"', rest}
     case False{}:
-      n
+      fts.emit1c(lok, q, h, rest)
 
-def fts.room(+w: String, +n: U32) -> Bool:
-  Bool.and(Bool.not(String.is_empty(w)), U32.is_lt(n, 8))
-
-# The last word, as a prefix (pre) or a word.
-def fts.tail(pre: Bool, +w: String) -> String:
-  match pre:
+def fts.emit3c(nok: Bool, q: Bool, +h: Char, rest: String) -> String:
+  match nok:
     case True{}:
-      fts.term(w) ++ "*"
+      SCon{' ', SCon{'"', fts.chr(q, h, rest)}}
     case False{}:
-      fts.term(w)
+      rest
 
-# The last word is a prefix only while typing (pre), and only from 3
-# characters: a short prefix matches nearly every post, and SQLite gathers
-# all of its matches before it can take the newest ("b"* took 300 ms on
-# 100k posts, on the one event loop). The index has 3-character prefixes.
-def fts.last(ok: Bool, +pre: Bool, +w: String, +out: String) -> String:
-  match ok:
+def fts.emit3(sep: Bool, q: Bool, nok: Bool, +h: Char, rest: String) -> String:
+  match sep:
     case True{}:
-      fts.join(out, fts.tail(Bool.and(pre, Nat.is_le(3n, String.length(w))), w))
+      rest
     case False{}:
-      out
+      fts.emit3c(nok, q, h, rest)
 
-# At a separator the word so far is added (if any, and if there is room).
-def fts.go(s: String, +w: String, +out: String, +n: U32, +pre: Bool) -> String:
+# What character h (sep: a separator; q: a quote; lok: the word has room;
+# nok: there is room for another word) puts in front of rest.
+def fts.emit(st: Nat, sep: Bool, q: Bool, lok: Bool, nok: Bool, +h: Char, rest: String) -> String:
+  match st:
+    case 0n:
+      fts.emit0(sep, q, h, rest)
+    case 1n+st1:
+      match st1:
+        case 0n:
+          fts.emit1(sep, q, lok, h, rest)
+        case 1n+st2:
+          match st2:
+            case 0n:
+              rest
+            case 1n+st3:
+              fts.emit3(sep, q, nok, h, rest)
+
+def fts.pick(b: Bool, +x: Nat, +y: Nat) -> Nat:
+  match b:
+    case True{}:
+      x
+    case False{}:
+      y
+
+# The state after character h.
+def fts.nst(st: Nat, sep: Bool, nok: Bool) -> Nat:
+  match st:
+    case 0n:
+      fts.pick(sep, 0n, 1n)
+    case 1n+st1:
+      match st1:
+        case 0n:
+          fts.pick(sep, 3n, 1n)
+        case 1n+st2:
+          match st2:
+            case 0n:
+              fts.pick(sep, 3n, 2n)
+            case 1n+st3:
+              fts.pick(sep, 3n, fts.pick(nok, 1n, 2n))
+
+def fts.nlen(st: Nat, sep: Bool, lok: Bool, +len: Nat) -> Nat:
+  match st:
+    case 0n:
+      fts.pick(sep, 0n, 1n)
+    case 1n+st1:
+      match st1:
+        case 0n:
+          fts.pick(sep, 0n, fts.pick(lok, 1n+len, len))
+        case 1n+st2:
+          match st2:
+            case 0n:
+              0n
+            case 1n+st3:
+              fts.pick(sep, 0n, 1n)
+
+def fts.nn(st: Nat, sep: Bool, nok: Bool, +n: Nat) -> Nat:
+  match st:
+    case 0n:
+      fts.pick(sep, n, 1n+n)
+    case 1n+st1:
+      match st1:
+        case 0n:
+          n
+        case 1n+st2:
+          match st2:
+            case 0n:
+              n
+            case 1n+st3:
+              fts.pick(sep, n, fts.pick(nok, 1n+n, n))
+
+def fts.star(b: Bool) -> String:
+  match b:
+    case True{}:
+      "*"
+    case False{}:
+      ""
+
+# At the end: the last word is closed, as a prefix only while typing (pre)
+# and only from 3 characters: a short prefix matches nearly every post, and
+# SQLite gathers all of its matches before it can take the newest ("b"*
+# took 300 ms on 100k posts, on the one event loop). The index has
+# 3-character prefixes.
+def fts.end(st: Nat, +len: Nat, +pre: Bool) -> String:
+  match st:
+    case 0n:
+      ""
+    case 1n+st1:
+      match st1:
+        case 0n:
+          SCon{'"', fts.star(Bool.and(pre, Nat.is_le(3n, len)))}
+        case 1n+st2:
+          match st2:
+            case 0n:
+              ""
+            case 1n+st3:
+              ""
+
+def fts.go(s: String, +st: Nat, +len: Nat, +n: Nat, +pre: Bool) -> String:
   match s:
     case SNil{}:
-      fts.last(fts.room(w, n), pre, w, out)
+      fts.end(st, len, pre)
     case SCon{+h, t}:
-      fts.go(t, fts.word(fts.is_sep(h), h, w), fts.add(Bool.and(fts.is_sep(h), fts.room(w, n)), w, out), fts.count(Bool.and(fts.is_sep(h), fts.room(w, n)), n), pre)
+      fts.emit(st, fts.is_sep(h), fts.quote(h), Nat.is_lt(len, 126n), Nat.is_lt(n, 8n), h, fts.go(t, fts.nst(st, fts.is_sep(h), Nat.is_lt(n, 8n)), fts.nlen(st, fts.is_sep(h), Nat.is_lt(len, 126n), len), fts.nn(st, fts.is_sep(h), Nat.is_lt(n, 8n), n), pre))
 
 # pre: the last word may be a prefix (search as you type).
 def fts_query(s: String, +pre: Bool) -> String:
-  fts.go(s, SNil{}, "", 0, pre)
+  fts.go(s, 0n, 0n, 0n, pre)
 
 # COMMENTS
 # --------

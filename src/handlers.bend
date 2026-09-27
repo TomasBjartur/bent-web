@@ -14,6 +14,7 @@ import ./text.bend as Text
 import ./auth.bend as Auth
 import ./crdt.bend as Crdt
 import ./bytes.bend as B
+import ./threads.bend as Threads
 
 # RESPONSES
 # ---------
@@ -166,26 +167,6 @@ def thread_flags(rows: List<&2, List<&2, String>>) -> List<&2, Bool>:
     case Con{+r, t}:
       Con{Nat.is_eq(Pages.depth_of(Pages.col(r, 1n)), 0n), thread_flags(t)}
 
-# The rows of the first k threads (flags: thread_flags of the rows).
-def threads_take(rows: List<&2, List<&2, String>>, flags: List<&2, Bool>, k: Nat) -> List<&2, List<&2, String>>:
-  match rows:
-    case Nil{}:
-      Nil{}
-    case Con{r, t}:
-      match flags:
-        case Nil{}:
-          Nil{}
-        case Con{f, fs}:
-          match f:
-            case True{}:
-              match k:
-                case 0n:
-                  Nil{}
-                case 1n+j:
-                  Con{r, threads_take(t, fs, j)}
-            case False{}:
-              Con{r, threads_take(t, fs, k)}
-
 # The id of the last thread in rows (d if none).
 def last_thread(rows: List<&2, List<&2, String>>, flags: List<&2, Bool>, +d: String) -> String:
   match rows:
@@ -213,12 +194,12 @@ def h_comments4(s: Socket, +token: String, +who: U32, +pid: U32, +can_mod: Bool,
   match frag:
     case True{}:
       do IO<Unit>:
-        +pg : Pages.Page = Pages.page_of(Pages.more_segs(signed(who), can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), threads_take(rows, thread_flags(rows), 20n), threads_more(U32.show(pid), rows, threads_take(rows, thread_flags(rows), 20n), upto)), "")
+        +pg : Pages.Page = Pages.page_of(Pages.more_segs(signed(who), can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), Threads.threads_take(rows, thread_flags(rows), 20n), threads_more(U32.show(pid), rows, Threads.threads_take(rows, thread_flags(rows), 20n), upto)), "")
         x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 2, Pages.page_texts(pg), Pages.page_bodies(pg), token, "", "")
         done(x)
     case False{}:
       do IO<Unit>:
-        +pg : Pages.Page = Pages.page_of(Pages.more_page(signed(who), can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), first_row(view), threads_take(rows, thread_flags(rows), 20n), threads_more(U32.show(pid), rows, threads_take(rows, thread_flags(rows), 20n), upto)), "")
+        +pg : Pages.Page = Pages.page_of(Pages.more_page(signed(who), can_mod, Nat.is_lt(20n, U32.to_nat(num(count))), first_row(view), Threads.threads_take(rows, thread_flags(rows), 20n), threads_more(U32.show(pid), rows, Threads.threads_take(rows, thread_flags(rows), 20n), upto)), "")
         x : Socket & Result<&1, &1, U32 & String, Unit> <- Db.page(s, 200, 0, Pages.page_texts(pg), Pages.page_bodies(pg), token, "", "")
         done(x)
 
@@ -283,7 +264,7 @@ def h_post4(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +n
         tags : List<&2, List<&2, String>> <- Db.query(Db.q_post_tags(), pid, 0, "", token)
         +last : List<&2, List<&2, String>> <- Db.query(Db.q_last_comment(), pid, 0, "", token)
         +comments : List<&2, List<&2, String>> <- Db.query(Db.q_comments(), pid, 0, "", token)
-        +page : List<&2, List<&2, String>> = threads_take(comments, thread_flags(comments), 20n)
+        +page : List<&2, List<&2, String>> = Threads.threads_take(comments, thread_flags(comments), 20n)
         h_post5(Bool.not(signed(who)), s, token, pid, Pages.page_of(Con{Pages.T{Pages.layout_top(Pages.col(r, 1n), signed(who)) ++ Pages.post_before(r, U32.show(pid), can_edit, Bool.and(can_edit, notice))}, Con{Pages.B{pid}, Con{Pages.T{Pages.post_after(r, Pages.tag_chips(tags) ++ Pages.social_bar(signed(who), U32.show(pid), first_row(social)))}, List.append(&2, Pages.Seg, Pages.comments_section(signed(who), can_edit, U32.show(pid), first_col(social, 2n), first_col(last, 0n), page, threads_more(U32.show(pid), comments, page, first_col(last, 0n))), Con{Pages.T{Pages.layout_bottom()}, Nil{}})}}}, ""))
 
 def h_post3(s: Socket, +token: String, +who: U32, +pid: U32, +can_edit: Bool, +notice: Bool, m: Maybe<&2, Authz.Permit>) -> IO(Unit):

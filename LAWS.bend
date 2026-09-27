@@ -25,6 +25,7 @@ import ./src/webauthn.bend as WA
 import ./spec/markup.bend as Markup
 import ./src/markdown.bend as Md
 import ./src/crdt.bend as Crdt
+import ./src/threads.bend as Threads
 
 # HTML ESCAPING
 # -------------
@@ -377,6 +378,153 @@ law text_domain_ok:
   {TextSpec.domain_ok(domain_text(d)) == True{} : Bool}
 
 # LAW: a slug is 1..64 of a-z, 0-9 and '-'.
+# COMMENT PAGES
+# -------------
+# LAW: a page of comments shows at most k threads (20 on a post page): of
+# the rows it keeps, at most k start a thread, whatever the rows are, so a
+# post with thousands of comments costs a page no more than 20 threads.
+def thread_count(rows: List<&2, List<&2, String>>, flags: List<&2, Bool>) -> Nat:
+  match rows:
+    case Nil{}:
+      0n
+    case Con{r, t}:
+      match flags:
+        case Nil{}:
+          0n
+        case Con{f, fs}:
+          match f:
+            case True{}:
+              1n+thread_count(t, fs)
+            case False{}:
+              thread_count(t, fs)
+
+law comments_page_bounded:
+  for rows: List<&2, List<&2, String>>
+  for flags: List<&2, Bool>
+  for k: Nat
+  {Nat.is_le(thread_count(Threads.threads_take(rows, flags, k), flags), k) == True{} : Bool}
+
+# SEARCH QUERIES
+# --------------
+# LAW: whatever is typed into search, the FTS5 query it becomes is only
+# quoted terms ("..." with "" for a quote inside) separated by single
+# spaces, so no FTS5 operator (OR, NEAR, -, ^, column filters) can be
+# injected; and the prefix operator * can only follow the last term, only
+# while typing (pre), and only after a term of at least 3 characters (a
+# shorter prefix made SQLite gather most of the index, 300 ms on 100k
+# posts, on the one event loop).
+#
+# Stated as an automaton over the characters: q 0 start, 1 in a term, 2
+# after a quote in a term (it ends the term, unless another quote follows),
+# 3 after a space between terms, 4 after the star, 5 rejected; k counts the
+# current term's characters (a doubled quote counts one).
+def fts_q(+c: Char) -> Bool:
+  U32.is_eq(Char.to_u32(c), 34)
+
+def fts_sp(+c: Char) -> Bool:
+  U32.is_eq(Char.to_u32(c), 32)
+
+def fts_star(+c: Char) -> Bool:
+  U32.is_eq(Char.to_u32(c), 42)
+
+def fts_pick(b: Bool, +x: Nat, +y: Nat) -> Nat:
+  match b:
+    case True{}:
+      x
+    case False{}:
+      y
+
+def fts_after_quote(q: Bool, sp: Bool, st: Bool, +pre: Bool, +k: Nat) -> Nat:
+  match q:
+    case True{}:
+      1n
+    case False{}:
+      match sp:
+        case True{}:
+          3n
+        case False{}:
+          match st:
+            case True{}:
+              fts_pick(Bool.and(pre, Nat.is_le(3n, k)), 4n, 5n)
+            case False{}:
+              5n
+
+def fts_next(q: Nat, isq: Bool, sp: Bool, st: Bool, +pre: Bool, +k: Nat) -> Nat:
+  match q:
+    case 0n:
+      fts_pick(isq, 1n, 5n)
+    case 1n+q1:
+      match q1:
+        case 0n:
+          fts_pick(isq, 2n, 1n)
+        case 1n+q2:
+          match q2:
+            case 0n:
+              fts_after_quote(isq, sp, st, pre, k)
+            case 1n+q3:
+              match q3:
+                case 0n:
+                  fts_pick(isq, 1n, 5n)
+                case 1n+q4:
+                  5n
+
+def fts_count(q: Nat, isq: Bool, +k: Nat) -> Nat:
+  match q:
+    case 0n:
+      0n
+    case 1n+q1:
+      match q1:
+        case 0n:
+          fts_pick(isq, k, 1n+k)
+        case 1n+q2:
+          match q2:
+            case 0n:
+              fts_pick(isq, 1n+k, k)
+            case 1n+q3:
+              match q3:
+                case 0n:
+                  0n
+                case 1n+q4:
+                  k
+
+def fts_final(q: Nat) -> Bool:
+  match q:
+    case 0n:
+      True{}
+    case 1n+q1:
+      match q1:
+        case 0n:
+          False{}
+        case 1n+q2:
+          match q2:
+            case 0n:
+              True{}
+            case 1n+q3:
+              match q3:
+                case 0n:
+                  False{}
+                case 1n+q4:
+                  match q4:
+                    case 0n:
+                      True{}
+                    case 1n+q5:
+                      False{}
+
+def fts_run(s: String, +q: Nat, +k: Nat, +pre: Bool) -> Bool:
+  match s:
+    case SNil{}:
+      fts_final(q)
+    case SCon{+c, t}:
+      fts_run(t, fts_next(q, fts_q(c), fts_sp(c), fts_star(c), pre, k), fts_count(q, fts_q(c), k), pre)
+
+def fts_ok(+pre: Bool, s: String) -> Bool:
+  fts_run(s, 0n, 0n, pre)
+
+law text_fts_ok:
+  for s: String
+  for pre: Bool
+  {fts_ok(pre, Text.fts_query(s, pre)) == True{} : Bool}
+
 law text_slug_ok:
   for t: Text.Slug
   {TextSpec.slug_ok(slug_text(t)) == True{} : Bool}
