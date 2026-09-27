@@ -1,55 +1,83 @@
 # Performance: this server against Next.js (React)
 
 The thesis: server-rendered hypermedia plus small vanilla JS, on a lean
-server, beats a React framework on real metrics. First measurement,
-2026-09-26 (`tests/bench_vs_next.py`, raw numbers in `docs/bench.json`).
+server, beats a React framework on real metrics. First measured
+2026-09-26; re-measured 2026-09-27 against a Next app rebuilt to render
+the same (richer) pages.
 
 ## Setup
 
-- **Ours:** `build/server` (Bend compiled to C, SQLite, no JS on public pages).
+- **Ours:** `build/server` (Bend compiled to C, SQLite), one worker process,
+  public pages with Datastar (13 KB gzipped of JavaScript).
 - **Baseline:** Next.js 16.3.6 / React 19.3.0, App Router, server components,
   `next build && next start` (production), `dynamic = "force-dynamic"`
-  (renders per request, like ours). Same three pages, same CSS, same SQLite
-  file (via Node 24's built-in `node:sqlite`, read-only), same stored HTML.
-- **Data:** 50 blogs, 2,000 published posts of ~5 KB HTML each.
-- **Machine:** cloud container, 2 vCPUs. Each server pinned to core 0, the
-  load generator (`spike/loadgen`, 32 connections, `Connection: close`) to
-  core 1.
-- **Browser:** headless Chrome 154, 4× CPU throttling (a mid-range phone),
+  (renders per request). The same public pages as ours (`baseline/next`:
+  home, blog, post with byline, tags, likes, 20 comment threads with
+  replies, tag, author, search), the same markup and stylesheet, the same
+  SQLite file (Node 24's built-in `node:sqlite`, read-only), the same
+  queries. No sign-in or writes (those would be a second app).
+- **Ours, no cache:** our server with `BLOG_PAGE_CACHE=0`, making every
+  page per request as Next does. This is the fair per-request comparison;
+  "ours" is what is deployed (pages cached, and dropped by any write that
+  changes them).
+- **Machine:** cloud container, 2 vCPUs; each server pinned to core 0, the
+  load generator to core 1.
+- **Browser:** headless Chrome 154, 4x CPU throttling (a mid-range phone),
   cold cache, each load arriving from a page on another site, median of 5.
 
-## Results
+## Results (2026-09-27)
 
-| page | server req/s | p50 latency | JS shipped (gzip) | FCP = LCP | load event | main-thread script |
+### Page benchmark (`tests/bench_vs_next.py`, `docs/bench.json`)
+
+50 blogs, 2,000 posts of ~5 KB, tags, likes; post-3 of each blog has 30
+comment threads with replies. One page at a time, 32 connections.
+
+| page | ours (cached) | ours, no cache | Next | per request | JS (gzip) ours / Next | load event ours / Next |
 |---|---|---|---|---|---|---|
-| post | **5,190** vs 263 (20×) | **6.1** vs 113 ms | **0** vs 561 KB (168) | **160** vs 200 ms | **80** vs 410 ms | **0** vs 103 ms |
-| blog | **8,295** vs 214 (cached) | **4.1** vs 138 ms | **0** vs 563 KB (168) | **172** vs 188 ms | **94** vs 391 ms | **0** vs 106 ms |
-| home | **8,597** vs 94 (cached) | **4.1** vs 330 ms | **0** vs 563 KB (168) | **168** vs 220 ms | **96** vs 410 ms | **0** vs 109 ms |
+| home | 8,178 req/s | 546 | 120 | **4.6x** | 13 / 171 KB | 112 / 506 ms |
+| blog | 8,378 | 587 | 148 | **4.0x** | 13 / 171 KB | 122 / 457 ms |
+| post | 7,739 | 465 | 112 | **4.2x** | 13 / 172 KB | 221 / 518 ms |
+| tag | 8,275 | 538 | 161 | **3.3x** | 13 / 171 KB | 109 / 477 ms |
+| author | 8,261 | 547 | 166 | **3.3x** | 13 / 171 KB | 116 / 455 ms |
+| search | 8,396 | 202 | 178 | **1.1x** | 13 / 171 KB | 125 / 470 ms |
 
-(Re-run after the UI pass. Home and blog pages are now served from our
-page cache, so their server numbers compare a cached page with an
-uncached Next page: see below. The post page is still rendered per
-request, and is the fair comparison: 20×. Before the cache, with the
-richer feed rows, home and blog were ~850 req/s here.)
+HTML is ~3x smaller (15-24 KB vs 44-74 KB: Next inlines its React Server
+Components payload). Main-thread script on the throttled phone: 31-48 ms
+vs 119-136 ms. First paint: 208-228 ms vs 248-300 ms.
 
-HTML is also smaller: 2.7–3.4 KB vs 11.7–15.2 KB (Next inlines its React
-Server Components payload).
+### The load test's signed-out reads (`tests/load/vs_next.py`, `docs/vs_next_load.json`)
+
+The 100k-post database (1.5 GB) and the load test's mix of signed-out
+page views (posts, blogs, home, tags, authors, search), two rounds:
+
+| server | req/s | p50 latency at 32 connections |
+|---|---|---|
+| ours (cached, as deployed) | **1,194-1,238** | 25-28 ms |
+| ours, no cache | **670-694** | 46-51 ms |
+| Next | 175-178 | 163-175 ms |
+
+**Per request, ours is ~4x Next; as deployed, ~7x.**
 
 ## What this does and does not show
 
-- **Server throughput** of post pages compares per-request rendering. Home
-  and blog pages come from our page cache (invalidated on every write);
-  Next's are rendered per request here. A Next deployment could cache
-  them too (ISR), which would close most of that gap.
-- **Next compresses responses** (gzip) and keeps connections alive; ours
-  relies on the reverse proxy (Caddy) for compression. On localhost this
-  does not matter; over a real network, compare the gzip column.
-- **The browser gap is structural:** 168 KB of gzipped JS and ~100 ms of main
-  thread per load on a throttled phone, versus none. It grows on real
-  mobile networks and CPUs; it does not shrink with caching.
-- **First paint** is 15–25% faster, not 4×: on localhost both are dominated
-  by browser work (parsing, style, the first frame). `load` shows the
-  difference in total work.
+- **The per-request gap is 3-5x, not the 20x of the first measurement.**
+  Both sides render richer pages now (bylines, excerpts, comments), and
+  Next slowed ~2.3x (263 -> 112 req/s on posts) while ours slowed more
+  (5,190 -> 465 uncached): extra text costs us more, because our pages
+  are built from Bend Strings (linked lists of characters, docs/LOAD.md).
+  JavaScript itself is not the slow part of Next; React's rendering and
+  the framework around it are.
+- **Search is a tie** (202 vs 178): both run the same FTS5 query, which
+  is most of the work.
+- **Caching:** our deployed pages come from a page cache that every write
+  keeps correct. A Next deployment could cache too (ISR, a CDN), with
+  staleness rules instead; neither side was given a CDN here.
+- **Not compared:** signed-in pages and writes (Next has none), and more
+  than one core (ours runs worker processes; Next would need a cluster
+  behind a proxy).
+- **The browser gap is structural:** 13 KB vs 171 KB of gzipped
+  JavaScript, and a quarter of the main-thread script time on a
+  throttled phone, whatever the server does.
 
 ## Findings along the way
 
@@ -84,5 +112,5 @@ Server Components payload).
 
 - INP (interaction latency) on the editor.
 - Real network conditions (throttled latency and bandwidth).
-- Multi-core serving (one process per core with `SO_REUSEPORT`).
-- A cached/static Next baseline.
+- Several cores on both sides (our worker processes against a Next cluster).
+- A cached (ISR) Next baseline.

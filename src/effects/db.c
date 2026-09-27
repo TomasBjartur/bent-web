@@ -29,6 +29,10 @@
 //   deletion, scheduled publishing);
 // - post_ver[post]: one post's page (a write to the post, its likes or
 //   comments).
+// BLOG_PAGE_CACHE=0 (benchmarks only: docs/PERF.md): every page is made per
+// request, as a framework's "dynamic" pages are.
+static uint32_t page_cache_off;
+
 static void app_post_moved(uint32_t post) {
   atomic_fetch_add(&app_shared->post_ver[app_post_slot(post)], 1u);
 }
@@ -88,6 +92,8 @@ Term db_open_run(Env e, Term *f, IoWork *w) {
   if (r != 0) return io_fail(e, EIO, "cannot open the database");
   app_db_ready = 1;
   live_init();
+  const char *pc = getenv("BLOG_PAGE_CACHE");
+  page_cache_off = pc != NULL && pc[0] == '0';
 #ifdef CID(tick)
   const char *t = getenv("BLOG_TICK_MS");
   if (t != NULL && t[0] >= '0' && t[0] <= '9') app_tick_ms = strtoull(t, NULL, 10) <= 60000ull ? strtoull(t, NULL, 10) : TICK_INTERVAL_MS;
@@ -1126,6 +1132,7 @@ static PageStamp page_stamps[PAGE_STAMP_FDS];
 // The entry for key (valid now), or NULL; bytes gets its body.
 static const PageCacheHead *page_cache_find(const char *k, u64 n, const char **bytes) {
   ASSERT(n > 0u && n <= PAGE_CACHE_KEY_MAX);
+  if (page_cache_off) return NULL;
   uint32_t h = page_cache_hash(k, n);
   PageStamp now = page_stamp_now(k, n);
   PageCacheSlot *c = &page_cache[h % PAGE_CACHE_SLOTS];
@@ -1156,7 +1163,7 @@ static void page_cache_drop(const char *k, u64 n) {
 // Stores body under key with stamp, if it fits; the other table's entry
 // for the key (an older size) is dropped.
 static void page_cache_store(const char *k, u64 n, PageStamp stamp, uint32_t ctype, const char *body, u64 len) {
-  if (n == 0u || n > PAGE_CACHE_KEY_MAX || len > PAGE_CACHE_BIG_BYTES || stamp.gen == 0u) return;
+  if (n == 0u || n > PAGE_CACHE_KEY_MAX || len > PAGE_CACHE_BIG_BYTES || stamp.gen == 0u || page_cache_off) return;
   page_cache_drop(k, n);
   uint32_t h = page_cache_hash(k, n);
   PageCacheHead *head;

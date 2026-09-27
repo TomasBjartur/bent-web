@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cdp import start_chrome, page_ws, wait_port
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BEND, NEXT = 8095, 3000
+BEND, BEND_NC, NEXT = 8095, 8096, 3000
 NODE = os.path.expanduser("~/opt/node/bin")
 rng = random.Random(7)
 WORDS = ("the quiet river of long evenings carries small boats past old walls where people talk about "
@@ -42,19 +42,49 @@ def body_html():
 
 
 def make_db(path):
+    """The current schema (our server creates it and runs every migration on
+    an empty file), then 50 blogs of 40 posts, tags, likes, and comments:
+    post-3 of each blog has 30 threads with replies (a post page shows 20)."""
+    sys.path.insert(0, os.path.join(ROOT, "tests/load"))
+    srv = subprocess.Popen([os.path.join(ROOT, "build/server")], env=dict(os.environ, BLOG_DB=path, PORT="8198", BLOG_WORKERS="1"),
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    wait_port(8198)
+    srv.terminate()
+    srv.wait()
     db = sqlite3.connect(path)
-    db.executescript(open(os.path.join(ROOT, "src/db/schema.sql")).read())
-    db.execute("INSERT INTO user(email, name, created_ms) VALUES ('w@example.com', 'Writer', 1)")
-    t = 1_700_000_000_000
+    for u in range(1, 201):
+        db.execute("INSERT INTO user(id, email, name, handle, created_ms) VALUES (?, ?, ?, ?, 1)", (u, f"w{u}@example.com", f"Writer {u}", f"writer_{u}"))
+    t, pid, cid = 1_700_000_000_000, 0, 0
     for b in range(1, 51):
-        db.execute("INSERT INTO blog(id, slug, title, owner_id, created_ms) VALUES (?, ?, ?, 1, 1)", (b, f"blog-{b}", f"Blog number {b}"))
-        db.execute("INSERT INTO member VALUES (?, 1, 1)", (b,))
+        db.execute("INSERT INTO blog(id, slug, title, owner_id, created_ms) VALUES (?, ?, ?, ?, 1)", (b, f"blog-{b}", f"Blog number {b}", b))
+        db.execute("INSERT INTO member VALUES (?, ?, 1)", (b, b))
         for p in range(40):
             t += 1000
-            db.execute("INSERT INTO post(blog_id, slug, title, body_md, body_html, published, created_ms, updated_ms) VALUES (?, ?, ?, '', ?, 1, ?, ?)",
-                       (b, f"post-{p}", sentence(5)[:-1], body_html(), t, t))
+            pid += 1
+            h = body_html()
+            text = re.sub(r"<[^>]+>", " ", h)
+            db.execute("INSERT INTO post(id, blog_id, slug, title, body_md, body_html, published, created_ms, updated_ms, author_id, published_ms, "
+                       "excerpt, body_len) VALUES (?, ?, ?, ?, '', '', 1, ?, ?, ?, ?, ?, ?)",
+                       (pid, b, f"post-{p}", sentence(5)[:-1], t, t, b, t, " ".join(text.split())[:240], len(text)))
+            db.execute("INSERT INTO post_body(post_id, body_md, body_html) VALUES (?, ?, ?)", (pid, text, h))
+            for tag in rng.sample(["river", "books", "music", "bread", "craft"], 2):
+                db.execute("INSERT INTO post_tag(post_id, tag) VALUES (?, ?)", (pid, tag))
+            for u in rng.sample(range(1, 201), rng.randint(0, 12)):
+                db.execute("INSERT INTO post_like VALUES (?, ?, 1)", (pid, u))
+            threads = 30 if p == 3 else rng.randint(0, 3)
+            for _ in range(threads):
+                cid += 1
+                top = cid
+                c = sentence(rng.randint(8, 30))
+                db.execute("INSERT INTO comment(id, post_id, parent_id, author_id, body_md, body_html, created_ms) VALUES (?, ?, NULL, ?, ?, ?, ?)",
+                           (cid, pid, rng.randint(1, 200), c, f"<p>{html.escape(c)}</p>", t))
+                for _ in range(rng.randint(0, 2)):
+                    cid += 1
+                    c = sentence(rng.randint(5, 20))
+                    db.execute("INSERT INTO comment(id, post_id, parent_id, author_id, body_md, body_html, created_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                               (cid, pid, top, rng.randint(1, 200), c, f"<p>{html.escape(c)}</p>", t))
     db.commit()
-    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA optimize")
     db.close()
 
 
@@ -140,7 +170,13 @@ def main():
     dbpath = os.path.join(tmp, "blog.db")
     make_db(dbpath)
     env = dict(os.environ, BLOG_DB=dbpath, PORT=str(BEND), NEXT_TELEMETRY_DISABLED="1", PATH=NODE + ":" + os.environ["PATH"])
-    bend = subprocess.Popen(["taskset", "-c", "0", os.path.join(ROOT, "build/server")], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    bend = subprocess.Popen(["taskset", "-c", "0", os.path.join(ROOT, "build/server")], env=dict(env, BLOG_WORKERS="1"),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # The same server with no page cache: every page made per request, as
+    # Next's force-dynamic pages are (the fair per-request comparison).
+    bend_nc = subprocess.Popen(["taskset", "-c", "0", os.path.join(ROOT, "build/server")],
+                               env=dict(env, BLOG_WORKERS="1", PORT=str(BEND_NC), BLOG_PAGE_CACHE="0"),
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     nxt = subprocess.Popen(["taskset", "-c", "0", os.path.join(NODE, "node"), "node_modules/next/dist/bin/next", "start", "-p", str(NEXT)],
                            cwd=os.path.join(ROOT, "baseline/next"), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     os.makedirs(os.path.join(tmp, "other"), exist_ok=True)
@@ -149,14 +185,17 @@ def main():
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     chrome = None
     report = {"machine": "cloud container, 2 vCPU; server on core 0, load generator on core 1",
-              "pages": {"home": "/", "blog": "/b/blog-7", "post": "/b/blog-7/post-3"}}
+              "pages": {"home": "/", "blog": "/b/blog-7", "post": "/b/blog-7/post-3", "tag": "/t/river", "author": "/u/7",
+                        "search": "/search?q=river"}}
     try:
         wait_port(BEND)
+        wait_port(BEND_NC)
         wait_port(NEXT)
-        for port in (BEND, NEXT):
+        for port in (BEND, BEND_NC, NEXT):
             for path in report["pages"].values():
                 for _ in range(30):
                     get(port, path)
+        report["bend_nocache"] = {"server": {p: load(BEND_NC, path) for p, path in report["pages"].items()}}
         for name, port in (("bend", BEND), ("next", NEXT)):
             report[name] = {"weight": {}, "server": {}, "browser": {}}
             for page, path in report["pages"].items():
@@ -178,12 +217,15 @@ def main():
         if chrome:
             chrome.terminate()
         bend.terminate()
+        bend_nc.terminate()
         nxt.terminate()
         other.terminate()
     os.makedirs(os.path.join(ROOT, "docs"), exist_ok=True)
     json.dump(report, open(os.path.join(ROOT, "docs/bench.json"), "w"), indent=2)
     for page in report["pages"]:
         print(f"\n== {page}")
+        s = report["bend_nocache"]["server"][page]
+        print(f"  {'nocache':7} {s['req_s']:>8.0f} req/s  p50 {s['p50_us'] / 1000:6.1f} ms  p99 {s['p99_us'] / 1000:6.1f} ms  (ours, no page cache)")
         for name in ("bend", "next"):
             w, s, b = report[name]["weight"][page], report[name]["server"][page], report[name]["browser"][page]
             print(f"  {name:5} {s['req_s']:>8.0f} req/s  p50 {s['p50_us'] / 1000:6.1f} ms  p99 {s['p99_us'] / 1000:6.1f} ms  "
