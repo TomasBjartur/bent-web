@@ -208,7 +208,8 @@ button.like.on { color: var(--accent); border-color: var(--accent); background: 
 .cactions details.del summary { cursor: pointer; list-style: none; }
 .cactions details.del[open] { display: flex; gap: 8px; align-items: baseline; }
 .replies { margin-left: 18px; padding-left: 14px; border-left: 2px solid var(--line); }
-.replies:not(:has(> .comment)):not(:has(> summary)) { display: none; }
+.replies:not(:has(> .comment)) { display: none; }
+.replies > summary.none { display: none; }
 .replies > summary { cursor: pointer; color: var(--accent); font-size: 0.85rem; font-weight: 600; padding: 6px 0; list-style: none; }
 .replies > summary::-webkit-details-marker { display: none; }
 .replies[open] > summary { color: var(--muted); font-weight: 400; }

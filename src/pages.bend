@@ -529,9 +529,16 @@ def edit_page(+id: String, +rep: String, +md: List<&2, String>, +tags: String) -
 
 # AUTHOR PAGE
 # -----------
+# "@handle · Posts by Name", or "Posts by Name" (accounts from before handles).
+def author_sub(none: Bool, +h: String, +name: String) -> String:
+  match none:
+    case True{}:
+      "Posts by " ++ Html.esc(name, "")
+    case False{}:
+      "<span class=\"handle\">@" ++ Html.esc(h, "</span> · Posts by " ++ Html.esc(name, ""))
 # rows: as recent_items.
 def author_page(+uid: String, +name: String, +handle: String, +page: U32, +rows: List<&2, List<&2, String>>, rest: String) -> String:
-  "<header class=\"masthead\"><h1>" ++ (Html.esc(name, "</h1><p class=\"muted\">" ++ (handle_tag(handle) ++ (" · Posts by " ++ (Html.esc(name, "</p></header>" ++ feed_or_empty(rows_take(rows, 30n), "Nothing published yet.", pager("/u/" ++ uid, page, rows) ++ rest)))))))
+  "<header class=\"masthead\"><h1>" ++ (Html.esc(name, "</h1><p class=\"muted\">" ++ (author_sub(String.is_empty(handle), handle, name) ++ ("</p></header>" ++ feed_or_empty(rows_take(rows, 30n), "Nothing published yet.", pager("/u/" ++ uid, page, rows) ++ rest)))))
 
 # RSS
 # ---
@@ -750,12 +757,22 @@ def delete_comment(b: Bool, +id: String) -> String:
 # A comment's replies: a <details id="r<id>">, open unless the thread is
 # collapsed (a top-level comment with replies, on a post with many
 # comments). Live replies are appended into it.
+# Every replies element has a summary (without one, browsers show their
+# own "Details"): "N replies", which also folds the thread, or, with none
+# yet, an empty one kept hidden.
+def replies_sum(none: Bool, +n: String) -> String:
+  match none:
+    case True{}:
+      "<summary class=\"none\"></summary>"
+    case False{}:
+      "<summary>" ++ (plural(n, "reply", "replies") ++ "</summary>")
+
 def replies_open(collapse: Bool, +id: String, +n: String) -> String:
   match collapse:
     case True{}:
       "<details class=\"replies\" id=\"r" ++ (Html.esc(id, "\"><summary>" ++ (plural(n, "reply", "replies") ++ "</summary>")))
     case False{}:
-      "<details class=\"replies\" id=\"r" ++ (Html.esc(id, "\" open>"))
+      "<details class=\"replies\" id=\"r" ++ (Html.esc(id, "\" open>" ++ replies_sum(String.eq(n, "0"), n)))
 
 # A comment row (see Q_COMMENTS): [id, depth, author id, author, date,
 # deleted, mine, parent, handle, replies]. Before its body:

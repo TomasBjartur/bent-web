@@ -254,6 +254,20 @@ def main():
         check("toolbar: heading level", br.text().startswith("### Title\n\n"), repr(br.text()))
         check("only the edited blocks change", br.text().endswith("\n\n- one\n- two\n"), repr(br.text()))
         check("visual edits sync", br.wait_saved(), br.js("document.getElementById('sync-status').textContent"))
+        # Markdown shortcuts: a new paragraph at the end, "## " makes it a heading.
+        br.js("(() => { const l = document.querySelector('.wys').lastElementChild.lastElementChild; const r = document.createRange();"
+              " r.selectNodeContents(l); r.collapse(false); const s = getSelection(); s.removeAllRanges(); s.addRange(r); })()")
+        br.key("Enter")
+        br.key("Enter")  # an empty list item: Enter leaves the list
+        for c in "## Next":
+            br.key(c)
+        time.sleep(0.3)
+        check("shortcut: ## makes a heading", br.js("!!document.querySelector('.wys h2')") and br.text().rstrip().endswith("## Next"), repr(br.text()))
+        br.key("Enter")
+        for c in "- item":
+            br.key(c)
+        time.sleep(0.3)
+        check("shortcut: - makes a list", br.text().rstrip().endswith("## Next\n\n- item"), repr(br.text()))
         br.js("document.querySelector('.edit-tools .seg:nth-child(1)').click()")
         time.sleep(0.3)
         check("back to Markdown", br.js("document.getElementById('editor').hidden") is False and br.js("document.querySelector('.wys').hidden") is True)

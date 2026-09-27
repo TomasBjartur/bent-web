@@ -173,7 +173,9 @@ export class Visual {
     this.prefix = "";
     this.dirty = new Set();
     this.observer = new MutationObserver((recs) => this.collect(recs));
-    root.addEventListener("input", () => this.commit());
+    root.addEventListener("input", (ev) => {
+      if (!this.shortcut(ev)) this.commit();
+    });
     root.addEventListener("paste", (ev) => {
       const files = [...(ev.clipboardData ? ev.clipboardData.files : [])].filter((f) => f.type.startsWith("image/"));
       if (files.length) return; // images: the editor uploads them (see editor.js)
@@ -233,6 +235,35 @@ export class Visual {
     }
     this.root.replaceChildren(...els);
     this.dirty.clear();
+  }
+
+  // Markdown shortcuts: "## ", "### ", "- ", "1. " or "> " typed at the
+  // start of a paragraph make it a heading, a list or a quote. Answers
+  // whether it did (the edits it makes are committed as they happen).
+  shortcut(ev) {
+    if (ev.inputType !== "insertText" || ev.data !== " ") return false;
+    const sel = document.getSelection();
+    if (!sel || !sel.isCollapsed || !this.root.contains(sel.anchorNode)) return false;
+    let block = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentNode;
+    while (block && block !== this.root && !/^(P|DIV)$/.test(block.tagName)) block = block.parentNode;
+    if (!block || block === this.root || block.classList.contains("wblock") && block.querySelector("p,h2,h3,ul,ol,blockquote,pre")) return false;
+    const before = offsetIn(block, sel.anchorNode, sel.anchorOffset);
+    const m = block.textContent.slice(0, before).match(/^(#{1,3}|[-*+]|1[.)]|>)[ \u00a0]$/);
+    if (!m) return false;
+    const r = document.createRange();
+    r.setStart(block, 0);
+    r.setEnd(sel.anchorNode, sel.anchorOffset);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    document.execCommand("delete");
+    const k = m[1];
+    if (k === "###") document.execCommand("formatBlock", false, "h3");
+    else if (k[0] === "#") document.execCommand("formatBlock", false, "h2");
+    else if (k === ">") document.execCommand("formatBlock", false, "blockquote");
+    else if (k[0] === "1") document.execCommand("insertOrderedList");
+    else document.execCommand("insertUnorderedList");
+    this.commit();
+    return true;
   }
 
   // An edit: the touched blocks become Markdown again.
